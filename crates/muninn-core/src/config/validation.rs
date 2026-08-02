@@ -96,7 +96,7 @@ fn validate_runtime(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
     // A relative path would be resolved against whatever directory the process
     // happens to start in, which in a container is not something the operator
     // controls or can predict.
-    if !cfg.runtime.generated_config_path.starts_with('/') {
+    if !is_absolute_path(&cfg.runtime.generated_config_path) {
         return Err(MuninnError::config(format!(
             "runtime.generated_config_path '{}' must be an absolute path",
             cfg.runtime.generated_config_path
@@ -483,6 +483,21 @@ fn parse_listen(value: &str, key: &str) -> Result<SocketAddr> {
              In a container use 0.0.0.0 — a published port never reaches the container's loopback"
         ))
     })
+}
+
+/// Whether `value` is an absolute path.
+///
+/// Accepts both a POSIX absolute path and whatever the host platform considers
+/// absolute, and it has to accept both. muninn's artefact is a Linux container,
+/// so a configuration naming `/run/muninn/telegraf.conf` must validate wherever
+/// it is checked — `muninn validate` on a Windows laptop against a production
+/// file is a case worth supporting. Meanwhile the tests, which run on the
+/// developer's machine, need real host paths to work.
+///
+/// `Path::is_absolute` alone would reject the first; `starts_with('/')` alone
+/// rejects the second.
+fn is_absolute_path(value: &str) -> bool {
+    value.starts_with('/') || std::path::Path::new(value).is_absolute()
 }
 
 fn require_non_empty(value: &str, key: &str) -> Result<()> {

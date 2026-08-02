@@ -25,17 +25,20 @@ is working.
 
 ---
 
-> ## Status: not usable yet
+> ## Status: runnable, not yet deployable
 >
-> **WP0 (design package) is complete. The binary is not implemented.** What
-> exists today is the schema, the architecture, the decisions and a
-> reference Telegraf configuration verified against the real thing.
+> **WP0–WP6 are complete.** muninn reads its YAML, generates a Telegraf
+> configuration, has Telegraf verify it, starts Telegraf as a supervised child
+> and shuts it down cleanly on SIGTERM. `run`, `validate`, `render-config` and
+> `version` all work.
 >
-> If you are here to run something, come back after WP6. If you are here to
-> review or build it, start with [`docs/roadmap.md`](docs/roadmap.md).
+> What is missing before you can deploy it: the **health server** (WP7) and the
+> **container image** (WP8). `check-runtime` and `healthcheck` fail with a
+> pointer to the work package that delivers them, and there is no published
+> image — the compose example below describes the target, not something you can
+> pull today.
 >
-> Everything below describes the design being built toward, and is written in
-> the present tense because it is a specification, not a status report.
+> Progress and what is next: [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 

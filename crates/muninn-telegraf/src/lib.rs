@@ -38,11 +38,22 @@
 //!
 //! See `docs/adr/0006-validate-with-config-check.md`.
 //!
-//! The model and renderer are implemented (WP3); the validator, process control
-//! and version check land in WP6 — see `docs/roadmap.md`.
+//! # Why the version is pinned and checked
+//!
+//! Option names, defaults and semantics move between Telegraf minor releases, so
+//! a configuration generated for one version and run against another is not a
+//! supported pair. It would usually work, which is the problem — the failure
+//! mode is a silently different meaning rather than an error. [`version::check`]
+//! refuses to start on a mismatch.
+//!
+//! All of this is implemented (WP3 and WP6). What is not yet here: nothing —
+//! this crate is complete for the MVP.
 
 pub mod model;
+pub mod process;
 pub mod renderer;
+pub mod validator;
+pub mod version;
 
 pub use model::{PluginInstance, Section, TelegrafConfig, TomlTable, TomlValue};
 pub use renderer::render;

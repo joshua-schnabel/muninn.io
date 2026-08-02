@@ -32,6 +32,27 @@ its native failure mode.
 | Integration / E2E | `muninn/tests/*.rs` | seconds |
 | System | `scripts/integration-test.sh` + compose | minutes, CI |
 
+## The platform gap, and why it is not optional
+
+Development happens on Windows; the artefact is a Linux container. The tests
+that matter most — signal handling, file permissions, reaping a child — are
+`#[cfg(unix)]`, so on Windows they compile and are **silently absent**. A green
+local run is not a green run.
+
+```bash
+bash scripts/test-linux.sh              # whole workspace, in a container
+bash scripts/test-linux.sh -p muninn    # anything after the name goes to cargo test
+```
+
+It runs the suite in `rust:1.88-slim` against the Telegraf binary taken from the
+pinned image, so the tests see the same version the artefact ships.
+
+This is not belt-and-braces. The first time the suite ran under Linux it found a
+real bug: signal handlers were installed inside the supervise loop, leaving a
+window during startup where SIGTERM still had its default disposition and killed
+muninn instead of shutting it down. Nothing on the development machine could
+have seen it.
+
 ## Test the artefact, not just the code
 
 huginn.io shipped a bug where `run()` returned immediately, `main()` exited, the
@@ -113,6 +134,16 @@ Use a mutex-guarded helper.
 
 **Never hit real external services.** Local sockets, temporary containers or
 fixtures. A test that needs the internet is a test that fails on a train.
+
+**A skipped test must say so.** The lifecycle tests need a real Telegraf binary
+(`MUNINN_TELEGRAF_BIN`); without one they print `SKIP:` and a reason. A test that
+quietly passes when its precondition is absent is indistinguishable from one that
+verified something, which is worse than having no test at all.
+
+**Do not assert against the ambient environment.** A test that read
+`MUNINN_TELEGRAF_BIN` and expected it unset passed on Windows and failed in the
+container, where it is legitimately set. The fix was to separate the decision
+from reading the environment and test the decision.
 
 ## Coverage
 

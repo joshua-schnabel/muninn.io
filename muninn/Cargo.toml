@@ -21,5 +21,12 @@ tracing-subscriber = { workspace = true }
 # human and its type no longer matters. Library crates use typed errors.
 anyhow = { workspace = true }
 
-[dev-dependencies]
+# tempfile is a runtime dependency, not only a test one: `validate
+# --with-telegraf` renders to a scratch file for Telegraf to judge.
 tempfile = { workspace = true }
+
+# The lifecycle tests send a real SIGTERM to the compiled binary, which is the
+# only way to observe the shutdown path that matters. Unix only — Windows has no
+# SIGTERM, and muninn's artefact is a Linux container.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

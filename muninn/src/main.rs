@@ -44,6 +44,8 @@ use muninn_core::config::{self, Overrides};
 use muninn_modules::RenderContext;
 
 mod cli;
+mod logging;
+mod supervisor;
 
 use cli::{Cli, Command};
 
@@ -71,13 +73,21 @@ fn dispatch(args: &Cli) -> muninn_core::Result<()> {
         } => render_config(args, output.as_deref(), *unsafe_show_secrets),
         Command::Version => {
             println!("muninn {}", env!("CARGO_PKG_VERSION"));
-            // The Telegraf version comes from the binary at runtime, which WP6
-            // adds. Stating "unknown" beats printing the build-time pin as
-            // though it had been confirmed.
-            println!("telegraf unknown (version check lands in WP6)");
+            println!(
+                "built for telegraf {}",
+                muninn_telegraf::version::EXPECTED_VERSION
+            );
+            // Reported separately from the pin, because "what we were built for"
+            // and "what is actually here" are different facts and only the
+            // second one can be wrong.
+            let binary = muninn_telegraf::version::binary_path();
+            match muninn_telegraf::version::query(&binary) {
+                Ok(v) => println!("telegraf {v} at {}", binary.display()),
+                Err(e) => println!("telegraf not available: {e}"),
+            }
             Ok(())
         }
-        Command::Run => not_yet("run", "WP6 (Telegraf process management)"),
+        Command::Run => run(args),
         Command::CheckRuntime => not_yet("check-runtime", "WP8 (container image)"),
         Command::Healthcheck => not_yet("healthcheck", "WP8 (container image)"),
     }
@@ -102,10 +112,24 @@ fn validate(args: &Cli, with_telegraf: bool) -> muninn_core::Result<()> {
     let cfg = load(args)?;
 
     if with_telegraf {
-        return Err(MuninnError::internal(
-            "--with-telegraf is not implemented yet; it lands with the Telegraf validator in WP6"
-                .to_string(),
-        ));
+        // Render to a temporary file and let Telegraf judge it. Opt-in because
+        // it needs the binary, which in practice means running inside the image.
+        let binary = muninn_telegraf::version::binary_path();
+        muninn_telegraf::version::check(&binary)?;
+
+        let rendered = muninn_telegraf::render(
+            &muninn_modules::build(&RenderContext::new(&cfg)),
+            env!("CARGO_PKG_VERSION"),
+        );
+        let dir = tempfile::tempdir().map_err(|e| {
+            MuninnError::internal(format!("cannot create a scratch directory: {e}"))
+        })?;
+        let path = dir.path().join("telegraf.conf");
+        std::fs::write(&path, &rendered)
+            .map_err(|e| MuninnError::internal(format!("cannot write the scratch file: {e}")))?;
+
+        muninn_telegraf::validator::check_config(&binary, &path)?;
+        println!("Telegraf accepted the generated configuration.");
     }
 
     println!("{} is valid.", args.config.display());
@@ -158,6 +182,27 @@ fn render_config(
         }
     }
     Ok(())
+}
+
+/// The full lifecycle. This is what the container runs.
+fn run(args: &Cli) -> muninn_core::Result<()> {
+    let cfg = load(args)?;
+
+    // Logging is initialised only here. The other commands print to stdout and
+    // stderr directly: a structured log line is the wrong shape for
+    // `render-config` output that someone is piping into a file.
+    logging::init(&cfg.logging);
+
+    let state = supervisor::SharedState::new();
+
+    // A current-thread runtime would be enough for one child and a few tasks,
+    // but the health server (WP7) and the output forwarders are genuinely
+    // concurrent, and the multi-threaded runtime is what tokio's own defaults
+    // assume.
+    let runtime = tokio::runtime::Runtime::new()
+        .map_err(|e| MuninnError::internal(format!("cannot start the async runtime: {e}")))?;
+
+    runtime.block_on(supervisor::run(cfg, state))
 }
 
 fn not_yet(command: &str, where_: &str) -> muninn_core::Result<()> {
