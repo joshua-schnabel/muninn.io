@@ -1,0 +1,17 @@
+[package]
+name = "muninn-modules"
+description = "Monitoring modules and outputs for muninn.io — each renders a Telegraf plugin fragment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+muninn-core = { workspace = true }
+muninn-telegraf = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

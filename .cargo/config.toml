@@ -1,0 +1,65 @@
+[alias]
+# ── Build ────────────────────────────────────────────────────────────────────
+# cargo b                   fast debug build
+# cargo br                  release build (optimised, --locked as CI uses it)
+# cargo b-timings           build with timing profile (opens an HTML report)
+b            = "build"
+br           = "build --release --locked"
+b-timings    = "build --workspace --timings"
+
+# ── Run ──────────────────────────────────────────────────────────────────────
+# cargo dev                 run against the shipped example config
+# cargo dev-render          print the Telegraf config the example config produces
+# cargo dev-validate        validate the example config without starting anything
+dev          = "run -- --config config/muninn.example.yaml run"
+dev-render   = "run -- --config config/muninn.example.yaml render-config"
+dev-validate = "run -- --config config/muninn.example.yaml validate"
+
+# ── Test ─────────────────────────────────────────────────────────────────────
+# cargo t-all               every test in the workspace
+# cargo t-unit              unit tests only
+# cargo t-int               integration tests only (tests/*.rs)
+# cargo t-verbose           tests with per-test stdout/stderr
+t            = "test"
+t-all        = "test --workspace"
+t-unit       = "test --lib --workspace"
+t-int        = "test --test '*' --workspace"
+t-verbose    = "test --workspace -- --nocapture"
+t-doc        = "test --doc --workspace"
+
+# ── Snapshots ────────────────────────────────────────────────────────────────
+# Requires: cargo install cargo-insta
+#
+# A generated Telegraf configuration is reviewed as a diff, never accepted
+# blindly — `cargo insta accept` without reading the diff defeats the point of
+# having snapshots at all.
+# cargo snap-review         step through pending snapshot changes interactively
+snap-review  = "insta review"
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+# Requires: cargo install cargo-llvm-cov
+#
+# cargo cov                 terminal summary
+# cargo cov-html            detailed HTML report, opens in the browser
+# cargo cov-ci              the gate CI enforces (>= 80 % workspace lines)
+cov          = "llvm-cov --workspace --all-features"
+cov-html     = "llvm-cov --workspace --all-features --html --open --output-dir target/llvm-cov/html"
+cov-lcov     = "llvm-cov --workspace --all-features --lcov --output-path target/llvm-cov/lcov.info"
+cov-ci       = "llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 80"
+
+# ── Code quality ─────────────────────────────────────────────────────────────
+# cargo lint                clippy over everything, warnings are errors
+# cargo lint-fix            apply clippy's automatic fixes
+# cargo fmt-check           check formatting without writing (what CI runs)
+lint         = "clippy --workspace --all-targets --all-features -- -D warnings"
+lint-fix     = "clippy --workspace --all-targets --all-features --fix --allow-dirty"
+fmt-check    = "fmt --all -- --check"
+
+# ── Supply chain ─────────────────────────────────────────────────────────────
+# Requires: cargo install cargo-deny
+#
+# cargo audit-all           advisories, licences, bans and sources in one pass
+audit-all    = "deny check"
+
+# ── Docs ─────────────────────────────────────────────────────────────────────
+doc          = "doc --workspace --no-deps --open"

@@ -1,0 +1,93 @@
+# muninn.io — configuration for the CI integration stack.
+#
+# Used by docker-compose.integration.yml. Differs from a production config in
+# exactly the ways a test needs and nothing else:
+#
+#   - short intervals, so assertions do not wait a minute for the first metric;
+#   - a fixed hostname, so InfluxDB queries can match on it deterministically;
+#   - both outputs enabled, because "both at once" is a case worth testing;
+#   - the docker and updates modules off, so the test needs neither the Docker
+#     socket nor host package data.
+#
+# The token file is created by the test harness and contains a throwaway value.
+# It is never a real credential — see scripts/integration-test.sh.
+
+version: 1
+
+agent:
+  interval: 2s
+  flush_interval: 2s
+  hostname: "muninn-integration"
+  omit_hostname: false
+
+runtime:
+  # Short, because the test tears the stack down repeatedly and a 20s grace
+  # period per teardown dominates the run time.
+  shutdown_grace_period: 5s
+  telegraf_start_timeout: 15s
+  generated_config_path: /run/muninn/telegraf.conf
+  host_mount_prefix: /hostfs
+
+logging:
+  # JSON so the test can assert on individual log events rather than grepping
+  # prose that is allowed to change.
+  format: json
+  level: debug
+
+health:
+  listen: "0.0.0.0:8080"
+
+modules:
+  cpu:
+    enabled: true
+  memory:
+    enabled: true
+  load:
+    enabled: true
+  system:
+    enabled: true
+  swap:
+    enabled: true
+  processes:
+    enabled: true
+  disks:
+    enabled: true
+    exclude_filesystems:
+      - tmpfs
+      - devtmpfs
+      - squashfs
+      - overlay
+    exclude_mountpoints:
+      - "/snap*"
+      - "/var/lib/docker/*"
+    include_mountpoints: []
+  disk_io:
+    enabled: true
+    include_devices: []
+    exclude_devices:
+      - "loop*"
+      - "ram*"
+  network:
+    enabled: true
+    include_interfaces: []
+    exclude_interfaces:
+      - lo
+      - "veth*"
+  docker:
+    enabled: false
+  updates:
+    enabled: false
+
+outputs:
+  influxdb:
+    enabled: true
+    url: "http://influxdb:8086"
+    organization: "testorg"
+    bucket: "testbucket"
+    token_file: "/run/secrets/influxdb_token"
+    timeout: 5s
+  prometheus:
+    enabled: true
+    listen: "0.0.0.0:9273"
+    path: "/metrics"
+    expiration_interval: 60s

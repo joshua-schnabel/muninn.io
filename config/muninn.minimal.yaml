@@ -1,0 +1,24 @@
+# muninn.io — the smallest configuration that starts.
+#
+# Everything omitted here takes its default, and the defaults are deliberately
+# quiet: a module you did not name is OFF. This file therefore collects CPU and
+# memory and nothing else.
+#
+# Two things are unavoidable and have no default:
+#   - `version`, so muninn knows how to read the rest of the file;
+#   - at least one enabled output, because collecting metrics and sending them
+#     nowhere is a mistake, not a configuration.
+#
+# The annotated version with every available key is config/muninn.example.yaml.
+
+version: 1
+
+modules:
+  cpu:
+    enabled: true
+  memory:
+    enabled: true
+
+outputs:
+  prometheus:
+    enabled: true
