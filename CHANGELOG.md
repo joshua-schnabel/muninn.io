@@ -35,7 +35,9 @@ The release pipeline reads the version from this file — see
 
 - WP1 host update spike: `spikes/updates/probe.sh` (the specification WP10
   implements), `spikes/updates/fixtures/build-host.sh` and
-  `spikes/updates/run.sh`, reproducing all twelve matrix cells.
+  `spikes/updates/run.sh`, reproducing all thirteen matrix cells — including
+  T11b, which checks the probe from a container against a real host with a
+  non-zero answer.
 
 ### Decided
 

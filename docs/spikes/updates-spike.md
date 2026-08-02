@@ -61,7 +61,7 @@ real failure mode — see §5.
 
 ## 3. Results
 
-All twelve cells pass.
+All thirteen cells pass.
 
 | # | Case | Expected | Measured | |
 |---|---|---|---|---|
@@ -76,7 +76,8 @@ All twelve cells pass.
 | T9 | dpkg status empty | failure, **no** pending fields | `check_success=0, reason=dpkg_status_empty` | ✅ |
 | T9b | dpkg status corrupt | failure, never zero | `check_success=0, reason=apt_failed` | ✅ |
 | T10 | debian:12-slim reads an ubuntu:24.04 host | correct or detected error | **66 / 34** — correct across distributions | ✅ |
-| T11 | real host (WSL Debian) | matches native apt | 0 = 0 — agrees, but see the caveat | ⚠️ |
+| T11 | real host, probe run in place | matches native apt | 0 = 0 — agrees; that host has nothing pending | ✅ |
+| T11b | real host, probe run **from a container**, fresh indices | matches native apt | **41 / 11** — identical to the host's own answer | ✅ |
 
 ### The cells that matter most
 
@@ -94,16 +95,29 @@ exact answer. This matters because container and host being different
 distributions is the *normal* case, not the exotic one: the muninn image has a
 fixed base and hosts do not.
 
-### T11 caveat
+### The real-host cells
 
-The real WSL Debian host has nothing pending, so probe and native both answer
-zero. That is agreement, but weak agreement: it does not exercise the counting
-path on a real filesystem. It does exercise the real symlink layout, real
-permissions and a real 264 KB dpkg status file.
+T11 runs the probe *on* the host. It agrees — but that host's package indices
+were four months old, so both it and native apt answer zero, and agreeing on zero
+does not exercise the counting path.
 
-Strengthening it requires refreshing that host's package lists, which means
-modifying a machine this spike has no business modifying. The counting path is
-covered against four real distributions by T2–T6.
+**T11b closes that**, and is the more faithful cell anyway because it runs the
+probe the way muninn actually will: from a container, against the host's
+filesystem. `spikes/updates/fixtures/build-host-native.sh` fetches fresh indices
+into a scratch directory — via `Dir::State::lists`, so `/var/lib/apt/lists` is
+left untouched; a spike that modified the machine it was measuring would
+invalidate its own criterion — and exports the host's real dpkg status alongside
+them.
+
+That host has 295 installed packages and a genuinely non-zero answer:
+
+```
+real host, its own apt, fresh indices : 41 pending, 11 security
+probe from a debian:12-slim container : 41 pending, 11 security
+```
+
+So the counting path is confirmed against a real machine, not only against
+container fixtures.
 
 ### Hardening and non-modification
 

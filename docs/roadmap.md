@@ -92,22 +92,23 @@ unfixable. Accepted as a trade, with the mitigations in
 **Delivered**
 
 - `spikes/updates/probe.sh` — the specification WP10 implements
-- `spikes/updates/fixtures/build-host.sh`, `spikes/updates/run.sh` — reproducible
+- `spikes/updates/fixtures/build-host.sh` (container fixtures),
+  `build-host-native.sh` (a real host), `spikes/updates/run.sh` — reproducible
   via `bash spikes/updates/run.sh`
-- `docs/spikes/updates-spike.md` — twelve matrix cells with measured results
+- `docs/spikes/updates-spike.md` — thirteen matrix cells with measured results
 - ADR-0009 finalised; `hardening.md` and `risks.md` updated
 
 **Done when** — all met:
 
 1. ✅ Approaches A–D each evaluated and recorded, including the rejected ones.
-2. ✅ T1–T11 recorded across Debian 12/13 and Ubuntu 22.04/24.04.
-3. ⚠️ T11 ran against a real host (WSL Debian) and agrees — but that host has
-   nothing pending, so the agreement is on zero and the counting path is not
-   exercised there. Covered against four real distributions by T2–T6.
+2. ✅ T1–T11b recorded across Debian 12/13 and Ubuntu 22.04/24.04.
+3. ✅ T11/T11b ran against a real host (WSL Debian). T11b is the faithful one —
+   probe in a container against the host's filesystem, with fresh indices —
+   and reproduces that host's own answer of 41 pending / 11 security exactly.
 4. ✅ T8/T9/T9b/T10 demonstrate that a failed check reports failure, never zero.
 5. ✅ No host data modified — SHA-256 over the host tree identical before and after.
 6. ✅ Base image decided and written down with its measurements.
-7. ✅ `bash spikes/updates/run.sh` reproduces all twelve cells.
+7. ✅ `bash spikes/updates/run.sh` reproduces all thirteen cells.
 
 **Brief:** §8 in full, §18.6, §29.11.
 
