@@ -339,6 +339,7 @@ modules:
     endpoint: "unix:///var/run/docker.sock"
     container_include: []
     container_exclude: []
+    container_states: [running]
     timeout: 5s
 ```
 
@@ -347,7 +348,17 @@ modules:
 | `endpoint` | URL | `unix:///var/run/docker.sock` | `endpoint` |
 | `container_include` | list of globs | `[]` | `container_name_include` |
 | `container_exclude` | list of globs | `[]` | `container_name_exclude` |
+| `container_states` | list | `[running]` | `container_state_include` |
 | `timeout` | duration | `5s` | `timeout` |
+
+`timeout` is also how long muninn waits when it probes the endpoint at startup —
+see below.
+
+`container_states` accepts Telegraf's own vocabulary: `created`, `restarting`,
+`running`, `removing`, `paused`, `exited`, `dead`. An unknown value is rejected
+by muninn rather than passed through, because Telegraf accepts it silently and it
+then matches no container — a typo would produce a module that runs and reports
+nothing.
 
 **Renders to**
 
@@ -376,8 +387,23 @@ examples below is defence in depth, not a permission boundary.
 
 muninn only ever issues read calls. The socket has no way of knowing that.
 
+**If you mount the socket directly anyway**, mounting it is not enough. muninn
+runs as uid 10001 and the socket is owned by `root:docker`, so the process has to
+be in the socket's group:
+
+```yaml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    group_add:
+      - "999"            # the docker group's GID: `stat -c '%g' /var/run/docker.sock`
+```
+
+The GID is host-specific, which makes the compose file host-specific — one more
+reason the proxy below is the recommendation. Without it muninn refuses to start
+with a permission error on the socket, which is at least the honest failure.
+
 **Recommended: a socket proxy.** Restrict the API surface to what the module
-needs:
+needs, and skip the group entirely:
 
 ```yaml
 services:
@@ -387,6 +413,7 @@ services:
       CONTAINERS: 1      # /containers/json, /containers/*/stats
       INFO: 1            # /info
       VERSION: 1         # /version
+      PING: 1            # /_ping — muninn's startup reachability check
       POST: 0            # no write operations at all
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -401,15 +428,57 @@ services:
 ```
 
 This turns "root on the host" into four read-only endpoints. It costs one
-container. See [ADR-0010](adr/0010-docker-socket.md).
+container.
 
-**Notes.** `container_state_include = ["running"]` means stopped containers are
-not reported. A container that exits disappears from the metrics rather than
-reporting zeros.
+A complete, working version of this is shipped as
+[`docker-compose.docker-module.yml`](../docker-compose.docker-module.yml), and
+`scripts/container-test.sh` runs muninn against a real proxy and asserts that
+container metrics arrive — the recommended deployment is tested, not just
+recommended.
 
-Enabling the module with an unreachable endpoint is a **startup failure**, not an
-empty metric set — a silent Docker module looks exactly like a host with no
-containers.
+`POST: 0` is what makes it a boundary rather than a suggestion: without it the
+proxy forwards container creation, and the whole exercise buys nothing. See
+[ADR-0010](adr/0010-docker-socket.md).
+
+### Running only, by default
+
+`container_states: [running]` means a container that exits disappears from the
+metrics rather than reporting zeros. That is deliberate: zeros are
+indistinguishable from an idle container, absence is not.
+
+If the event you want to alert on is *a container that stopped*, it has to still
+be reported — add `exited`:
+
+```yaml
+    container_states: [running, exited]
+```
+
+Watch the cost. Every container that ever exited stays in the metrics until it is
+removed, so on a host that runs short-lived containers this grows without bound.
+Pair it with `container_exclude`, or prune.
+
+### An unreachable endpoint refuses the start
+
+Enabling the module with an endpoint that does not answer is a **startup
+failure** (exit `12`), not an empty metric set. This is the module's most
+important behaviour, and the reason is worth stating plainly: a Docker module
+collecting nothing looks exactly like a host running no containers. Nothing in a
+dashboard distinguishes them, so the difference is settled before start.
+
+At startup — and in `muninn check-runtime` — muninn issues one `GET /_ping`
+against the configured endpoint and requires a `200`. That is stricter than
+opening a connection, and the difference is the proxy case: a proxy that is
+running with `PING: 0` accepts the connection and denies the call. Only the
+request sees it.
+
+What each failure means:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `cannot connect to '/var/run/docker.sock'` | not mounted, or the daemon is not running | mount the live socket |
+| `cannot resolve 'docker-socket-proxy:2375'` | the two containers do not share a network | put them on one |
+| `answered 'HTTP/1.1 403 Forbidden'` | the proxy denies the call | allow `PING`, `CONTAINERS`, `INFO` |
+| `accepted the connection and closed it` | something else holds that port | check the port |
 
 **Limits.** Container-level metrics only. What runs *inside* a container is not
 visible here.

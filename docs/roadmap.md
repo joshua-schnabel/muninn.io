@@ -411,6 +411,9 @@ would prove the image works in a configuration nobody ships.
 
 ## WP9 — Docker module
 
+**Status: complete, 2026-08-03.** `bash scripts/container-test.sh` — 22 checks,
+including the module against a real socket and through a real socket proxy.
+
 **Goal.** Per-container metrics, without normalising socket access.
 
 **Touches** `crates/muninn-modules/src/docker.rs`, `docs/modules.md`,
@@ -427,6 +430,40 @@ would prove the image works in a configuration nobody ships.
 4. The security implications are documented where an operator will read them
    before enabling, not in an appendix.
 5. Integration test against a real Docker socket.
+
+All met. The rendering existed from WP4; what WP9 added is the part that makes
+enabling the module a decision with a verdict.
+
+**Three things this work changed, none of them foreseen in the plan:**
+
+**The requirements were wrong for the recommended deployment.** They named
+`/var/run/docker.sock` whatever the configuration said, so a `tcp://` proxy
+endpoint failed a precondition for a file that deployment deliberately does not
+have — the configuration the documentation recommends was the one that could not
+start. `MonitoringModule::requirements` now takes the configuration, because for
+this module the answer genuinely depends on it.
+
+**Startup step 5 was documented but never implemented.**
+[`architecture.md`](architecture.md) has listed "check runtime preconditions for
+enabled modules" as a startup step since WP0, and `muninn run` only ever checked
+the Telegraf version. `check-runtime` reported the problems; nothing stopped a
+start. It does now — which is what makes criterion 1 true rather than aspirational.
+Preconditions run *after* the version check, because a missing Telegraf binary is
+a defect in the image and reporting a host-mount problem ahead of it would point
+the operator at their own deployment for something they did not cause.
+
+**The check is a request, not a connection.** muninn issues `GET /_ping` and
+requires a `200`. A connect alone passes against a socket proxy running with
+`PING: 0` — it accepts the connection and denies the call — and that is precisely
+the deployment recommended here. Test 10 asserts the denying proxy is refused, so
+the weaker check cannot come back unnoticed.
+
+**And one thing the tests taught.** The Linux suite runs muninn inside a
+container with host modules enabled. Once startup enforced the preconditions, six
+lifecycle tests failed — correctly: they had been running muninn in exactly the
+configuration it now refuses, where Telegraf reports the container's CPU as the
+host's. `scripts/test-linux.sh` mounts `/:/hostfs:ro` and the fixture uses it, so
+the suite now exercises the documented deployment instead of one muninn rejects.
 
 **Brief:** §7.2 Docker, §17.2, §26 step 10.
 

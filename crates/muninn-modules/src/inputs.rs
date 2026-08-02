@@ -11,7 +11,24 @@
 use muninn_core::Config;
 use muninn_telegraf::PluginInstance;
 
-use crate::{MonitoringModule, RenderContext, Requirements};
+use std::time::Duration;
+
+use crate::{Endpoint, EndpointKind, MonitoringModule, RenderContext, Requirements};
+
+/// Split a Docker endpoint into what has to be reachable.
+///
+/// `unix:///var/run/docker.sock` → a socket file.
+/// `tcp://docker-socket-proxy:2375` → an address.
+pub(crate) fn parse_docker_endpoint(endpoint: &str, timeout: Duration) -> Option<Endpoint> {
+    let kind = if let Some(path) = endpoint.strip_prefix("unix://") {
+        (!path.is_empty()).then(|| EndpointKind::UnixSocket(path.to_string()))
+    } else if let Some(addr) = endpoint.strip_prefix("tcp://") {
+        (!addr.is_empty()).then(|| EndpointKind::Tcp(addr.to_string()))
+    } else {
+        None
+    }?;
+    Some(Endpoint { kind, timeout })
+}
 
 const RANK_CPU: u16 = 10;
 const RANK_MEM: u16 = 20;
@@ -40,7 +57,7 @@ impl MonitoringModule for Cpu {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.cpu.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -68,7 +85,7 @@ impl MonitoringModule for Memory {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.memory.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -91,7 +108,7 @@ impl MonitoringModule for Load {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.load.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -118,7 +135,7 @@ impl MonitoringModule for System {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.system.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc", "var"])
     }
     fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -142,7 +159,7 @@ impl MonitoringModule for Swap {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.swap.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -161,7 +178,7 @@ impl MonitoringModule for Processes {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.processes.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -180,7 +197,7 @@ impl MonitoringModule for Disks {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.disks.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -208,7 +225,7 @@ impl MonitoringModule for DiskIo {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.disk_io.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc", "sys"])
     }
     fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -234,7 +251,7 @@ impl MonitoringModule for Network {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.network.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements::host(&["proc"])
     }
     fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -259,11 +276,27 @@ impl MonitoringModule for Docker {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.docker.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, c: &Config) -> Requirements {
         let mut req = Requirements::default();
-        // The socket is not under the host mount prefix — it is its own,
-        // deliberate, root-equivalent grant. See ADR-0010.
-        req.absolute_paths.push("/var/run/docker.sock".to_string());
+        // Derived from the configured endpoint, not hard-coded. A socket proxy
+        // — the recommended deployment — is reached over TCP and has no socket
+        // file at all, so demanding one would refuse the safest setup.
+        //
+        // The socket is deliberately not under the host mount prefix either: it
+        // is its own, root-equivalent grant. See ADR-0010.
+        let m = &c.modules.docker;
+        if let Some(endpoint) = parse_docker_endpoint(&m.endpoint, m.timeout.inner()) {
+            // A unix socket is a file as well as a service, and both are worth
+            // checking separately: "the socket file is not mounted" and "the
+            // daemon behind it is not answering" need different fixes.
+            if let EndpointKind::UnixSocket(path) = &endpoint.kind {
+                req.absolute_paths.push(path.clone());
+            }
+            req.endpoints.push(endpoint);
+        }
+        // Validation rejects any other scheme before this runs. If a malformed
+        // endpoint reached here, demanding nothing is the honest response —
+        // guessing at a socket path would check something the agent never uses.
         req
     }
     fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
@@ -275,9 +308,10 @@ impl MonitoringModule for Docker {
                 .scalar("timeout", m.timeout.as_telegraf())
                 .list("container_name_include", &m.container_include)
                 .list("container_name_exclude", &m.container_exclude)
-                // A stopped container disappears from the metrics rather than
-                // reporting zeros, which is the honest representation.
-                .scalar("container_state_include", vec!["running"])
+                // Running only by default. A stopped container then disappears
+                // from the metrics rather than reporting zeros, which is
+                // unambiguous — zeros look exactly like an idle container.
+                .scalar("container_state_include", m.container_states.clone())
                 .scalar("perdevice_include", vec!["cpu"])
                 .scalar("total_include", vec!["cpu", "blkio", "network"]),
         ]
@@ -301,7 +335,7 @@ impl MonitoringModule for Updates {
     fn enabled(&self, c: &Config) -> bool {
         c.modules.updates.enabled
     }
-    fn requirements(&self) -> Requirements {
+    fn requirements(&self, _c: &Config) -> Requirements {
         Requirements {
             // /usr is needed because /etc/os-release is a symlink into it, and a
             // mount set without it reports "not a Debian host" for a machine
@@ -385,9 +419,10 @@ mod tests {
     /// drops them all, so a module that needed one would silently not work.
     #[test]
     fn no_module_requires_a_capability() {
+        let cfg = crate::tests::config_with(|_| {});
         for module in crate::all_modules() {
             assert!(
-                module.requirements().capabilities.is_empty(),
+                module.requirements(&cfg).capabilities.is_empty(),
                 "{} requires a capability, which the hardening baseline drops",
                 module.id()
             );
@@ -399,8 +434,9 @@ mod tests {
     /// like part of the ordinary host mount.
     #[test]
     fn only_docker_requires_an_absolute_path() {
+        let cfg = crate::tests::config_with(|_| {});
         for module in crate::all_modules() {
-            let req = module.requirements();
+            let req = module.requirements(&cfg);
             if module.id() == "docker" {
                 assert_eq!(req.absolute_paths, vec!["/var/run/docker.sock".to_string()]);
                 assert!(req.host_paths.is_empty());
@@ -418,7 +454,7 @@ mod tests {
     /// so a mount set with /etc but not /usr reports "not a Debian host".
     #[test]
     fn the_updates_module_requires_usr_for_the_os_release_symlink() {
-        let req = Updates.requirements();
+        let req = Updates.requirements(&crate::tests::config_with(|_| {}));
         assert!(req.host_paths.contains(&"usr"), "got: {:?}", req.host_paths);
         assert!(req.debian_family_only);
     }

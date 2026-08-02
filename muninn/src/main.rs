@@ -45,6 +45,7 @@ use muninn_modules::RenderContext;
 
 mod cli;
 mod logging;
+mod probe;
 mod runtime_check;
 mod supervisor;
 

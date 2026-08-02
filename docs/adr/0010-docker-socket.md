@@ -33,6 +33,32 @@ muninn only ever issues read calls. The socket has no way of knowing that.
    the annotated example config, next to `enabled: false` — not in an appendix
    nobody reaches.
 
+## Implementation (WP9)
+
+Two details were settled while implementing point 5, and both changed the design
+rather than merely realising it.
+
+**The reachability check is a request, not a connection.** muninn issues
+`GET /_ping` and requires `200`. A connect alone would pass against a socket
+proxy that is running with `PING: 0` — it accepts the connection and denies the
+call — and that is precisely the deployment this ADR recommends. Checking the
+weaker thing would have left the recommended path the least-verified one.
+
+**Requirements are derived from the endpoint, not fixed.** The first
+implementation declared `/var/run/docker.sock` as a required file whatever the
+configuration said, so a `tcp://` proxy endpoint failed a precondition for a file
+that deployment deliberately does not have. The recommended configuration was the
+one that could not start. Requirements now come from the configured endpoint: a
+unix endpoint demands the socket file *and* a live service, a TCP endpoint
+demands only the service.
+
+**A direct mount also needs group membership.** muninn runs as uid 10001; the
+socket is owned by `root:docker`. Mounting it is not sufficient — the container
+needs `group_add` with the socket's GID, which is host-specific and therefore
+makes the compose file host-specific. The proxy needs none of this. That is a
+practical argument for the recommendation on top of the security one, and it was
+only visible once the module was run for real.
+
 ## Consequences
 
 - The common case costs nothing: a host with no containers, or an operator who

@@ -23,6 +23,8 @@ use muninn_health::{HealthState, State};
 use muninn_modules::RenderContext;
 use muninn_telegraf::process::Telegraf;
 use muninn_telegraf::{validator, version};
+
+use crate::runtime_check;
 use tracing::{error, info, warn};
 
 /// Move to `state`, logging the transition.
@@ -85,9 +87,41 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
     });
 
     transition(&state, State::CheckingRuntime);
+
     let telegraf_version = version::check(&binary)?;
     state.update(|d| d.telegraf_version = Some(telegraf_version.clone()));
     info!(version = telegraf_version, binary = %binary.display(), "Telegraf found");
+
+    // The preconditions the enabled modules declare: mounts, socket paths, a
+    // writable runtime directory, and — for anything with an endpoint — that
+    // the service is actually answering.
+    //
+    // Refusing to start is the point. Every one of these failures has a
+    // plausible-looking symptom rather than an obvious one: metrics about the
+    // container instead of the host, or an empty container list that reads as
+    // "nothing running". Starting anyway would publish confident wrong numbers,
+    // which is the failure mode muninn exists to prevent.
+    let findings = runtime_check::preconditions(&config);
+    for f in &findings {
+        match f.severity {
+            runtime_check::Severity::Error => {
+                error!(subject = %f.subject, "{}", f.message);
+            }
+            runtime_check::Severity::Warning => {
+                warn!(subject = %f.subject, "{}", f.message);
+            }
+        }
+    }
+    if runtime_check::has_errors(&findings) {
+        let count = findings
+            .iter()
+            .filter(|f| f.severity == runtime_check::Severity::Error)
+            .count();
+        return Err(MuninnError::runtime(format!(
+            "{count} runtime precondition(s) not met — see the errors above, or run \
+             `muninn check-runtime` for the full report"
+        )));
+    }
 
     transition(&state, State::GeneratingTelegrafConfiguration);
     let generation_started = Instant::now();

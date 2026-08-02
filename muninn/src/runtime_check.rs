@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use muninn_core::Config;
-use muninn_modules::Requirements;
+use muninn_modules::{Endpoint, Requirements};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -53,13 +53,26 @@ impl Finding {
     }
 }
 
-/// Run every check against `config`.
+/// Run every check against `config` — what `muninn check-runtime` reports.
 pub fn check(config: &Config) -> Vec<Finding> {
+    let mut findings = preconditions(config);
+    check_listeners(config, &mut findings);
+    findings
+}
+
+/// The subset `muninn run` can check of itself, at startup.
+///
+/// Everything except the listener binds. By the time this runs, muninn's health
+/// server already holds `health.listen`, so a bind check would report muninn's
+/// own listener as an occupied port and refuse to start over it. Telegraf's
+/// Prometheus port is not skipped for lack of value but for consistency: it is
+/// bound moments later by Telegraf itself, and a failure there is reported with
+/// the real error rather than a rehearsal of it.
+pub fn preconditions(config: &Config) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     check_host_mount(config, &mut findings);
     check_modules(config, &mut findings);
-    check_listeners(config, &mut findings);
     check_runtime_directory(config, &mut findings);
 
     findings
@@ -162,9 +175,33 @@ fn check_modules(config: &Config, findings: &mut Vec<Finding>) {
             }
         }
 
+        for endpoint in &req.endpoints {
+            check_endpoint(module, endpoint, findings);
+        }
+
         if req.debian_family_only {
             check_debian_family(module, prefix, findings);
         }
+    }
+}
+
+/// A service a module has to talk to must actually answer.
+///
+/// This is the check that makes enabling a module a decision with a verdict.
+/// Without it, an unreachable Docker endpoint produces a Telegraf that starts,
+/// stays up, and reports no containers — which is also what a host with no
+/// containers looks like. An operator watching a dashboard cannot tell the two
+/// apart, so the difference has to be settled before start, not after.
+fn check_endpoint(module: &'static str, endpoint: &Endpoint, findings: &mut Vec<Finding>) {
+    if let Err(reason) = crate::probe::docker(endpoint) {
+        findings.push(Finding::error(
+            module,
+            format!(
+                "{reason}. The {module} module is enabled, so muninn will not start with an \
+                 endpoint it cannot reach — an unreachable one looks exactly like a host with \
+                 nothing to report"
+            ),
+        ));
     }
 }
 
@@ -564,6 +601,80 @@ outputs:
                 "a finding should name what is missing: {f:?}"
             );
         }
+    }
+
+    /// The check WP9 exists for. An unreachable endpoint has to be a refusal,
+    /// because the alternative — a Telegraf that starts and reports no
+    /// containers — is indistinguishable from a host that runs none.
+    ///
+    /// Over TCP rather than a unix socket so the test asserts the same thing on
+    /// every platform; the unix path is covered by the container test against a
+    /// real Docker socket.
+    #[test]
+    fn an_unreachable_docker_endpoint_is_an_error() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+
+        let host = fake_host();
+        let mut cfg = config(&base(""));
+        cfg.runtime.host_mount_prefix = Some(slashed(host.path()));
+        cfg.modules.docker.enabled = true;
+        cfg.modules.docker.endpoint = format!("tcp://127.0.0.1:{port}");
+
+        let findings = check(&cfg);
+        assert!(
+            subjects(&findings, Severity::Error).contains(&"docker"),
+            "an unreachable endpoint must refuse the start: {findings:#?}"
+        );
+        let f = findings.iter().find(|f| f.subject == "docker").unwrap();
+        assert!(
+            f.message.contains("nothing to report"),
+            "should say why silence is not an acceptable answer: {}",
+            f.message
+        );
+    }
+
+    /// ...and the same endpoint is nobody's business while the module is off.
+    #[test]
+    fn a_disabled_docker_module_is_not_probed() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+
+        let host = fake_host();
+        let mut cfg = config(&base(""));
+        cfg.runtime.host_mount_prefix = Some(slashed(host.path()));
+        cfg.modules.docker.enabled = false;
+        cfg.modules.docker.endpoint = format!("tcp://127.0.0.1:{port}");
+
+        assert!(
+            !subjects(&check(&cfg), Severity::Error).contains(&"docker"),
+            "a module nobody enabled must not be able to fail a startup"
+        );
+    }
+
+    /// `run` cannot use the full check: by the time it gets there muninn's own
+    /// health server holds `health.listen`, and a bind test would report
+    /// muninn's own listener as an occupied port and refuse to start over it.
+    #[test]
+    fn preconditions_do_not_include_the_listener_binds() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+
+        let host = fake_host();
+        let mut cfg = config(&base(""));
+        cfg.runtime.host_mount_prefix = Some(slashed(host.path()));
+        cfg.health.listen = addr;
+
+        assert!(
+            !has_errors(&preconditions(&cfg)),
+            "startup must not fail on the port it is about to serve on"
+        );
+        assert!(
+            has_errors(&check(&cfg)),
+            "but check-runtime still reports it: that is its job"
+        );
     }
 
     /// Container detection is best-effort, so it must not panic or block

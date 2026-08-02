@@ -252,12 +252,61 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
         }
         // unix:// and tcp:// are what the plugin accepts. Anything else is a
         // typo that would surface as a connection error after startup.
-        if !m.docker.endpoint.starts_with("unix://") && !m.docker.endpoint.starts_with("tcp://") {
-            return Err(MuninnError::config(format!(
-                "modules.docker.endpoint '{}' must start with unix:// or tcp://",
-                m.docker.endpoint
-            )));
+        let rest = m
+            .docker
+            .endpoint
+            .strip_prefix("unix://")
+            .or_else(|| m.docker.endpoint.strip_prefix("tcp://"));
+        match rest {
+            None => {
+                return Err(MuninnError::config(format!(
+                    "modules.docker.endpoint '{}' must start with unix:// or tcp://",
+                    m.docker.endpoint
+                )));
+            }
+            // A bare scheme passes the prefix test and names nothing. Left
+            // unchecked it reaches the runtime layer, which has no address to
+            // probe and so reports no problem — the module would then be
+            // enabled and silently collect nothing.
+            Some("") => {
+                return Err(MuninnError::config(format!(
+                    "modules.docker.endpoint is '{}' with nothing after the scheme. Give a socket \
+                     path (unix:///var/run/docker.sock) or an address (tcp://proxy:2375)",
+                    m.docker.endpoint
+                )));
+            }
+            Some(_) => {}
         }
+
+        // Telegraf's own vocabulary. A typo here is not rejected by the plugin —
+        // an unknown state simply matches no container, so the module would run
+        // and report nothing, which reads as "no containers".
+        const STATES: [&str; 7] = [
+            "created",
+            "restarting",
+            "running",
+            "removing",
+            "paused",
+            "exited",
+            "dead",
+        ];
+        if m.docker.container_states.is_empty() {
+            return Err(MuninnError::config(
+                "modules.docker.container_states must not be empty — no state selected means no \
+                 container is ever collected"
+                    .to_string(),
+            ));
+        }
+        for state in &m.docker.container_states {
+            if !STATES.contains(&state.as_str()) {
+                return Err(MuninnError::config(format!(
+                    "modules.docker.container_states contains '{state}', which is not a Docker \
+                     container state. Valid: {}",
+                    STATES.join(", ")
+                )));
+            }
+        }
+
         warnings.push(
             "the docker module is enabled: access to the Docker socket is equivalent to root \
              on the host, and mounting it read-only does not change that. \

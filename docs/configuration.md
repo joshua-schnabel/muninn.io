@@ -282,7 +282,7 @@ modules:
 | `disks` | off | `exclude_filesystems`, `exclude_mountpoints`, `include_mountpoints` | host `/proc`, `/hostfs` |
 | `disk_io` | off | `include_devices`, `exclude_devices` | host `/proc`, `/sys` |
 | `network` | off | `include_interfaces`, `exclude_interfaces` | host `/proc` |
-| `docker` | off | `endpoint`, `container_include`, `container_exclude`, `timeout` | Docker socket |
+| `docker` | off | `endpoint`, `container_include`, `container_exclude`, `container_states`, `timeout` | Docker socket |
 | `updates` | off | `interval`, `security_only_metric` | host `/hostfs` (same mount as the rest) |
 
 ### Include and exclude
@@ -320,6 +320,16 @@ package data. A failed check reports the failure and omits the counts.
 ### `modules.docker`
 
 Off by default, and that is a security decision rather than a convenience one.
+Enabling this module with an endpoint that does not answer is a **startup
+failure** (exit `12`), not an empty metric set. muninn issues one `GET /_ping`
+against `endpoint` before it starts and requires a `200`. The reason is that a
+Docker module collecting nothing is indistinguishable from a host running no
+containers, and a monitoring system must not leave that ambiguous.
+
+`container_states` selects which containers are collected (default `[running]`).
+Add `exited` to keep reporting containers that stopped — see
+[`modules.md`](modules.md#docker) for what that costs.
+
 Access to the Docker socket is equivalent to root on the host, and mounting it
 `:ro` does not change that — it protects the socket file, not the API. See
 [ADR-0010](adr/0010-docker-socket.md) and [`modules.md`](modules.md#docker) for a
