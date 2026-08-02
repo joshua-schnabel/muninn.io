@@ -89,7 +89,7 @@ fn dispatch(args: &Cli) -> muninn_core::Result<()> {
         }
         Command::Run => run(args),
         Command::CheckRuntime => not_yet("check-runtime", "WP8 (container image)"),
-        Command::Healthcheck => not_yet("healthcheck", "WP8 (container image)"),
+        Command::Healthcheck => healthcheck(args),
     }
 }
 
@@ -184,6 +184,66 @@ fn render_config(
     Ok(())
 }
 
+/// Query the local health endpoint, for a container `HEALTHCHECK`.
+///
+/// Reads the configuration only to learn where to look — it does not validate
+/// beyond that, because a health check that fails on a configuration problem
+/// would report the container unhealthy for a reason a restart cannot fix.
+///
+/// A raw request rather than an HTTP client: this runs on every health-check
+/// interval inside the container, and one endpoint on loopback does not justify
+/// pulling in a TLS stack and a connection pool.
+fn healthcheck(args: &Cli) -> muninn_core::Result<()> {
+    use std::io::{Read as _, Write as _};
+
+    let overrides =
+        Overrides::from_env().merge_cli(args.log_level.clone(), args.log_format.clone());
+    let (cfg, _) = config::load_and_resolve(&args.config, &overrides)?;
+
+    let mut stream =
+        std::net::TcpStream::connect_timeout(&cfg.health.listen, std::time::Duration::from_secs(3))
+            .map_err(|e| {
+                MuninnError::runtime(format!(
+                    "cannot reach the health endpoint on {}: {e}",
+                    cfg.health.listen
+                ))
+            })?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .ok();
+
+    stream
+        .write_all(b"GET /health/ready HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .map_err(|e| MuninnError::runtime(format!("health request failed: {e}")))?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|e| MuninnError::runtime(format!("health response failed: {e}")))?;
+
+    let status = response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|c| c.parse::<u16>().ok())
+        .ok_or_else(|| MuninnError::runtime("health endpoint returned no status line"))?;
+
+    if status == 200 {
+        println!("ready");
+        Ok(())
+    } else {
+        // Non-zero so Docker marks the container unhealthy. The body says which
+        // state it is in, which is the useful part in `docker inspect`.
+        let body = response
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b)
+            .unwrap_or("");
+        Err(MuninnError::runtime(format!(
+            "not ready (HTTP {status}): {}",
+            body.trim()
+        )))
+    }
+}
+
 /// The full lifecycle. This is what the container runs.
 fn run(args: &Cli) -> muninn_core::Result<()> {
     let cfg = load(args)?;
@@ -193,7 +253,7 @@ fn run(args: &Cli) -> muninn_core::Result<()> {
     // `render-config` output that someone is piping into a file.
     logging::init(&cfg.logging);
 
-    let state = supervisor::SharedState::new();
+    let health = muninn_health::HealthState::new();
 
     // A current-thread runtime would be enough for one child and a few tasks,
     // but the health server (WP7) and the output forwarders are genuinely
@@ -202,7 +262,36 @@ fn run(args: &Cli) -> muninn_core::Result<()> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| MuninnError::internal(format!("cannot start the async runtime: {e}")))?;
 
-    runtime.block_on(supervisor::run(cfg, state))
+    runtime.block_on(async move {
+        // Bind before spawning so a port collision is reported as a startup
+        // failure rather than as a log line from a task nobody is watching.
+        let listener = muninn_health::bind(cfg.health.listen).await.map_err(|e| {
+            MuninnError::runtime(format!(
+                "cannot bind the health listener on {}: {e}. In a container this must be                  0.0.0.0 — a published port never reaches the container's loopback",
+                cfg.health.listen
+            ))
+        })?;
+
+        // The server is stopped by dropping this sender, which happens when the
+        // supervisor returns — so shutdown needs no separate signalling path.
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_state = muninn_health::ServerState {
+            health: health.clone(),
+            muninn_version: env!("CARGO_PKG_VERSION"),
+        };
+        let server = tokio::spawn(async move {
+            let _ = muninn_health::serve_on(listener, server_state, async {
+                let _ = stop_rx.await;
+            })
+            .await;
+        });
+
+        let result = supervisor::run(cfg, health).await;
+
+        drop(stop_tx);
+        let _ = server.await;
+        result
+    })
 }
 
 fn not_yet(command: &str, where_: &str) -> muninn_core::Result<()> {

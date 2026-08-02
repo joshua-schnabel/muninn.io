@@ -44,9 +44,18 @@ if [ ! -f "$WORK/telegraf/telegraf" ]; then
     docker rm -f "$cid" >/dev/null
 fi
 
+# Build and test parallelism, deliberately modest.
+#
+# rustc holds a lot of memory per codegen job, and this runs *alongside* whatever
+# the developer's machine is already doing — an editor, a host cargo build,
+# Docker Desktop's own VM. Left unbounded it has taken the machine down: the
+# container gets OOM-killed with exit 137, and on a bad day so does the host.
+# Two jobs is slower and finishes.
+JOBS="${MUNINN_LINUX_JOBS:-2}"
+
 # A separate target directory: sharing one with the host build means cargo
 # rebuilds the whole workspace on every switch between platforms.
-echo "→ running the test suite on Linux (${RUST_IMAGE})"
+echo "→ running the test suite on Linux (${RUST_IMAGE}, ${JOBS} jobs)"
 docker run --rm \
     -v "$(native "$ROOT"):/work" \
     -v "$(native "$WORK/telegraf"):/tg" \
@@ -54,6 +63,7 @@ docker run --rm \
     -w /work \
     -e CARGO_TARGET_DIR=/target \
     -e MUNINN_TELEGRAF_BIN=/tg/telegraf \
+    -e CARGO_BUILD_JOBS="$JOBS" \
     "$RUST_IMAGE" \
     bash -c "
         set -e
@@ -62,5 +72,5 @@ docker run --rm \
         # Telegraf without killing muninn.
         apt-get update -qq >/dev/null 2>&1
         apt-get install -y -qq procps >/dev/null 2>&1
-        cargo test ${*:---workspace} --locked
+        cargo test ${*:---workspace} --locked -- --test-threads=2
     "

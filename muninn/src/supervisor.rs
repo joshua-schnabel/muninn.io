@@ -15,135 +15,29 @@
 //! `docs/adr/0002-supervisor-no-restart-loop.md`.
 
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Instant;
 
 use muninn_core::Config;
 use muninn_core::error::{MuninnError, Result};
+use muninn_health::{HealthState, State};
 use muninn_modules::RenderContext;
 use muninn_telegraf::process::Telegraf;
 use muninn_telegraf::{validator, version};
 use tracing::{error, info, warn};
 
-/// Where muninn is in its life.
+/// Move to `state`, logging the transition.
 ///
-/// The order matches the startup sequence, which is what makes
-/// `docs/architecture.md`'s diagram checkable against the code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum State {
-    Starting = 0,
-    LoadingConfiguration = 1,
-    ValidatingConfiguration = 2,
-    CheckingRuntime = 3,
-    GeneratingTelegrafConfiguration = 4,
-    ValidatingTelegrafConfiguration = 5,
-    StartingTelegraf = 6,
-    Ready = 7,
-    Degraded = 8,
-    Stopping = 9,
-    Failed = 10,
-    Stopped = 11,
-}
-
-// `is_ready` and `is_live` have no caller in the binary yet — the health server
-// that asks these questions lands in WP7. They are defined and tested here
-// rather than there because they are properties of the state machine, and
-// deciding them next to the states is what keeps readiness from becoming three
-// call sites that disagree.
-#[allow(dead_code)]
-impl State {
-    /// Whether `/health/ready` should succeed.
-    ///
-    /// `Degraded` counts, and that is deliberate. If a failing updates module
-    /// made muninn unready, an orchestrator would pull the container out of
-    /// service — and stop collecting CPU, memory, disk and network metrics that
-    /// were working perfectly — because it could not count pending packages.
-    ///
-    /// The rule stays narrow because `Degraded` is only reachable while Telegraf
-    /// is running and collecting. Anything that stops collection is `Failed`.
-    pub fn is_ready(&self) -> bool {
-        matches!(self, State::Ready | State::Degraded)
-    }
-
-    /// Whether muninn's own loop is responsive.
-    ///
-    /// Deliberately a different question from readiness: a brief InfluxDB outage
-    /// must not fail liveness, because muninn is fine and restarting would help
-    /// nothing.
-    pub fn is_live(&self) -> bool {
-        !matches!(self, State::Failed | State::Stopped)
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            State::Starting => "starting",
-            State::LoadingConfiguration => "loading_configuration",
-            State::ValidatingConfiguration => "validating_configuration",
-            State::CheckingRuntime => "checking_runtime",
-            State::GeneratingTelegrafConfiguration => "generating_telegraf_configuration",
-            State::ValidatingTelegrafConfiguration => "validating_telegraf_configuration",
-            State::StartingTelegraf => "starting_telegraf",
-            State::Ready => "ready",
-            State::Degraded => "degraded",
-            State::Stopping => "stopping",
-            State::Failed => "failed",
-            State::Stopped => "stopped",
-        }
-    }
-
-    fn from_u8(v: u8) -> State {
-        match v {
-            0 => State::Starting,
-            1 => State::LoadingConfiguration,
-            2 => State::ValidatingConfiguration,
-            3 => State::CheckingRuntime,
-            4 => State::GeneratingTelegrafConfiguration,
-            5 => State::ValidatingTelegrafConfiguration,
-            6 => State::StartingTelegraf,
-            7 => State::Ready,
-            8 => State::Degraded,
-            9 => State::Stopping,
-            10 => State::Failed,
-            _ => State::Stopped,
-        }
-    }
-}
-
-/// The state, shared with the health server.
-///
-/// An atomic rather than a lock: the health handler reads it on every request
-/// and must never be able to block the supervisor, or a slow reader would delay
-/// the shutdown it is supposed to observe.
-#[derive(Debug, Clone)]
-pub struct SharedState(Arc<AtomicU8>);
-
-impl SharedState {
-    pub fn new() -> Self {
-        SharedState(Arc::new(AtomicU8::new(State::Starting as u8)))
-    }
-
-    pub fn get(&self) -> State {
-        State::from_u8(self.0.load(Ordering::Acquire))
-    }
-
-    pub fn set(&self, state: State) {
-        let previous = self.get();
-        if previous != state {
-            info!(from = previous.as_str(), to = state.as_str(), "state");
-        }
-        self.0.store(state as u8, Ordering::Release);
-    }
-}
-
-impl Default for SharedState {
-    fn default() -> Self {
-        Self::new()
+/// The logging lives here rather than in `HealthState::set` so the library stays
+/// free of an opinion about how transitions are reported.
+fn transition(health: &HealthState, to: State) {
+    let from = health.set(to);
+    if from != to {
+        info!(from = from.as_str(), to = to.as_str(), "state");
     }
 }
 
 /// Run the full lifecycle: generate, verify, start, supervise, stop.
-pub async fn run(config: Config, state: SharedState) -> Result<()> {
+pub async fn run(config: Config, state: HealthState) -> Result<()> {
     // Signal handlers are installed BEFORE any startup work, and this ordering
     // is load-bearing rather than tidy.
     //
@@ -164,24 +58,57 @@ pub async fn run(config: Config, state: SharedState) -> Result<()> {
     // Before anything is written: is this the Telegraf muninn generates
     // configuration for? A mismatch here is cheaper than a config that parses
     // and means something subtly different.
-    state.set(State::CheckingRuntime);
+    // What is enabled is worth reporting before anything can fail, so `/status`
+    // is informative even while muninn is still starting.
+    let enabled_modules: Vec<String> = config
+        .modules
+        .enabled_names()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let enabled_outputs: Vec<String> = config
+        .outputs
+        .influxdb
+        .iter()
+        .map(|_| "influxdb".to_string())
+        .chain(
+            config
+                .outputs
+                .prometheus
+                .iter()
+                .map(|_| "prometheus".to_string()),
+        )
+        .collect();
+    state.update(|d| {
+        d.modules = enabled_modules;
+        d.outputs = enabled_outputs;
+    });
+
+    transition(&state, State::CheckingRuntime);
     let telegraf_version = version::check(&binary)?;
+    state.update(|d| d.telegraf_version = Some(telegraf_version.clone()));
     info!(version = telegraf_version, binary = %binary.display(), "Telegraf found");
 
-    state.set(State::GeneratingTelegrafConfiguration);
+    transition(&state, State::GeneratingTelegrafConfiguration);
+    let generation_started = Instant::now();
     let rendered = muninn_telegraf::render(
         &muninn_modules::build(&RenderContext::new(&config)),
         env!("CARGO_PKG_VERSION"),
     );
     let config_path = Path::new(&config.runtime.generated_config_path);
     write_config(config_path, &rendered)?;
+    let generation = generation_started.elapsed();
+    state.update(|d| d.config_generation = Some(generation));
     info!(path = %config_path.display(), bytes = rendered.len(), "wrote Telegraf configuration");
 
-    state.set(State::ValidatingTelegrafConfiguration);
+    transition(&state, State::ValidatingTelegrafConfiguration);
+    let validation_started = Instant::now();
     validator::check_config(&binary, config_path)?;
+    let validation = validation_started.elapsed();
+    state.update(|d| d.telegraf_validation = Some(validation));
     info!("Telegraf accepted the generated configuration");
 
-    state.set(State::StartingTelegraf);
+    transition(&state, State::StartingTelegraf);
     let host_env = config.runtime.host_env();
     let mut telegraf = Telegraf::spawn(&binary, config_path, &host_env)?;
 
@@ -189,7 +116,10 @@ pub async fn run(config: Config, state: SharedState) -> Result<()> {
     // initialises without starting, so up to this point nothing has proved the
     // process can actually run.
     confirm_running(&mut telegraf, config.runtime.telegraf_start_timeout.inner()).await?;
-    state.set(State::Ready);
+    // The PID is what makes `muninn_telegraf_running` true, so it is recorded
+    // only once the process is confirmed — not at spawn time.
+    state.update(|d| d.telegraf_pid = Some(telegraf.pid()));
+    transition(&state, State::Ready);
     info!(pid = telegraf.pid(), "muninn is ready");
 
     supervise(&mut telegraf, &state, &config, &mut signals).await
@@ -198,7 +128,7 @@ pub async fn run(config: Config, state: SharedState) -> Result<()> {
 /// Wait for a stop signal, or for Telegraf to die first.
 async fn supervise(
     telegraf: &mut Telegraf,
-    state: &SharedState,
+    state: &HealthState,
     config: &Config,
     signals: &mut StopSignals,
 ) -> Result<()> {
@@ -207,7 +137,11 @@ async fn supervise(
         // this.
         exit = telegraf.wait() => {
             let exit = exit?;
-            state.set(State::Failed);
+            state.update(|d| {
+                d.telegraf_pid = None;
+                d.last_telegraf_exit = Some(exit.describe());
+            });
+            transition(state, State::Failed);
             error!(
                 pid = telegraf.pid(),
                 status = %exit.describe(),
@@ -225,16 +159,20 @@ async fn supervise(
             info!(signal, "stop signal received");
             // Readiness goes false first, so orchestrators and load balancers
             // stop counting on this instance before anything is torn down.
-            state.set(State::Stopping);
+            transition(state, State::Stopping);
 
             let exit = telegraf
                 .shutdown(config.runtime.shutdown_grace_period.inner())
                 .await?;
 
+            state.update(|d| {
+                d.telegraf_pid = None;
+                d.last_telegraf_exit = Some(exit.describe());
+            });
             if !exit.is_clean_shutdown() {
                 warn!(status = %exit.describe(), "Telegraf did not stop cleanly");
             }
-            state.set(State::Stopped);
+            transition(state, State::Stopped);
             Ok(())
         }
     }
@@ -373,109 +311,24 @@ fn write_config(path: &Path, contents: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn readiness_holds_only_where_telegraf_is_collecting() {
-        assert!(State::Ready.is_ready());
-        assert!(
-            State::Degraded.is_ready(),
-            "a failing non-critical module must not take a working agent out of service"
-        );
-        for s in [
-            State::Starting,
-            State::LoadingConfiguration,
-            State::ValidatingConfiguration,
-            State::CheckingRuntime,
-            State::GeneratingTelegrafConfiguration,
-            State::ValidatingTelegrafConfiguration,
-            State::StartingTelegraf,
-            State::Stopping,
-            State::Failed,
-            State::Stopped,
-        ] {
-            assert!(!s.is_ready(), "{s:?} must not report ready");
-        }
-    }
-
-    /// Liveness and readiness answer different questions. Everything before
-    /// `Ready` is live — muninn is working, it is just not finished starting —
-    /// and a restart would only put it back at the beginning.
-    #[test]
-    fn liveness_is_a_different_question_from_readiness() {
-        for s in [
-            State::Starting,
-            State::CheckingRuntime,
-            State::StartingTelegraf,
-            State::Ready,
-            State::Degraded,
-            State::Stopping,
-        ] {
-            assert!(s.is_live(), "{s:?} should be live");
-        }
-        assert!(!State::Failed.is_live());
-        assert!(!State::Stopped.is_live());
-    }
-
-    #[test]
-    fn every_state_has_a_distinct_stable_name() {
-        let all = [
-            State::Starting,
-            State::LoadingConfiguration,
-            State::ValidatingConfiguration,
-            State::CheckingRuntime,
-            State::GeneratingTelegrafConfiguration,
-            State::ValidatingTelegrafConfiguration,
-            State::StartingTelegraf,
-            State::Ready,
-            State::Degraded,
-            State::Stopping,
-            State::Failed,
-            State::Stopped,
-        ];
-        let mut seen = std::collections::HashSet::new();
-        for s in all {
-            assert!(
-                seen.insert(s.as_str()),
-                "{s:?} shares a name with another state"
-            );
-            assert_eq!(
-                State::from_u8(s as u8),
-                s,
-                "{s:?} does not survive the round trip through the shared atomic"
-            );
-        }
-        assert_eq!(
-            seen.len(),
-            12,
-            "the documented state machine has twelve states"
-        );
-    }
-
-    #[test]
-    fn shared_state_starts_at_starting_and_is_neither_ready_nor_dead() {
-        let s = SharedState::new();
-        assert_eq!(s.get(), State::Starting);
-        assert!(!s.get().is_ready());
-        assert!(s.get().is_live());
-    }
-
-    #[test]
-    fn shared_state_is_visible_through_a_clone() {
-        // The health server holds a clone; if the two diverged, readiness would
-        // report a state the supervisor has already left.
-        let a = SharedState::new();
-        let b = a.clone();
-        a.set(State::Ready);
-        assert_eq!(b.get(), State::Ready);
-        b.set(State::Stopping);
-        assert_eq!(a.get(), State::Stopping);
-    }
+    // The state-machine tests moved to `muninn-health` with the state itself.
+    // What is left here is what belongs to the supervisor: writing the generated
+    // configuration.
 
     #[test]
     fn writing_the_configuration_creates_its_directory() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested/deeper/telegraf.conf");
-        write_config(&path, "[agent]\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[agent]\n");
+        write_config(
+            &path, "[agent]
+",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[agent]
+"
+        );
     }
 
     /// The generated file holds resolved secrets. On a shared tmpfs a
@@ -486,19 +339,47 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telegraf.conf");
-        write_config(&path, "token = \"secret\"\n").unwrap();
+        write_config(
+            &path,
+            "token = \"secret\"
+",
+        )
+        .unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "mode {mode:o} is readable by others");
     }
 
+    /// The file is regenerated from scratch on every start; a leftover from a
+    /// previous configuration would be worse than no file at all.
     #[test]
     fn writing_the_configuration_replaces_a_previous_one() {
-        // The file is regenerated from scratch on every start; a leftover from a
-        // previous configuration would be worse than no file at all.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telegraf.conf");
-        write_config(&path, "old\n").unwrap();
-        write_config(&path, "new\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+        write_config(
+            &path, "old
+",
+        )
+        .unwrap();
+        write_config(
+            &path, "new
+",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "new
+"
+        );
+    }
+
+    /// A transition logs and moves; the state the health server reads is the one
+    /// the supervisor last set.
+    #[test]
+    fn a_transition_moves_the_shared_state() {
+        let health = HealthState::new();
+        let observer = health.clone();
+        transition(&health, State::Ready);
+        assert_eq!(observer.get(), State::Ready);
+        assert!(observer.is_ready());
     }
 }

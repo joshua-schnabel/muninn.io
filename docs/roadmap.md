@@ -16,7 +16,7 @@ conversation.
 | [WP4](#wp4--base-modules) | Base modules | ✅ |
 | [WP5](#wp5--outputs) | Outputs | ✅ |
 | [WP6](#wp6--telegraf-process-management) | Telegraf process management | ✅ |
-| [WP7](#wp7--health-server-and-state-machine) | Health server and state machine | ⬜ |
+| [WP7](#wp7--health-server-and-state-machine) | Health server and state machine | ✅ |
 | [WP8](#wp8--container-image) | Container image | ⬜ |
 | [WP9](#wp9--docker-module) | Docker module | ⬜ |
 | [WP10](#wp10--updates-module) | Updates module | ⬜ |
@@ -314,12 +314,20 @@ startup is delivered as soon as the supervise loop first polls.
 
 ## WP7 — Health server and state machine
 
+**Status: complete, 2026-08-02.** 223 tests.
+
 **Goal.** Make muninn's state observable and correct.
 
-**Touches** `crates/muninn-health/src/{server,state,metrics}.rs`,
-`muninn/src/supervisor/`.
+**A structural move.** `State` and `SharedState` were in the binary crate, where
+a library cannot reach them. They now live in `muninn-health` as `HealthState`,
+next to the endpoints that read them — the supervisor writes, the handlers read,
+and the binary wires the two. That also keeps readiness from becoming three call
+sites that might disagree.
 
-**Done when**
+**Touches** `crates/muninn-health/src/{lib,server,state,metrics}.rs`,
+`muninn/src/{main,supervisor}.rs`, `muninn/tests/lifecycle_test.rs`.
+
+**Done when** — all met:
 
 1. The twelve states and their transitions from `docs/architecture.md` are
    implemented, with a test per legal transition and per rejected one.
@@ -332,7 +340,18 @@ startup is delivered as soon as the supervise loop first polls.
 5. `/metrics` serves the `muninn_*` families, with no high-cardinality labels: no
    error strings, no paths, no PIDs.
 6. A failing updates module produces `Degraded`, not `Failed`; a dead Telegraf
-   produces `Failed`.
+   produces `Failed`. The transition and its readiness consequence are
+   implemented and tested; the *module* that triggers it lands in WP10.
+
+Plus two the original list did not have, both worth stating because they are
+what makes the endpoints trustworthy:
+
+7. ✅ The endpoints are exercised against the **running binary**, not a
+   hand-set state — `the_health_endpoints_follow_the_real_lifecycle` watches
+   liveness come up before readiness and reads the durations the real startup
+   path recorded.
+8. ✅ `muninn healthcheck` fails when nothing is running and succeeds once the
+   agent is ready, which is the contract Docker's `HEALTHCHECK` depends on.
 
 **Brief:** §13, §16, §22, §26 step 8.
 
