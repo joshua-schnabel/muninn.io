@@ -12,7 +12,7 @@ conversation.
 | [WP0](#wp0--design-package) | Design package | ✅ |
 | [WP1](#wp1--host-update-spike) | Host update spike | ✅ |
 | [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ✅ |
-| [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ⬜ |
+| [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ✅ |
 | [WP4](#wp4--base-modules) | Base modules | ⬜ |
 | [WP5](#wp5--outputs) | Outputs | ⬜ |
 | [WP6](#wp6--telegraf-process-management) | Telegraf process management | ⬜ |
@@ -170,28 +170,36 @@ offending key**.
 
 ## WP3 — Telegraf model and renderer
 
-**Goal.** Turn the normalised model into byte-identical, valid Telegraf TOML.
+**Status: complete, 2026-08-02.** 29 tests, 95 % line coverage in
+`muninn-telegraf`.
 
-**Touches** `crates/muninn-telegraf/src/{model,renderer}.rs`, `muninn/src/cli.rs`
-(`render-config`).
+**Goal.** Turn a typed model into byte-identical, valid Telegraf TOML.
 
-**Done when**
+**Scope corrected.** As originally written, this package listed two criteria it
+could not possibly meet: rendering `muninn.example.yaml` and shipping
+`muninn render-config` both need the modules (WP4) and outputs (WP5) that
+produce the plugin instances. There is nothing to render until those exist.
+Both moved to [WP5](#wp5--outputs), where the whole pipeline first has an
+end-to-end result — and where matching the Telegraf-verified reference config
+becomes the real milestone.
 
-1. `PluginInstance` keeps scalars in declaration order and sub-tables separately;
-   the renderer emits scalars first and sub-tables last.
-2. `ordering-broken.conf` is a regression test: the renderer can never produce
-   that shape. Note it passes `telegraf config check` — the test asserts on the
-   rendered bytes, not on Telegraf's verdict.
-3. Rendering the same config twice produces identical bytes; module order,
-   field order and whitespace are all stable, with no timestamps or generated
-   identifiers.
-4. Rendering `config/muninn.example.yaml` matches
-   `docs/reference/telegraf.reference.conf`.
-5. Escaping is centralised and tested against paths and globs containing spaces,
-   `"`, `\` and non-ASCII characters.
-6. `muninn render-config` writes to stdout or a named file, redacts secrets by
-   default, and starts nothing.
-7. No module builds TOML with `format!`.
+**Touches** `crates/muninn-telegraf/src/{model,renderer}.rs`.
+
+**Done when** — all met:
+
+1. ✅ `PluginInstance` keeps scalars and sub-tables in separate fields, and the
+   renderer always emits scalars first. The rule is enforced by the type, not by
+   convention: a scalar added *after* a sub-table still renders before it.
+2. ✅ The broken ordering is a property test over the rendered bytes — Telegraf
+   cannot be the judge, since `config check` accepts both shapes.
+3. ✅ Rendering twice is byte-identical, and insertion order does not change the
+   output.
+4. ✅ Escaping is centralised in `TomlValue::render` and tested against quotes,
+   backslashes, tabs, newlines, non-ASCII and spaces — including an injection
+   attempt that tries to close its own string and append `[[inputs.exec]]`.
+5. ✅ Merging: instances sharing a `merge_key` become one, array options union,
+   and the union does not depend on which module ran first.
+6. ✅ Nothing outside the renderer produces TOML text.
 
 **Brief:** §11, §18.2, §26 step 4.
 
@@ -229,6 +237,11 @@ trait and registry.
 
 **Done when**
 
+0. Rendering `config/muninn.example.yaml` matches
+   `docs/reference/telegraf.reference.conf` byte for byte, and
+   `muninn render-config` writes to stdout or a named file, redacts secrets by
+   default, and starts nothing. *(Moved here from WP3, which could not meet it —
+   there is nothing to render before the modules and outputs exist.)*
 1. `outputs.influxdb_v2` renders with `urls` as an array, the token resolved from
    its file, and TLS options only when configured.
 2. `outputs.prometheus_client` renders listen, path and expiration interval;

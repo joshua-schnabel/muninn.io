@@ -44,6 +44,11 @@ The release pipeline reads the version from this file — see
   parsing, `ConfigV1` with `deny_unknown_fields` throughout, CLI/ENV overrides,
   semantic validation and a resolved `Config`. 99 tests, 89 % line coverage.
 
+- WP3 Telegraf model and renderer: a typed `PluginInstance`/`TelegrafConfig`
+  model and a deterministic TOML renderer. Scalars and sub-tables are separate
+  fields, so the ordering rule Telegraf requires is enforced by the type rather
+  than by convention. 29 tests, 95 % line coverage.
+
 ### Fixed
 
 - A validation rule compared `runtime.shutdown_grace_period` against

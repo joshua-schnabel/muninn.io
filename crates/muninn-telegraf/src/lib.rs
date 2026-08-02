@@ -38,4 +38,11 @@
 //!
 //! See `docs/adr/0006-validate-with-config-check.md`.
 //!
-//! Implementation lands in WP3 and WP6 — see `docs/roadmap.md`.
+//! The model and renderer are implemented (WP3); the validator, process control
+//! and version check land in WP6 — see `docs/roadmap.md`.
+
+pub mod model;
+pub mod renderer;
+
+pub use model::{PluginInstance, Section, TelegrafConfig, TomlTable, TomlValue};
+pub use renderer::render;
