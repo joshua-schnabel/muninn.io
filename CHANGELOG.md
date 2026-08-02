@@ -65,6 +65,12 @@ The release pipeline reads the version from this file — see
   actually executed rather than silently skipped on a Windows development
   machine.
 
+- WP7 health server: `/health/live`, `/health/ready`, `/status` and `/metrics`,
+  served alongside the supervisor. `muninn healthcheck` queries the local
+  endpoint and maps it to an exit code Docker's `HEALTHCHECK` understands.
+  The state machine moved from the binary into `muninn-health` as `HealthState`,
+  next to the endpoints that read it. 223 tests.
+
 ### Fixed
 
 - Signal handlers were installed inside the supervise loop, leaving a window

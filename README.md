@@ -25,18 +25,16 @@ is working.
 
 ---
 
-> ## Status: runnable, not yet deployable
+> ## Status: runnable, not yet packaged
 >
-> **WP0–WP6 are complete.** muninn reads its YAML, generates a Telegraf
-> configuration, has Telegraf verify it, starts Telegraf as a supervised child
-> and shuts it down cleanly on SIGTERM. `run`, `validate`, `render-config` and
-> `version` all work.
+> **WP0–WP7 are complete.** muninn reads its YAML, generates a Telegraf
+> configuration, has Telegraf verify it, starts Telegraf as a supervised child,
+> serves health and metrics endpoints, and shuts down cleanly on SIGTERM. Every
+> command works except `check-runtime`.
 >
-> What is missing before you can deploy it: the **health server** (WP7) and the
-> **container image** (WP8). `check-runtime` and `healthcheck` fail with a
-> pointer to the work package that delivers them, and there is no published
-> image — the compose example below describes the target, not something you can
-> pull today.
+> What is missing: the **container image** (WP8). There is nothing to pull yet —
+> the compose example below describes the target. Building from source and
+> pointing `MUNINN_TELEGRAF_BIN` at a Telegraf 1.39.2 binary does work today.
 >
 > Progress and what is next: [`docs/roadmap.md`](docs/roadmap.md).
 

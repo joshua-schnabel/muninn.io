@@ -54,9 +54,13 @@ struct Fixture {
 
 /// A configuration that collects locally and writes nowhere over the network.
 ///
-/// Prometheus is the only output, on a port the caller chooses, so two tests
-/// running concurrently do not fight over a listener.
+/// Both listeners take a port the caller chooses, so tests running concurrently
+/// do not fight over them.
 fn fixture(port: u16, generated: &Path) -> Fixture {
+    fixture_with_health(port, free_port(), generated)
+}
+
+fn fixture_with_health(port: u16, health_port: u16, generated: &Path) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("muninn.yaml");
     let mut f = std::fs::File::create(&config).unwrap();
@@ -77,7 +81,7 @@ logging:
   format: json
   level: info
 health:
-  listen: "127.0.0.1:0"
+  listen: "127.0.0.1:{health_port}"
 modules:
   cpu:
     enabled: true
@@ -516,5 +520,163 @@ fn render_config_works_without_telegraf_and_redacts() {
     assert!(
         !fx.dir().join("telegraf.conf").exists(),
         "render-config wrote the runtime file; it should start and touch nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Health endpoints, on the running binary
+// ---------------------------------------------------------------------------
+
+/// A bare HTTP GET. One endpoint on loopback does not justify an HTTP client
+/// with a TLS stack and a connection pool — the same reasoning as `muninn
+/// healthcheck` itself.
+fn http_get(port: u16, path: &str) -> Option<(u16, String)> {
+    use std::io::{Read as _, Write as _};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    stream
+        .write_all(
+            format!("GET {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .ok()?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).ok()?;
+    let code = response.split_whitespace().nth(1)?.parse().ok()?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())?;
+    Some((code, body))
+}
+
+/// The endpoints must reflect the real lifecycle, not a state a unit test set by
+/// hand. This starts the actual binary and watches readiness turn true.
+#[test]
+fn the_health_endpoints_follow_the_real_lifecycle() {
+    let telegraf = require_telegraf!();
+    let health_port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let fx = fixture_with_health(free_port(), health_port, &dir.path().join("telegraf.conf"));
+
+    let mut child = muninn(&telegraf)
+        .arg("--config")
+        .arg(fx.path())
+        .arg("run")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let log = LogTail::attach(child.stdout.take().unwrap());
+
+    // Liveness comes up with the server, before readiness does — that ordering
+    // is the whole reason they are two endpoints.
+    let live_first = wait_until(Duration::from_secs(30), || {
+        matches!(http_get(health_port, "/health/live"), Some((200, _)))
+    });
+
+    let ready = wait_until(Duration::from_secs(30), || {
+        matches!(http_get(health_port, "/health/ready"), Some((200, _)))
+    });
+
+    let ready_body = http_get(health_port, "/health/ready")
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let status_body = http_get(health_port, "/status")
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let metrics_body = http_get(health_port, "/metrics")
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(live_first, "liveness never came up:\n{}", log.text());
+    assert!(ready, "readiness never came up:\n{}", log.text());
+
+    assert!(ready_body.contains("\"status\":\"ready\""), "{ready_body}");
+    assert!(ready_body.contains("\"running\":true"), "{ready_body}");
+    assert!(
+        ready_body.contains("\"pid\""),
+        "should report Telegraf's PID: {ready_body}"
+    );
+
+    assert!(
+        status_body.contains("\"telegraf_version\":\"1.39.2\""),
+        "{status_body}"
+    );
+    assert!(
+        status_body.contains("\"cpu\""),
+        "enabled modules: {status_body}"
+    );
+    assert!(
+        status_body.contains("\"prometheus\""),
+        "enabled outputs: {status_body}"
+    );
+
+    assert!(metrics_body.contains("muninn_ready 1"), "{metrics_body}");
+    assert!(
+        metrics_body.contains("muninn_telegraf_running 1"),
+        "{metrics_body}"
+    );
+    // Recorded by the real startup path, not by a test.
+    assert!(
+        metrics_body.contains("muninn_config_generation_duration_seconds"),
+        "generation should have been timed: {metrics_body}"
+    );
+    assert!(
+        metrics_body.contains("muninn_telegraf_validation_duration_seconds"),
+        "validation should have been timed: {metrics_body}"
+    );
+}
+
+/// `muninn healthcheck` is what Docker's HEALTHCHECK runs. It must succeed
+/// against a ready agent and fail when there is nothing to reach.
+#[test]
+fn the_healthcheck_command_reflects_readiness() {
+    let telegraf = require_telegraf!();
+    let health_port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let fx = fixture_with_health(free_port(), health_port, &dir.path().join("telegraf.conf"));
+
+    // Nothing running yet: it must fail rather than hang or report healthy.
+    let out = muninn(&telegraf)
+        .arg("--config")
+        .arg(fx.path())
+        .arg("healthcheck")
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "healthcheck succeeded with no agent running"
+    );
+
+    let mut child = muninn(&telegraf)
+        .arg("--config")
+        .arg(fx.path())
+        .arg("run")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let log = LogTail::attach(child.stdout.take().unwrap());
+
+    let became_ready = wait_until(Duration::from_secs(30), || {
+        muninn(&telegraf)
+            .arg("--config")
+            .arg(fx.path())
+            .arg("healthcheck")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    });
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        became_ready,
+        "healthcheck never reported ready:\n{}",
+        log.text()
     );
 }
