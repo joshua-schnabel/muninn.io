@@ -81,8 +81,8 @@ fn section_rule(out: &mut String, title: &str) {
 }
 
 fn render_instance(out: &mut String, instance: &PluginInstance) {
-    if let Some(note) = &instance.note {
-        let _ = writeln!(out, "# {note}");
+    if let Some(provenance) = instance.provenance() {
+        let _ = writeln!(out, "# {provenance}");
     }
     let _ = writeln!(out, "{}", instance.header());
 
@@ -123,7 +123,7 @@ mod tests {
 
     fn disk_instance() -> PluginInstance {
         PluginInstance::input("disk", 60)
-            .note("module: disks")
+            .from_module("disks")
             .scalar("ignore_fs", vec!["tmpfs", "devtmpfs"])
             .tagdrop("path", &["/snap*".to_string()])
     }
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn a_note_renders_as_a_comment_above_its_block() {
         let mut cfg = TelegrafConfig::new();
-        cfg.add(PluginInstance::input("cpu", 10).note("module: cpu"));
+        cfg.add(PluginInstance::input("cpu", 10).from_module("cpu"));
         assert!(render(&cfg, V).contains("# module: cpu\n[[inputs.cpu]]\n"));
     }
 
@@ -293,7 +293,7 @@ mod tests {
     #[test]
     fn a_plugin_with_no_options_renders_as_a_bare_header() {
         let mut cfg = TelegrafConfig::new();
-        cfg.add(PluginInstance::input("swap", 40).note("module: swap"));
+        cfg.add(PluginInstance::input("swap", 40).from_module("swap"));
         cfg.add(PluginInstance::input("net", 80).scalar("interfaces", vec!["eth0"]));
         let out = render(&cfg, V);
 

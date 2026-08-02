@@ -13,8 +13,8 @@ conversation.
 | [WP1](#wp1--host-update-spike) | Host update spike | ✅ |
 | [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ✅ |
 | [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ✅ |
-| [WP4](#wp4--base-modules) | Base modules | ⬜ |
-| [WP5](#wp5--outputs) | Outputs | ⬜ |
+| [WP4](#wp4--base-modules) | Base modules | ✅ |
+| [WP5](#wp5--outputs) | Outputs | ✅ |
 | [WP6](#wp6--telegraf-process-management) | Telegraf process management | ⬜ |
 | [WP7](#wp7--health-server-and-state-machine) | Health server and state machine | ⬜ |
 | [WP8](#wp8--container-image) | Container image | ⬜ |
@@ -207,6 +207,8 @@ becomes the real milestone.
 
 ## WP4 — Base modules
 
+**Status: complete, 2026-08-02.**
+
 **Goal.** The nine modules that need no privileges beyond read-only host paths.
 
 **Touches** `crates/muninn-modules/src/` — `cpu`, `memory`, `load`, `system`,
@@ -230,6 +232,15 @@ trait and registry.
 ---
 
 ## WP5 — Outputs
+
+**Status: complete, 2026-08-02.** Together with WP4 this reaches the milestone
+the two packages exist for: rendering `config/muninn.example.yaml` produces
+`docs/reference/telegraf.reference.conf` byte for byte, and that file is
+accepted by Telegraf 1.39.2 (`config check`, exit 0). Run with `--test` against
+the real thing it collects 49 metrics across all eight plugin instances, with
+the `tmpfs` exclusions taking effect (0 of the disk metrics) and `load` and
+`system` arriving as one measurement carrying `load1`, `load5`, `load15` and
+`uptime`.
 
 **Goal.** InfluxDB v2 and Prometheus, separately and together.
 

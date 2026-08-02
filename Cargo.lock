@@ -533,6 +533,7 @@ dependencies = [
  "insta",
  "muninn-core",
  "muninn-telegraf",
+ "tempfile",
  "tracing",
 ]
 

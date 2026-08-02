@@ -18,8 +18,6 @@
 //! than by a convention someone has to remember. See
 //! `docs/adr/0007-tagdrop-and-render-order.md`.
 
-use std::fmt::Write as _;
-
 // ---------------------------------------------------------------------------
 // Values
 // ---------------------------------------------------------------------------
@@ -165,10 +163,13 @@ pub struct PluginInstance {
     /// operator's configuration — otherwise the output would change shape
     /// because someone reordered their YAML.
     pub rank: u16,
-    /// Which muninn module produced this, rendered as a comment. Provenance
-    /// matters when an operator is reading the generated file to work out why a
-    /// metric is missing.
-    pub note: Option<String>,
+    /// Which muninn modules or outputs produced this, rendered as a comment.
+    /// Provenance matters when an operator is reading the generated file to work
+    /// out why a metric is missing — and after a merge there is more than one
+    /// answer, which is why this is a list rather than a string.
+    pub sources: Vec<String>,
+    /// The noun for `sources`, pluralised when there is more than one.
+    pub source_label: &'static str,
     /// The key that makes two instances mergeable. `load` and `system` share
     /// one, because Telegraf has no `inputs.load`.
     pub merge_key: Option<String>,
@@ -190,16 +191,39 @@ impl PluginInstance {
             section,
             plugin: plugin.into(),
             rank,
-            note: None,
+            sources: Vec::new(),
+            source_label: "module",
             merge_key: None,
             scalars: Vec::new(),
             subtables: Vec::new(),
         }
     }
 
-    pub fn note(mut self, note: impl Into<String>) -> Self {
-        self.note = Some(note.into());
+    /// Record which module produced this instance.
+    pub fn from_module(mut self, id: impl Into<String>) -> Self {
+        self.sources.push(id.into());
+        self.source_label = "module";
         self
+    }
+
+    /// Record which output produced this instance.
+    pub fn from_output(mut self, id: impl Into<String>) -> Self {
+        self.sources.push(id.into());
+        self.source_label = "output";
+        self
+    }
+
+    /// The provenance comment, e.g. `module: cpu` or `modules: load, system`.
+    pub fn provenance(&self) -> Option<String> {
+        if self.sources.is_empty() {
+            return None;
+        }
+        let label = if self.sources.len() > 1 {
+            format!("{}s", self.source_label)
+        } else {
+            self.source_label.to_string()
+        };
+        Some(format!("{label}: {}", self.sources.join(", ")))
     }
 
     pub fn merge_key(mut self, key: impl Into<String>) -> Self {
@@ -298,14 +322,12 @@ impl PluginInstance {
                 self.subtables.push((key, table));
             }
         }
-        // Provenance from both, so the comment says which modules produced it.
-        if let Some(note) = other.note {
-            match &mut self.note {
-                Some(existing) if !existing.contains(&note) => {
-                    let _ = write!(existing, ", {note}");
-                }
-                Some(_) => {}
-                None => self.note = Some(note),
+        // Provenance from both, so the comment names every module that
+        // contributed. Order follows first appearance, which the rank sort makes
+        // stable.
+        for source in other.sources {
+            if !self.sources.contains(&source) {
+                self.sources.push(source);
             }
         }
     }
@@ -505,13 +527,13 @@ mod tests {
         cfg.add(
             PluginInstance::input("system", 10)
                 .merge_key("system")
-                .note("module: load")
+                .from_module("load")
                 .scalar("include", vec!["load"]),
         );
         cfg.add(
             PluginInstance::input("system", 10)
                 .merge_key("system")
-                .note("module: system")
+                .from_module("system")
                 .scalar("include", vec!["uptime", "users"]),
         );
 
@@ -524,9 +546,9 @@ mod tests {
             "array options union"
         );
         assert_eq!(
-            inputs[0].note.as_deref(),
-            Some("module: load, module: system"),
-            "provenance should name both modules"
+            inputs[0].provenance().as_deref(),
+            Some("modules: load, system"),
+            "provenance should name both modules, pluralised"
         );
     }
 

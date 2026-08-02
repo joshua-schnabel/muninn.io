@@ -49,6 +49,12 @@ The release pipeline reads the version from this file — see
   fields, so the ordering rule Telegraf requires is enforced by the type rather
   than by convention. 29 tests, 95 % line coverage.
 
+- WP4 and WP5: the `MonitoringModule` trait, eleven input modules, the `[agent]`
+  section, InfluxDB v2 and Prometheus outputs, and the `muninn` CLI with
+  `validate`, `render-config` and `version`. Rendering the shipped example now
+  produces `docs/reference/telegraf.reference.conf` byte for byte, and that file
+  is accepted by Telegraf 1.39.2. 165 tests.
+
 ### Fixed
 
 - A validation rule compared `runtime.shutdown_grace_period` against
