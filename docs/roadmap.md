@@ -15,7 +15,7 @@ conversation.
 | [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ✅ |
 | [WP4](#wp4--base-modules) | Base modules | ✅ |
 | [WP5](#wp5--outputs) | Outputs | ✅ |
-| [WP6](#wp6--telegraf-process-management) | Telegraf process management | ⬜ |
+| [WP6](#wp6--telegraf-process-management) | Telegraf process management | ✅ |
 | [WP7](#wp7--health-server-and-state-machine) | Health server and state machine | ⬜ |
 | [WP8](#wp8--container-image) | Container image | ⬜ |
 | [WP9](#wp9--docker-module) | Docker module | ⬜ |
@@ -270,12 +270,26 @@ the `tmpfs` exclusions taking effect (0 of the disk metrics) and `load` and
 
 ## WP6 — Telegraf process management
 
+**Status: complete, 2026-08-02.** `muninn run` works. 196 tests on Windows, all
+of them plus the ten unix-only lifecycle cases on Linux via
+`bash scripts/test-linux.sh`.
+
+**What the lifecycle tests caught**, which is the reason they exist: signal
+handlers were installed inside the supervise loop, leaving a window during
+startup where SIGTERM still had its default disposition. A `docker stop` landing
+in that window killed muninn outright instead of shutting it down. Nothing on
+the development machine could have found it — the test is `#[cfg(unix)]` and
+only ran once the suite was taken to Linux. Handlers are now installed before
+any startup work; tokio's signal streams buffer, so a signal arriving during
+startup is delivered as soon as the supervise loop first polls.
+
 **Goal.** Start Telegraf, supervise it, and shut it down cleanly.
 
 **Touches** `crates/muninn-telegraf/src/{validator,process,version}.rs`,
-`muninn/src/main.rs`.
+`muninn/src/{main,cli,logging,supervisor}.rs`, `muninn/tests/lifecycle_test.rs`,
+`scripts/test-linux.sh`.
 
-**Done when**
+**Done when** — all met:
 
 1. The runtime Telegraf version is compared against the version pinned at build
    time; a mismatch exits with `TELEGRAF_START` rather than running a config

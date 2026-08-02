@@ -55,7 +55,26 @@ The release pipeline reads the version from this file — see
   produces `docs/reference/telegraf.reference.conf` byte for byte, and that file
   is accepted by Telegraf 1.39.2. 165 tests.
 
+- WP6 Telegraf process management: version check against the build-time pin,
+  `telegraf config check` before start, Telegraf as a supervised child with its
+  output re-emitted through muninn's logger, SIGTERM/SIGINT forwarding with a
+  grace period and SIGKILL fallback, and the twelve-state machine. `muninn run`,
+  `muninn validate --with-telegraf` and `muninn version` now work.
+- `scripts/test-linux.sh` runs the suite in a Linux container against the pinned
+  Telegraf, so the `#[cfg(unix)]` tests — signals, permissions, reaping — are
+  actually executed rather than silently skipped on a Windows development
+  machine.
+
 ### Fixed
+
+- Signal handlers were installed inside the supervise loop, leaving a window
+  during startup where SIGTERM had its default disposition and killed muninn
+  instead of shutting it down. They are now installed before any startup work.
+  Found by the lifecycle test on its first run under Linux.
+- `runtime.generated_config_path` was validated with `starts_with('/')`, a
+  Linux-specific approximation of "absolute". It now accepts both a POSIX
+  absolute path and a host-absolute one, so a production configuration validates
+  on a developer's machine and the tests can use a temporary directory.
 
 - A validation rule compared `runtime.shutdown_grace_period` against
   `agent.flush_interval`, on the theory that a short grace period discards the
@@ -79,8 +98,10 @@ The release pipeline reads the version from this file — see
 
 ### Notes
 
-Nothing is released yet. `muninn` builds but exits immediately with a pointer to
-the roadmap — WP0 is a design package, not a working agent.
+Nothing is released yet. `muninn run`, `validate`, `render-config` and `version`
+work; `check-runtime` and `healthcheck` still fail with a pointer to the work
+package that delivers them. There is no container image yet (WP8) and no health
+server (WP7), so muninn is not deployable — only runnable.
 
 Three findings during WP0 changed the design away from the project brief:
 

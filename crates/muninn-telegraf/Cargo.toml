@@ -16,6 +16,10 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+# Unix only: muninn's artefact is a Linux container, and Windows has no SIGTERM.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }
 tempfile = { workspace = true }

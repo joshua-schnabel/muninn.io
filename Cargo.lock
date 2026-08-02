@@ -491,6 +491,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "libc",
  "muninn-core",
  "muninn-health",
  "muninn-modules",
@@ -542,6 +543,7 @@ name = "muninn-telegraf"
 version = "0.1.0"
 dependencies = [
  "insta",
+ "libc",
  "muninn-core",
  "serde",
  "tempfile",
