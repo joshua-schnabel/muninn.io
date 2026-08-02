@@ -12,6 +12,7 @@ repository.workspace = true
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }
 humantime-serde = { workspace = true }
+humantime = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

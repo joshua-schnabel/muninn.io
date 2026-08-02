@@ -88,8 +88,9 @@ before muninn's grace period expires and the clean shutdown never happens. Eithe
 lower the grace period or set `stop_grace_period: 30s` in compose — the shipped
 compose file does the latter.
 
-The grace period should also exceed `agent.flush_interval`, or shutdown discards
-the cycle in progress.
+What the grace period has to cover is a *write*, not a collection cycle:
+Telegraf flushes immediately on SIGTERM rather than waiting for the next flush
+tick. The bound that matters is the output timeout.
 
 ### SIGHUP
 

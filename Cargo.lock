@@ -505,6 +505,7 @@ dependencies = [
 name = "muninn-core"
 version = "0.1.0"
 dependencies = [
+ "humantime",
  "humantime-serde",
  "serde",
  "serde_yaml_ng",

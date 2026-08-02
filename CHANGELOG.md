@@ -39,6 +39,21 @@ The release pipeline reads the version from this file — see
   T11b, which checks the probe from a container against a real host with a
   non-zero answer.
 
+- WP2 configuration model: `muninn-core` gains typed errors with exit-code
+  mapping, a `Secret` type whose `Debug`/`Display` render `***`, duration
+  parsing, `ConfigV1` with `deny_unknown_fields` throughout, CLI/ENV overrides,
+  semantic validation and a resolved `Config`. 99 tests, 89 % line coverage.
+
+### Fixed
+
+- A validation rule compared `runtime.shutdown_grace_period` against
+  `agent.flush_interval`, on the theory that a short grace period discards the
+  collection cycle in progress. Telegraf flushes immediately on SIGTERM rather
+  than waiting for the next tick, so the bound that matters is the output
+  timeout. The rule and the four documents repeating the claim are corrected.
+- `muninn.integration.yaml` set `shutdown_grace_period` equal to
+  `outputs.influxdb.timeout`, leaving no room for a teardown flush.
+
 ### Decided
 
 - Approach A adopted for reading host package state — read-only host mounts plus

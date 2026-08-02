@@ -11,7 +11,7 @@ conversation.
 |---|---|---|
 | [WP0](#wp0--design-package) | Design package | ✅ |
 | [WP1](#wp1--host-update-spike) | Host update spike | ✅ |
-| [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ⬜ |
+| [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ✅ |
 | [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ⬜ |
 | [WP4](#wp4--base-modules) | Base modules | ⬜ |
 | [WP5](#wp5--outputs) | Outputs | ⬜ |
@@ -116,11 +116,26 @@ unfixable. Accepted as a trade, with the mitigations in
 
 ## WP2 — Configuration model V1
 
+**Status: complete, 2026-08-02.** 99 tests, 89 % line coverage in `muninn-core`.
+
 **Goal.** Turn a YAML file into a validated, normalised internal model, or into
 an error that names the offending key.
 
 **Touches** `crates/muninn-core/src/` — `config/{model,loader,validation,normalised}.rs`,
-`secrets.rs`, `duration.rs`, `error.rs`.
+`secret.rs`, `duration.rs`, `error.rs`; `tests/shipped_configs_test.rs`.
+
+**Two things it found in WP0's own output**, which is what the tests were for:
+
+- The shipped defaults tripped a validation rule that was itself wrong.
+  `shutdown_grace_period` was being compared against `agent.flush_interval` on
+  the theory that a short grace period discards the collection cycle in
+  progress. Telegraf does not work that way — it flushes immediately on SIGTERM
+  (`agent.go`: *"Hang on, flushing any cached metrics before shutdown"*) rather
+  than waiting for the next tick. The bound that matters is the output timeout.
+  Rule corrected, and the claim removed from four documents that repeated it.
+- `muninn.integration.yaml` had `shutdown_grace_period` equal to
+  `outputs.influxdb.timeout`, so a teardown flush could not complete one write
+  attempt.
 
 **Done when**
 
@@ -142,6 +157,12 @@ an error that names the offending key.
 8. At least one negative test per configuration field (brief §18.7).
 9. `ConfigV1` converts into the normalised model, so a future `ConfigV2` has a
    place to convert into.
+10. The shipped example configurations pass muninn's own validation, so the file
+    people copy cannot drift away from the schema.
+
+All met. Numbering the rules above 1–10, each has at least one test; the
+`rejects()` helper additionally asserts that every error message **names the
+offending key**.
 
 **Brief:** §6, §15 "fatal before start", §18.1, §18.7, §26 step 3.
 
