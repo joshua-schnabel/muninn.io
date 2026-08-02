@@ -121,26 +121,45 @@ redacts by default; its output is safe to paste into an issue.
 
 ## The reference output
 
-`docs/reference/telegraf.reference.conf` is what the renderer must produce for
-`config/muninn.example.yaml`. It was written by hand and verified with
+`docs/reference/telegraf.reference.conf` is what the renderer produces for
+`config/muninn.example.yaml`.
+
+It began as a hand-written target, verified against Telegraf 1.39.2 before any
+renderer existed, so the first renderer commit had a correct goal rather than a
+plausible one. It is now regenerated from the renderer itself and re-verified:
 
 ```bash
-telegraf config check --strict-env-handling --config telegraf.reference.conf
+muninn --config config/muninn.example.yaml render-config > docs/reference/telegraf.reference.conf
+docker run --rm -v "$PWD/docs/reference:/ref:ro" telegraf:1.39.2 \
+  telegraf config check --strict-env-handling --config /ref/telegraf.reference.conf
 ```
 
-against Telegraf 1.39.2 — exit 0 — before any renderer code existed. It is WP3's
-primary snapshot fixture, so the first renderer commit has a correct target
-rather than a plausible one.
+`crates/muninn-modules/tests/reference_config_test.rs` then asserts the renderer
+still produces it, byte for byte. The pairing is what keeps this honest: the
+test proves the renderer is stable, and the independent Telegraf check proves
+what it is stable *at* is something Telegraf accepts. Updating the reference
+without re-running the check would turn the test into one that agrees with
+whatever the code happens to do.
 
-## Snapshot testing
+## How the output is tested
 
-Every module has a snapshot of its rendered fragment, plus whole-config snapshots
-for: minimal config, full example, InfluxDB only, Prometheus only, both outputs,
-every module enabled, and redacted `render-config` output.
+Three layers, deliberately not all of the same kind.
 
-**Snapshots are reviewed, never auto-accepted.** `cargo insta accept` without
-reading the diff turns the test suite into a record of whatever the code happens
-to do. Use `cargo snap-review` and read.
+**Properties**, asserted on the rendered bytes: a sub-table never precedes a
+scalar, rendering twice is identical, insertion order changes nothing, awkward
+values round-trip, and a hostile value cannot inject a plugin.
+
+**Behaviour**, asserted on the whole pipeline: each `exclude_*` lands on the
+right tag, `load` and `system` merge in all four enable combinations, only
+enabled modules appear, and redacted output contains no secret.
+
+**One golden file** — but verified independently, by real Telegraf, rather than
+accepted because the code produced it.
+
+That last distinction is the point. A golden file accepted without checking is a
+record of whatever the code happens to do; the Telegraf check is what makes it
+evidence rather than an echo. If the renderer changes legitimately, regenerate
+**and** re-run the check.
 
 ## What the renderer does not do
 
@@ -148,8 +167,11 @@ to do. Use `cargo snap-review` and read.
 - **No plugin option validation.** muninn only emits options it models; whether
   Telegraf accepts them is Telegraf's answer, obtained via `config check`. Keeping
   a copy of 249 plugins' option surfaces in muninn would drift on every release.
-- **No comments beyond a fixed header.** The file is machine-consumed and
-  ephemeral. Explanation belongs in the YAML the operator actually edits.
+- **No prose.** The only comments are a fixed header and one provenance line per
+  block (`# module: cpu`, `# modules: load, system`). That line earns its place:
+  the generated file is what an operator reads when a metric is missing, and
+  "which module put this here" is the question they are asking. Explanation
+  beyond that belongs in the YAML they actually edit.
 
 ## Related
 
