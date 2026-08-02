@@ -11,7 +11,7 @@ conversation.
 |---|---|---|
 | [WP0](#wp0--design-package) | Design package | ✅ |
 | [WP1](#wp1--host-update-spike) | Host update spike | ✅ |
-| [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ⬜ |
+| [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ✅ |
 | [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ⬜ |
 | [WP4](#wp4--base-modules) | Base modules | ⬜ |
 | [WP5](#wp5--outputs) | Outputs | ⬜ |
@@ -92,22 +92,23 @@ unfixable. Accepted as a trade, with the mitigations in
 **Delivered**
 
 - `spikes/updates/probe.sh` — the specification WP10 implements
-- `spikes/updates/fixtures/build-host.sh`, `spikes/updates/run.sh` — reproducible
+- `spikes/updates/fixtures/build-host.sh` (container fixtures),
+  `build-host-native.sh` (a real host), `spikes/updates/run.sh` — reproducible
   via `bash spikes/updates/run.sh`
-- `docs/spikes/updates-spike.md` — twelve matrix cells with measured results
+- `docs/spikes/updates-spike.md` — thirteen matrix cells with measured results
 - ADR-0009 finalised; `hardening.md` and `risks.md` updated
 
 **Done when** — all met:
 
 1. ✅ Approaches A–D each evaluated and recorded, including the rejected ones.
-2. ✅ T1–T11 recorded across Debian 12/13 and Ubuntu 22.04/24.04.
-3. ⚠️ T11 ran against a real host (WSL Debian) and agrees — but that host has
-   nothing pending, so the agreement is on zero and the counting path is not
-   exercised there. Covered against four real distributions by T2–T6.
+2. ✅ T1–T11b recorded across Debian 12/13 and Ubuntu 22.04/24.04.
+3. ✅ T11/T11b ran against a real host (WSL Debian). T11b is the faithful one —
+   probe in a container against the host's filesystem, with fresh indices —
+   and reproduces that host's own answer of 41 pending / 11 security exactly.
 4. ✅ T8/T9/T9b/T10 demonstrate that a failed check reports failure, never zero.
 5. ✅ No host data modified — SHA-256 over the host tree identical before and after.
 6. ✅ Base image decided and written down with its measurements.
-7. ✅ `bash spikes/updates/run.sh` reproduces all twelve cells.
+7. ✅ `bash spikes/updates/run.sh` reproduces all thirteen cells.
 
 **Brief:** §8 in full, §18.6, §29.11.
 
@@ -115,11 +116,26 @@ unfixable. Accepted as a trade, with the mitigations in
 
 ## WP2 — Configuration model V1
 
+**Status: complete, 2026-08-02.** 99 tests, 89 % line coverage in `muninn-core`.
+
 **Goal.** Turn a YAML file into a validated, normalised internal model, or into
 an error that names the offending key.
 
 **Touches** `crates/muninn-core/src/` — `config/{model,loader,validation,normalised}.rs`,
-`secrets.rs`, `duration.rs`, `error.rs`.
+`secret.rs`, `duration.rs`, `error.rs`; `tests/shipped_configs_test.rs`.
+
+**Two things it found in WP0's own output**, which is what the tests were for:
+
+- The shipped defaults tripped a validation rule that was itself wrong.
+  `shutdown_grace_period` was being compared against `agent.flush_interval` on
+  the theory that a short grace period discards the collection cycle in
+  progress. Telegraf does not work that way — it flushes immediately on SIGTERM
+  (`agent.go`: *"Hang on, flushing any cached metrics before shutdown"*) rather
+  than waiting for the next tick. The bound that matters is the output timeout.
+  Rule corrected, and the claim removed from four documents that repeated it.
+- `muninn.integration.yaml` had `shutdown_grace_period` equal to
+  `outputs.influxdb.timeout`, so a teardown flush could not complete one write
+  attempt.
 
 **Done when**
 
@@ -141,6 +157,12 @@ an error that names the offending key.
 8. At least one negative test per configuration field (brief §18.7).
 9. `ConfigV1` converts into the normalised model, so a future `ConfigV2` has a
    place to convert into.
+10. The shipped example configurations pass muninn's own validation, so the file
+    people copy cannot drift away from the schema.
+
+All met. Numbering the rules above 1–10, each has at least one test; the
+`rejects()` helper additionally asserts that every error message **names the
+offending key**.
 
 **Brief:** §6, §15 "fatal before start", §18.1, §18.7, §26 step 3.
 

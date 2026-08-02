@@ -1,20 +1,13 @@
 //! Configuration model, secret handling and error types for muninn.io.
 //!
 //! This crate owns everything between "an operator wrote a YAML file" and "a
-//! validated, normalised model the rest of the program can render from". It
-//! knows nothing about Telegraf.
+//! validated, resolved model the rest of the program can render from". It knows
+//! nothing about Telegraf.
 //!
-//! # Planned layout
-//!
-//! | Module | Responsibility |
-//! |---|---|
-//! | `config::model` | `ConfigV1` — the serde target, mirroring the YAML 1:1 |
-//! | `config::loader` | Read the file, deserialise, apply CLI/ENV precedence |
-//! | `config::validation` | Semantic rules: port collisions, output presence, module coherence |
-//! | `config::normalised` | Version-independent internal model; `ConfigV1` migrates into it |
-//! | `secrets` | Read secret files: exists, readable, non-empty, trailing newline stripped |
-//! | `duration` | `30s` / `5m` / `1h` parsing plus the "is this value sane" rules |
-//! | `error` | `MuninnError` and the stable exit-code mapping |
+//! ```text
+//!   muninn.yaml ──► ConfigV1 ──► validate ──► Config
+//!                   (the file)   (the rules)  (resolved)
+//! ```
 //!
 //! # Two invariants this crate exists to hold
 //!
@@ -24,14 +17,33 @@
 //! configuration is worse than one that refuses to start.
 //!
 //! **A secret value never leaves this crate as a printable string.** Secrets are
-//! wrapped in a type whose `Debug` and `Display` render `"***"`; the real value
-//! is reachable only through an explicit accessor, called in exactly one place
-//! (the Telegraf renderer). Errors name the *path* of a secret file, never its
-//! contents.
+//! wrapped in [`secret::Secret`], whose `Debug` and `Display` render `***`; the
+//! real value is reachable only through an explicit accessor, called in exactly
+//! one place downstream. Errors name the *path* of a secret file, never its
+//! contents — which is why [`error::MuninnError::Secret`] has no field that
+//! could hold a value.
 //!
-//! Implementation lands in WP2 — see `docs/roadmap.md`. The exception is
-//! [`exit`], which ships with the design package: the exit codes are part of the
-//! documented operator contract, and pinning them down before any call site
-//! exists is how a program avoids growing three numbers for "bad config".
+//! ```
+//! use muninn_core::config::{self, Overrides};
+//!
+//! # fn example() -> muninn_core::error::Result<()> {
+//! let (config, warnings) = config::load_and_resolve("/etc/muninn/muninn.yaml", &Overrides::from_env())?;
+//! // Warnings are returned rather than logged: this runs before the tracing
+//! // subscriber exists, because the level to initialise it with comes from
+//! // this very file.
+//! for w in &warnings {
+//!     eprintln!("warning: {w}");
+//! }
+//! # let _ = config;
+//! # Ok(())
+//! # }
+//! ```
 
+pub mod config;
+pub mod duration;
+pub mod error;
 pub mod exit;
+pub mod secret;
+
+pub use config::Config;
+pub use error::{MuninnError, Result};

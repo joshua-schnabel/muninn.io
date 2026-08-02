@@ -69,6 +69,10 @@ toml = "1"
 # parser — is a surprising amount of edge cases (overflow, mixed units, signs)
 # for a solved problem.
 humantime-serde = "1"
+# The crate humantime-serde wraps, declared directly for `format_duration` in
+# error messages. Already in the tree as humantime-serde's own dependency, so
+# this adds a name to Cargo.toml and nothing to the supply chain.
+humantime = "2"
 
 # ── CLI ────────────────────────────────────────────────────────────────────
 clap = { version = "4", features = ["derive", "env"] }

@@ -141,11 +141,15 @@ How muninn manages itself and the Telegraf child.
 On SIGTERM or SIGINT, how long Telegraf is given to flush and exit before
 SIGKILL.
 
-Two constraints pull in opposite directions. It should exceed
-`agent.flush_interval`, so shutdown does not discard the cycle in progress. It
-should stay below the orchestrator's own stop timeout — **Docker's default is 10
-seconds**, so the 20s default here needs `stop_grace_period: 30s` in compose, or
-Docker kills the container mid-flush and the grace period never applies.
+What this has to cover is a *write*, not a collection cycle. Telegraf does not
+wait for the next flush tick on shutdown — it flushes immediately — so the bound
+that matters is `outputs.influxdb.timeout`, not `agent.flush_interval`. muninn
+warns if the grace period does not exceed it, because then not even one write
+attempt can complete.
+
+It should stay below the orchestrator's own stop timeout — **Docker's default is
+10 seconds**, so the 20s default here needs `stop_grace_period: 30s` in compose,
+or Docker kills the container mid-flush and the grace period never applies.
 
 ### `runtime.telegraf_start_timeout`
 

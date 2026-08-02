@@ -49,10 +49,15 @@ agent:
 # How muninn manages itself and the Telegraf child process.
 runtime:
   # On SIGTERM/SIGINT: how long Telegraf is given to flush and exit before it is
-  # killed. Should exceed `flush_interval` so a shutdown does not discard the
-  # cycle in progress. Docker's default stop timeout is 10s — if you raise this
-  # above that, raise `stop_grace_period` in compose too, or Docker kills the
-  # container before muninn finishes.
+  # killed.
+  #
+  # What this has to cover is a write, not a collection cycle: Telegraf flushes
+  # immediately on SIGTERM rather than waiting for the next flush tick. So size
+  # it against the output timeout below, not against flush_interval.
+  #
+  # Docker's default stop timeout is 10s — if you raise this above that, raise
+  # `stop_grace_period` in compose too, or Docker kills the container before
+  # muninn finishes.
   shutdown_grace_period: 20s
 
   # How long Telegraf may take to come up before muninn gives up and exits with

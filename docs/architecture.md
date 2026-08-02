@@ -163,10 +163,15 @@ On SIGTERM or SIGINT:
 4. If Telegraf is still alive, SIGKILL.
 5. muninn exits `0`.
 
-The grace period should exceed `agent.flush_interval`, or shutdown discards the
-cycle in progress. It should also stay below the orchestrator's own stop timeout
-— Docker's default is 10 seconds, so a 20-second grace period needs a matching
-`stop_grace_period` in compose or Docker kills the container mid-flush.
+What the grace period has to cover is a *write*, not a collection cycle.
+Telegraf does not wait for the next flush tick on shutdown — it logs `Hang on,
+flushing any cached metrics before shutdown` and flushes immediately. So the
+bound that matters is how long one write attempt may take, i.e. the output
+timeout, not `agent.flush_interval`.
+
+It should stay below the orchestrator's own stop timeout — Docker's default is
+10 seconds, so the 20-second default needs a matching `stop_grace_period` in
+compose or Docker kills the container mid-flush.
 
 There is no configuration reload. Change the YAML, restart the container. That
 is the whole model, and it is why the generated config can be ephemeral.

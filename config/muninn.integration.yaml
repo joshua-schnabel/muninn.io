@@ -22,7 +22,9 @@ agent:
 
 runtime:
   # Short, because the test tears the stack down repeatedly and a 20s grace
-  # period per teardown dominates the run time.
+  # period per teardown dominates the run time. It still has to exceed
+  # outputs.influxdb.timeout below, or a shutdown flush cannot complete even one
+  # write attempt — muninn warns when it does not.
   shutdown_grace_period: 5s
   telegraf_start_timeout: 15s
   generated_config_path: /run/muninn/telegraf.conf
@@ -85,7 +87,8 @@ outputs:
     organization: "testorg"
     bucket: "testbucket"
     token_file: "/run/secrets/influxdb_token"
-    timeout: 5s
+    # Below shutdown_grace_period, so the teardown flush has room to finish.
+    timeout: 2s
   prometheus:
     enabled: true
     listen: "0.0.0.0:9273"

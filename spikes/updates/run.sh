@@ -210,12 +210,46 @@ T11() { # a real host, not a container fixture
         record T11 FAIL "real host: probe says $total, native says $truth"
     elif [ "$truth" = 0 ]; then
         # Honest about the strength of the evidence: agreeing on zero is
-        # agreement, but it does not exercise the counting path. Refreshing the
-        # host's package lists would fix that — and would mean modifying a
-        # machine this spike has no business modifying.
-        record T11 PASS "real host agrees ($total pending) — WEAK: host has nothing pending, counting path untested"
+        # agreement, but it does not exercise the counting path. T11b covers it.
+        record T11 PASS "in-place on the real host: agrees ($total pending) — host has nothing pending, see T11b"
     else
-        record T11 PASS "real host: $total pending, matches native apt-get"
+        record T11 PASS "in-place on the real host: $total pending, matches native apt-get"
+    fi
+}
+
+T11b() { # the real host, with fresh indices, counted from a container
+    # T11 runs the probe *on* the host. This runs it the way muninn actually
+    # will — from a container, against the host's filesystem — and against a
+    # host with a genuinely non-zero answer, which T11 cannot guarantee.
+    local distro="${WSL_DISTRO:-Debian}"
+    local d="$WORK/wsl-real"
+
+    if [ ! -f "$d/meta.txt" ]; then
+        if ! command -v wsl.exe >/dev/null 2>&1; then
+            record T11b FAIL "wsl.exe not available — cannot build a native host fixture"
+            return
+        fi
+        echo "  ${DIM}exporting a fixture from the real WSL $distro host...${NC}" >&2
+        local wsl_out wsl_script
+        wsl_out=$(wsl.exe -d "$distro" -- wslpath -u "$(native "$WORK")" 2>/dev/null | tr -d '\r')/wsl-real
+        wsl_script=$(wsl.exe -d "$distro" -- wslpath -u "$(native "$ROOT/spikes/updates/fixtures")" 2>/dev/null | tr -d '\r')/build-host-native.sh
+        wsl.exe -d "$distro" -- bash "$wsl_script" "$wsl_out" >/dev/null 2>&1 \
+            || { record T11b FAIL "native fixture export failed"; return; }
+    fi
+
+    local want_total want_sec out got_total got_sec
+    want_total=$(meta "$d" total); want_sec=$(meta "$d" security)
+    out=$(probe "$d")
+    got_total=$(field "$out" pending_all); got_sec=$(field "$out" pending_security)
+
+    if [ "$(field "$out" check_success)" != 1 ]; then
+        record T11b FAIL "real host from a container: check failed ($(reason "$out"))"
+    elif [ "$want_total" = 0 ]; then
+        record T11b FAIL "real host has nothing pending even with fresh indices — cell proves nothing"
+    elif [ "$got_total" = "$want_total" ] && [ "$got_sec" = "$want_sec" ]; then
+        record T11b PASS "real host from a container: $got_total pending / $got_sec security — matches native apt"
+    else
+        record T11b FAIL "got $got_total/$got_sec, real host says $want_total/$want_sec"
     fi
 }
 
@@ -224,7 +258,7 @@ T11() { # a real host, not a container fixture
 
 mkdir -p "$WORK"
 cells=("$@")
-[ ${#cells[@]} -eq 0 ] && cells=(T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11)
+[ ${#cells[@]} -eq 0 ] && cells=(T1 T2 T3 T4 T5 T6 T7 T8 T9 T10 T11 T11b)
 
 echo "${YELLOW}muninn WP1 — host update spike, approach A${NC}"
 echo "probe image: $PROBE_IMAGE"
