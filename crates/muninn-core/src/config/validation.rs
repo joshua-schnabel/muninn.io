@@ -466,6 +466,13 @@ fn validate_listeners(cfg: &ConfigV1) -> Result<()> {
 /// exists to avoid; huginn.io's check has it, and the symptom is a listener that
 /// silently never starts while readiness still reports true.
 fn addresses_collide(a: &SocketAddr, b: &SocketAddr) -> bool {
+    // Port 0 means "any free port", and the OS hands out a different one to each
+    // listener. Two zeroes are the one case where identical addresses do *not*
+    // collide — treating them as a conflict would reject a configuration that
+    // works, which is worse than the check not existing.
+    if a.port() == 0 || b.port() == 0 {
+        return false;
+    }
     if a.port() != b.port() {
         return false;
     }

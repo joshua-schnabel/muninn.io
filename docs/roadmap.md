@@ -17,7 +17,7 @@ conversation.
 | [WP5](#wp5--outputs) | Outputs | ✅ |
 | [WP6](#wp6--telegraf-process-management) | Telegraf process management | ✅ |
 | [WP7](#wp7--health-server-and-state-machine) | Health server and state machine | ✅ |
-| [WP8](#wp8--container-image) | Container image | ⬜ |
+| [WP8](#wp8--container-image) | Container image | ✅ |
 | [WP9](#wp9--docker-module) | Docker module | ⬜ |
 | [WP10](#wp10--updates-module) | Updates module | ⬜ |
 | [WP11](#wp11--end-to-end-tests) | End-to-end tests | ⬜ |
@@ -359,6 +359,9 @@ what makes the endpoints trustworthy:
 
 ## WP8 — Container image
 
+**Status: complete, 2026-08-02.** `bash scripts/container-test.sh` — 15 checks,
+all under the full hardening.
+
 **Goal.** One self-contained, hardened image.
 
 **Unblocked by WP1**: the runtime base is `debian:12-slim`, carrying `apt` and
@@ -386,6 +389,21 @@ than optional — see [`hardening.md`](hardening.md) and [R7](risks.md).
 7. Container tests from brief §18.5 pass: missing config, missing secret, wrong
    mount, reachable Prometheus port, clean SIGTERM, detected Telegraf crash, and
    the container not staying falsely healthy.
+
+All met. `scripts/container-test.sh` runs every check under the posture the
+documentation promises — non-root, read-only root filesystem, `--cap-drop=ALL`,
+`no-new-privileges`, tmpfs — because a test that quietly relaxed one of them
+would prove the image works in a configuration nobody ships.
+
+**Two things the tests taught, both now comments in the script:**
+
+- `cpu_usage_*` is a *delta*, so it does not exist until the second collection
+  cycle. Disk figures are absolute and appear on the first flush. A single check
+  right after readiness sees disks and concludes, wrongly, that CPU collection
+  is broken.
+- With `--cap-drop=ALL` there is no `CAP_KILL`, so **uid 0 cannot signal a
+  process owned by another user** — `docker exec -u 0 … kill` fails with
+  "Operation not permitted". The hardening is stricter than it looks.
 
 **Brief:** §3.2, §9, §12, §17.1, §17.3, §18.5, §26 step 9.
 
