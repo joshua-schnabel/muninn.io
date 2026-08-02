@@ -418,8 +418,8 @@ visible here.
 
 ## updates
 
-Pending package updates on the host. **Experimental, disabled, and currently
-refused at startup if enabled.**
+Pending package updates on the host. Off by default; implementation lands in
+WP10.
 
 ```yaml
 modules:
@@ -429,26 +429,49 @@ modules:
     security_only_metric: true
 ```
 
-### Why this is not finished
+| Option | Type | Default | Effect |
+|---|---|---|---|
+| `interval` | duration | `1h` | Own schedule — package state changes slowly and the check is comparatively expensive |
+| `security_only_metric` | boolean | `true` | Report the security subset alongside the total |
 
-Two problems, both structural.
+**Renders to** `[[inputs.exec]]` running muninn's update helper with
+`data_format = "influx"`. Telegraf has no package input plugin — all 249 in
+1.39.2 were checked — so this is the only route available.
 
-**`apt` inside the container reads the container's package database.** Running
-`apt-get -s upgrade` in the muninn container reports the updates pending for
-debian-slim, not for your host. Not a crash — a number. A believable one, that
-rises over time and drops after a rebuild, behaving exactly as a correct
-implementation would. For a monitoring system that is the worst possible failure
-mode.
+### How it reads the host, and why that took a spike
 
-**Telegraf has no package plugin.** All 249 input plugins in 1.39.2 were checked.
-The result has to come from `inputs.exec` running a helper muninn ships, so there
-is no established implementation to follow.
+`apt` inside a container reads the *container's* package database. A naive
+implementation reports the updates pending for debian-slim: not a crash, a
+number, and a believable one. The [WP1 spike](spikes/updates-spike.md) settled
+the approach with measurements before any of it was written.
 
-A documented spike settles the approach before the module is written:
-[`spikes/updates-spike.md`](spikes/updates-spike.md). Until it concludes, enabling
-the module fails at startup rather than quietly doing nothing.
+What it does: mounts the host's apt and dpkg state read-only, points apt's
+directory options at it, and runs `apt-get -s dist-upgrade`. Real apt does the
+resolution — which is the point, because it honours holds, pins and phased
+updates that a hand-rolled version comparison would not.
 
-### The invariant, whatever the spike decides
+Measured against each host's own answer:
+
+| Host | Host says | muninn says |
+|---|---|---|
+| debian:12 | 41 / 3 | **41 / 3** |
+| debian:13 | 39 / 2 | **39 / 2** |
+| ubuntu:22.04 | 50 / 40 | **50 / 40** |
+| ubuntu:24.04 | 66 / 34 | **66 / 34** |
+
+Including from a container running a *different* distribution than the host,
+which is the normal case rather than the exotic one.
+
+**Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
+the same mount CPU, memory and disk already need. No extra capabilities, no root,
+no writes: the host tree is byte-identical after a check.
+
+**Consequence for the image.** This needs real `apt` and `dpkg` in the runtime
+image, so the base is debian-slim rather than distroless. That trade, with its
+measurements, is in [`hardening.md`](hardening.md) and
+[ADR-0009](adr/0009-updates-module-approach.md).
+
+### The invariant
 
 ```text
 muninn_updates_pending{severity="all"}        gauge
@@ -462,6 +485,10 @@ muninn_updates_lists_age_seconds              gauge
 emits zero. "No updates pending" and "I could not look" are opposite conclusions,
 and an alert rule cannot tell them apart afterwards if they share a
 representation.
+
+This is demonstrated rather than asserted: a missing mount, an empty dpkg status
+and a structurally corrupt one each produce `check_success=0` with a specific
+`reason` tag and no counts. Those are the spike's T8, T9 and T9b cells.
 
 A failure here degrades muninn rather than stopping it: the configuration is
 valid and everything else keeps collecting. The failure stays visible in the

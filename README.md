@@ -174,7 +174,7 @@ it while Telegraf is down — which is exactly when Telegraf's endpoint is gone.
 | `disk_io` | Block device I/O | off |
 | `network` | Interface counters | off |
 | `docker` | Per-container metrics | off — **needs the Docker socket** |
-| `updates` | Pending package updates | off — **experimental** |
+| `updates` | Pending package updates on the host | off |
 
 Everything is off by default; you enable what you want. Per-module options,
 metrics and requirements: [`docs/modules.md`](docs/modules.md).
@@ -235,9 +235,10 @@ the Debian path.
 - **No internal restart loop.** If Telegraf dies, muninn exits and the
   orchestrator restarts the container — so a crash is never invisible inside a
   seemingly-healthy container. [ADR-0002](docs/adr/0002-supervisor-no-restart-loop.md)
-- **The updates module is unfinished.** Reading the host's package state from a
-  container is genuinely unsolved; a documented spike settles it before the module
-  ships. [`docs/spikes/updates-spike.md`](docs/spikes/updates-spike.md)
+- **The image is debian-slim, not distroless.** Reading the host's package state
+  needs real `apt` and `dpkg`, which costs 88 packages instead of 10 and a shell
+  in the image. Measured, and traded deliberately —
+  [`docs/hardening.md`](docs/hardening.md) has the numbers and the mitigations.
 - **Windows and macOS hosts** are out of scope.
 
 ## Documentation

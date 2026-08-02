@@ -5,28 +5,47 @@ mentioned.
 
 ## R1 — The updates module may have no safe answer
 
-**Severity: high · Owner: WP1 · Status: open**
+**Severity: was high · Owner: WP1 · Status: RESOLVED 2026-08-02**
 
-Reading the host's package state from a container is genuinely unsolved here.
-`apt` inside the container reads the container's database, so a naive
-implementation reports believable numbers about the wrong machine — the worst
-failure mode a monitoring system has, because nothing looks broken.
+Reading the host's package state from a container turned out to be solvable, and
+the [spike](spikes/updates-spike.md) measured it rather than argued it: approach A
+reproduces the host's own answer exactly across Debian 12/13 and Ubuntu
+22.04/24.04, including from a container running a different distribution, under
+non-root with `--cap-drop=ALL` and a read-only root filesystem, leaving the host
+tree byte-identical.
 
-Telegraf has no package input plugin (all 249 checked), so there is no
-established implementation to follow.
+Failure is detectable, which was the property the module stood on: a missing
+mount, an empty dpkg status and a corrupt one each produce `check_success=0` with
+the pending counts omitted — never a zero.
 
-The likely approach needs `apt` and `dpkg` **inside the runtime image**, which
-means debian-slim rather than distroless — a measurably larger attack surface
-than huginn.io's posture. The alternatives need capabilities the hardening
-baseline excludes.
+Accepted in [ADR-0009](adr/0009-updates-module-approach.md). Superseded by R7.
 
-**Mitigation.** The spike runs first (WP1), before the Dockerfile exists, so the
-base-image consequence is decided once rather than reverted later. If no approach
-qualifies, the module ships experimental and off, and reports
-`check_success = 0` rather than a fabricated zero.
+## R7 — The runtime image carries a shell and a package manager
 
-**Resolved when** [ADR-0009](adr/0009-updates-module-approach.md) moves from
-proposed to accepted.
+**Severity: medium · Owner: WP8/WP12 · Status: accepted trade, monitor**
+
+R1's resolution needs real `apt` and `dpkg` in the image, so the base is
+`debian:12-slim` rather than distroless: 88 packages instead of 10, and 5
+CRITICAL / 17 HIGH CVEs instead of none. All are currently unfixable, and four of
+the five CRITICAL are in `perl-base`, which muninn never invokes.
+
+The CVE count is the lesser problem. A shell and a package manager inside a
+container that mounts the host filesystem is a real convenience for anyone who
+achieves code execution there.
+
+**Mitigation.** Non-root, all capabilities dropped, read-only root filesystem,
+`no-new-privileges`, read-only host mount — all verified working with the apt
+invocation. Documented with the measurements in [`hardening.md`](hardening.md).
+
+**Residual.** Unfixable today means blocking tomorrow: once Debian ships fixes,
+the Trivy gate starts failing until the image is rebuilt. That is the intended
+behaviour, and it means image currency becomes an operational duty rather than a
+nicety.
+
+**Revisit if** the CVE surface starts producing regular build failures unrelated
+to muninn's own code. The two-variant scheme — distroless by default, debian-slim
+for the updates module — was set aside for CI simplicity, not because it was
+unworkable.
 
 ## R2 — Two Prometheus endpoints invite scraping the wrong one
 

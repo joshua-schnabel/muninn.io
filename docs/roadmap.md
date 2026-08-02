@@ -10,7 +10,7 @@ conversation.
 | WP | Title | Status |
 |---|---|---|
 | [WP0](#wp0--design-package) | Design package | ✅ |
-| [WP1](#wp1--host-update-spike) | Host update spike | ⬜ |
+| [WP1](#wp1--host-update-spike) | Host update spike | ✅ |
 | [WP2](#wp2--configuration-model-v1) | Configuration model V1 | ⬜ |
 | [WP3](#wp3--telegraf-model-and-renderer) | Telegraf model and renderer | ⬜ |
 | [WP4](#wp4--base-modules) | Base modules | ⬜ |
@@ -71,35 +71,44 @@ every later package is an implementation task rather than a design task.
 
 ## WP1 — Host update spike
 
-**Goal.** Decide, with evidence, how muninn reads the *host's* pending package
-updates from inside a container — or establish that it cannot be done safely and
-the module ships as experimental.
+**Status: complete, 2026-08-02.** Approach A adopted; see
+[ADR-0009](adr/0009-updates-module-approach.md) and the
+[spike results](spikes/updates-spike.md). WP8 and WP10 are unblocked.
 
-This is the highest-risk package in the project. Telegraf has no package input
-plugin (checked: none of its 249 inputs), and `apt` inside the container reads
-the container's package database, so a naive implementation is not merely wrong
-but *plausibly* wrong.
+**Outcome.** Mounting the host's apt and dpkg state read-only and running
+`apt-get -s dist-upgrade` against it reproduces the host's own answer exactly —
+41/3 on Debian 12, 39/2 on Debian 13, 50/40 on Ubuntu 22.04, 66/34 on Ubuntu
+24.04 — including from a container running a different distribution. It works
+under non-root with `--cap-drop=ALL` and a read-only root filesystem, and leaves
+the host tree byte-identical. Approaches B and C both need capabilities the
+hardening baseline excludes; B fails even when granted them.
 
-**Touches**
+**Consequence.** The runtime base image is `debian:12-slim`, not distroless: 88
+packages instead of 10, 5 CRITICAL / 17 HIGH CVEs instead of none, all currently
+unfixable. Accepted as a trade, with the mitigations in
+[`hardening.md`](hardening.md) now load-bearing. Tracked as
+[R7](risks.md).
 
-- `spikes/updates/` — runner script, per-approach probes, fixture rootfs setup
-- `docs/spikes/updates-spike.md` — results per matrix cell, decision
-- `docs/adr/0009-updates-module-approach.md` — finalised from "open"
-- `docs/hardening.md` — base-image consequence
+**Delivered**
 
-**Done when**
+- `spikes/updates/probe.sh` — the specification WP10 implements
+- `spikes/updates/fixtures/build-host.sh`, `spikes/updates/run.sh` — reproducible
+  via `bash spikes/updates/run.sh`
+- `docs/spikes/updates-spike.md` — twelve matrix cells with measured results
+- ADR-0009 finalised; `hardening.md` and `risks.md` updated
 
-1. Approaches A (read-only host mounts), B (chroot), C (nsenter) and D (host
-   helper) are each evaluated and recorded, including the ones rejected.
-2. Test matrix T1–T11 from `docs/spikes/updates-spike.md` has a recorded result
-   per cell, across Debian 12/13 and Ubuntu 22.04/24.04.
-3. T11 compares against a real host (WSL Debian), not only container fixtures.
-4. T8/T9/T10 demonstrate that a failed check reports failure — never "0 updates".
-5. No host package data is modified by any approach that is kept.
-6. The runtime base image is decided and written down with its reasoning.
-7. `bash spikes/updates/run.sh` reproduces the results.
+**Done when** — all met:
 
-**Blocks:** WP8 (base image), WP10 (implementation).
+1. ✅ Approaches A–D each evaluated and recorded, including the rejected ones.
+2. ✅ T1–T11 recorded across Debian 12/13 and Ubuntu 22.04/24.04.
+3. ⚠️ T11 ran against a real host (WSL Debian) and agrees — but that host has
+   nothing pending, so the agreement is on zero and the counting path is not
+   exercised there. Covered against four real distributions by T2–T6.
+4. ✅ T8/T9/T9b/T10 demonstrate that a failed check reports failure, never zero.
+5. ✅ No host data modified — SHA-256 over the host tree identical before and after.
+6. ✅ Base image decided and written down with its measurements.
+7. ✅ `bash spikes/updates/run.sh` reproduces all twelve cells.
+
 **Brief:** §8 in full, §18.6, §29.11.
 
 ---
@@ -273,7 +282,9 @@ trait and registry.
 
 **Goal.** One self-contained, hardened image.
 
-**Blocked by WP1** — the base image depends on the spike's outcome.
+**Unblocked by WP1**: the runtime base is `debian:12-slim`, carrying `apt` and
+`dpkg` for the updates module. The hardening measures are load-bearing rather
+than optional — see [`hardening.md`](hardening.md) and [R7](risks.md).
 
 **Touches** `Dockerfile`, `docker-compose.yml`,
 `docker-compose.integration.yml`, `muninn/src/cli.rs`
@@ -326,17 +337,22 @@ trait and registry.
 
 ## WP10 — Updates module
 
-**Goal.** Implement whatever WP1 concluded.
+**Goal.** Implement approach A, as specified by `spikes/updates/probe.sh`.
 
-**Blocked by WP1.**
+**Unblocked by WP1.** The probe script is the specification: preconditions first,
+each failing with its own low-cardinality reason, then the simulated upgrade,
+then counting. One question the spike deliberately left open — whether to ship
+the shell helper and call it through `inputs.exec`, or to invoke `apt-get` from
+muninn and emit the line protocol from Rust. Both run the same apt invocation,
+which is the part that had to be proven.
 
 **Touches** `crates/muninn-modules/src/updates/{mod,debian}.rs`, the update
-helper binary, `docs/modules.md`.
+helper, `docs/modules.md`.
 
 **Done when**
 
-1. The implementation matches the approach recorded in ADR-0009 — no substitute
-   chosen during implementation without amending the ADR.
+1. The implementation matches ADR-0009 — no substitute chosen during
+   implementation without amending the ADR.
 2. Metrics are as specified in `docs/spikes/updates-spike.md`.
 3. A failed check emits `check_success=0` and omits the pending counts. It never
    emits zero.

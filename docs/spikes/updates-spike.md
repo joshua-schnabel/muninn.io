@@ -1,130 +1,218 @@
 # Spike — reading the host's pending package updates from a container
 
-**Status:** planned (WP1) · **Decides:** [ADR-0009](../adr/0009-updates-module-approach.md)
-and the runtime base image · **Blocks:** WP8, WP10
+**Status: complete.** Approach A adopted. Decides
+[ADR-0009](../adr/0009-updates-module-approach.md) and the runtime base image.
+Unblocks WP8 and WP10.
 
-This is the highest-risk piece of muninn. It runs before the Dockerfile is
-written, because its outcome decides whether the runtime image can be distroless
-or has to carry apt and dpkg.
+Run it yourself: `bash spikes/updates/run.sh` (needs Docker; T11 needs WSL).
+
+## Result in one paragraph
+
+Approach A — mounting the host's apt and dpkg state read-only and running
+`apt-get -s dist-upgrade` against it — works, and works exactly. Across Debian
+12, Debian 13, Ubuntu 22.04 and Ubuntu 24.04 it reproduces the host's own answer
+to the package, including the security subset, and it does so from a container
+running a *different* distribution than the host. It runs under muninn's full
+hardening (non-root, `--cap-drop=ALL`, read-only root filesystem) and leaves the
+host tree byte-identical. Approaches B and C are dead: both need capabilities the
+hardening baseline excludes, and B fails even when granted them.
+
+The cost is that the runtime image needs `apt` and `dpkg`, so it is debian-slim
+rather than distroless. That is a real regression and is quantified below.
 
 ## 1. The problem
 
-`apt` inside the muninn container reads the *container's* package database.
-`apt-get -s upgrade` there reports the updates pending for debian-slim.
+`apt` inside the container reads the *container's* package database. Running
+`apt-get -s upgrade` in the muninn container reports the updates pending for
+debian-slim.
 
-The result is not an error. It is a number, and a believable one — a small
-integer that rises over time and drops after a rebuild, behaving exactly as a
-correct implementation would. For a monitoring system this is the worst class of
-bug there is: silently wrong, indistinguishable from right, and only detectable
-by someone who thinks to check the host by hand.
+The result is not an error. It is a number, and a believable one — it rises over
+time and drops after a rebuild, behaving exactly as a correct implementation
+would. For a monitoring system that is the worst failure mode there is.
 
-Two constraints make it harder than it sounds.
+Two constraints made it harder than it sounds. **Telegraf has no package input
+plugin** (all 249 checked), so the result has to come from `inputs.exec` running
+a helper muninn ships. And **the host's data is not the container's data**, which
+is the whole question.
 
-**There is no plugin.** All 249 Telegraf 1.39.2 input plugins were checked;
-nothing covers apt, dpkg or package updates. The result has to reach Telegraf
-through `inputs.exec` running a helper muninn ships, emitting influx line
-protocol on stdout. There is no well-trodden path to copy.
+## 2. Method
 
-**The host's data is not the container's data**, and bridging that gap without
-privileges is the entire question.
+Simulated hosts are containers built from real Debian and Ubuntu images whose apt
+state is exported and then mounted read-only into a probe container. Dated image
+tags are pinned rather than `:12` / `:24.04`, because the current images are fully
+patched and every cell would trivially report zero.
 
-## 2. Approaches
+| Fixture | Image | Ground truth |
+|---|---|---|
+| deb12-fresh | `debian:12`, then `apt-get upgrade -y` | 0 pending |
+| deb12-stale | `debian:bookworm-20240211` | 41 pending, 3 security |
+| deb13-stale | `debian:trixie-20250428` | 39 pending, 2 security |
+| ubu22-stale | `ubuntu:jammy-20240227` | 50 pending, 40 security |
+| ubu24-stale | `ubuntu:noble-20240605` | 66 pending, 34 security |
+| deb12-oldlists | as deb12-stale, indices backdated 30 days | 41 pending |
 
-### A — Read-only host mounts, simulated upgrade
+Ground truth is what each host answers about *itself*, from inside itself, with
+the same `apt-get -s dist-upgrade` the probe runs. The probe is
+`spikes/updates/probe.sh`, run from `debian:12-slim`.
 
-Mount the host's apt state read-only and redirect apt at it:
+The fixture deliberately preserves `/etc/os-release` as a symlink **and**
+`/usr/lib/os-release` as its target, because flattening that would have hidden a
+real failure mode — see §5.
 
-```bash
-apt-get -s upgrade \
-  -o Dir::State::status=/hostfs/var/lib/dpkg/status \
-  -o Dir::Etc::sourcelist=/hostfs/etc/apt/sources.list \
-  -o Dir::Etc::sourceparts=/hostfs/etc/apt/sources.list.d \
-  -o Dir::State::lists=/hostfs/var/lib/apt/lists \
-  -o Dir::Cache=/tmp/muninn-apt-cache
+## 3. Results
+
+All twelve cells pass.
+
+| # | Case | Expected | Measured | |
+|---|---|---|---|---|
+| T1 | debian:12, freshly upgraded | 0 / 0, success | `pending_all=0, pending_security=0, check_success=1` | ✅ |
+| T2 | debian:12, outdated | matches host | **41 / 3** — identical to ground truth | ✅ |
+| T3 | security subset | `0 < security ≤ total` | 3 of 41 | ✅ |
+| T4 | debian:13, outdated | matches host | **39 / 2** — identical | ✅ |
+| T5 | ubuntu:22.04, outdated | matches host | **50 / 40** — identical | ✅ |
+| T6 | ubuntu:24.04, outdated | matches host | **66 / 34** — identical | ✅ |
+| T7 | package lists 30 days old | age reported, result still produced | `lists_age_seconds=2592334`, `check_success=1` | ✅ |
+| T8 | required mount absent | failure, **no** pending fields | `check_success=0, reason=hostfs_not_mounted`, counts omitted | ✅ |
+| T9 | dpkg status empty | failure, **no** pending fields | `check_success=0, reason=dpkg_status_empty` | ✅ |
+| T9b | dpkg status corrupt | failure, never zero | `check_success=0, reason=apt_failed` | ✅ |
+| T10 | debian:12-slim reads an ubuntu:24.04 host | correct or detected error | **66 / 34** — correct across distributions | ✅ |
+| T11 | real host (WSL Debian) | matches native apt | 0 = 0 — agrees, but see the caveat | ⚠️ |
+
+### The cells that matter most
+
+T2 through T6 establish that it *works*. **T8, T9 and T10 establish that when it
+does not work, you can tell** — which is the property the whole module stands on.
+
+T9b is worth singling out. A structurally corrupt dpkg status file makes apt exit
+non-zero, and the probe reports `check_success=0`. The alternative — apt parsing
+zero packages and cheerfully reporting "0 updates pending" — is precisely the
+failure this module exists to avoid, and the test asserts against it explicitly.
+
+T10 was the one expected to break and did not. A `debian:12-slim` container with
+apt 2.6.1 reads an Ubuntu 24.04 host's package indices and produces that host's
+exact answer. This matters because container and host being different
+distributions is the *normal* case, not the exotic one: the muninn image has a
+fixed base and hosts do not.
+
+### T11 caveat
+
+The real WSL Debian host has nothing pending, so probe and native both answer
+zero. That is agreement, but weak agreement: it does not exercise the counting
+path on a real filesystem. It does exercise the real symlink layout, real
+permissions and a real 264 KB dpkg status file.
+
+Strengthening it requires refreshing that host's package lists, which means
+modifying a machine this spike has no business modifying. The counting path is
+covered against four real distributions by T2–T6.
+
+### Hardening and non-modification
+
+Two acceptance criteria checked separately from the matrix:
+
+```
+non-root (65534), --cap-drop=ALL, --read-only, tmpfs /tmp
+  → pending_all=41i, pending_security=3i, check_success=1i
+SHA-256 over all 461 files of the host tree, before and after
+  → 3003823b…b72e2 both times — identical
 ```
 
-Security updates come from the candidate version's origin suite (`*-security`),
-read via `apt-cache policy` or the `InRelease` files under `lists/`.
+Approach A needs no capabilities, no write access to the host, and no root.
 
-**To establish**
+## 4. Approaches B, C and D
 
-- Where does apt write despite `-s`? Which of those can be redirected to a tmpfs
-  and which cannot?
-- Is the container's apt able to read the host's `lists/` format? That format has
-  changed across releases; a Debian 12 container reading Ubuntu 24.04 lists is the
-  interesting case.
-- Is security-update classification reliable, or does it depend on repository
-  metadata not all hosts have?
-- What is the minimum mount set? Every path in it is host filesystem exposure.
-
-**If chosen:** apt and dpkg must be in the runtime image → debian-slim, not
-distroless. This is the expensive consequence, and the reason the spike runs
-first.
-
-### B — Host root read-only plus `chroot`
-
-```bash
-chroot /hostfs apt-get -s upgrade
-```
-
-**To establish** — required capabilities (`CAP_SYS_CHROOT` at minimum); whether
-apt functions at all in a read-only chroot, given it wants
-`/var/lib/apt/lists/partial` and a cache directory; whether an overlay on top of
-the read-only mount is workable; which binaries and shared libraries must exist
-in the host root, which is not guaranteed on a minimal host.
-
-### C — `nsenter` into the host namespaces
-
-Requires `--pid=host` plus `CAP_SYS_ADMIN` or `CAP_SYS_PTRACE`. This contradicts
-the hardening requirements directly.
-
-Evaluated for the record only, so the rejection is documented rather than
-assumed. It will not be the default.
-
-### D — External host helper
-
-A systemd timer on the host writes a small file muninn reads read-only:
+**B — host root read-only plus `chroot`. Rejected, fails twice.**
 
 ```
-/var/lib/muninn/updates.prom   (or line protocol)
+--cap-drop=ALL   → chroot: cannot change root directory: Operation not permitted
+default caps     → exit 100
+                   E: Unable to mkstemp /tmp/clearsigned.message… (Read-only file system)
+                   E: The package lists or status file could not be parsed or opened.
 ```
 
-Contradicts the self-contained container goal — and is the only approach
-guaranteed correct, because the check runs where the packages are. Kept as the
-documented fallback if A and B both fail.
+It needs `CAP_SYS_CHROOT`, which the hardening baseline drops — and even when
+granted, apt cannot work inside a read-only chroot because it wants scratch space
+the mount does not provide. Making that work would mean an overlay on top of the
+host root, which is more machinery than approach A needs in total.
 
-## 3. Test matrix
+**C — `nsenter` into the host namespaces. Rejected as expected.**
 
-Simulated hosts are containers with a real Debian or Ubuntu rootfs, whose apt
-directories are mounted read-only into the muninn test container. That keeps the
-matrix reproducible and runnable in CI. **T11 checks the same thing against a
-real host** (WSL Debian), which is what the brief's "compare against a native
-check" criterion actually requires — container fixtures alone cannot satisfy it.
+```
+--cap-drop=ALL                        → nsenter: reassociate to namespace 'ns/mnt' failed
+--pid=host --cap-add=SYS_ADMIN        → works
+```
 
-| # | Host | State | Expected |
-|---|---|---|---|
-| T1 | debian:12 | freshly upgraded | `0` pending, `0` security, `check_success=1` |
-| T2 | debian:12 | ≥1 update available | count **identical** to native `apt-get -s upgrade` |
-| T3 | debian:12 | security update available | `security > 0` and `security ≤ total` |
-| T4 | debian:13 | as T2 | same — format compatibility across a major release |
-| T5 | ubuntu:22.04 | as T2 | same |
-| T6 | ubuntu:24.04 | as T2 | same |
-| T7 | any | package lists older than 7 days | `lists_age_seconds` reported, result flagged stale |
-| T8 | any | a required mount is absent | `check_success=0` — **never `0` pending** |
-| T9 | any | dpkg status unreadable or corrupt | `check_success=0`, error names the path, never the contents |
-| T10 | mixed | debian:12 container against an ubuntu:24.04 "host" | correct **or** a detected error — never silently wrong |
-| T11 | WSL Debian | real host | result equals `apt-get -s upgrade` on that host |
+Confirmed empirically rather than assumed: it works only with the host PID
+namespace and `CAP_SYS_ADMIN`, both excluded by the hardening requirements. Not a
+candidate.
 
-T2 and T11 establish that it works. **T8, T9 and T10 are the ones that matter
-most**: they establish that when it does not work, you can tell. A module that is
-right 90 % of the time and confidently wrong the rest is worse than one that
-refuses to answer.
+**D — external host helper. Not needed, retained as documentation.**
 
-T10 deserves particular attention. Container and host will often be different
-distributions — that is the normal case, not the exotic one, since the muninn
-image has a fixed base and hosts do not.
+A systemd timer writing a file muninn reads. Since A works under full hardening,
+D is no longer the fallback it was planned as. It stays documented for operators
+who will not mount the host filesystem at all.
 
-## 4. Metrics
+## 5. Findings worth keeping
+
+**`/etc/os-release` is a symlink to `/usr/lib/os-release`.** The first probe
+version read only `/etc/os-release` and reported `os_release_unreadable` for a
+plainly Debian host, because a mount that includes `/etc` but not `/usr/lib`
+leaves the symlink dangling. The probe now tries both. This is concrete support
+for [ADR-0005](../adr/0005-hostfs-mount.md): mounting hand-picked paths breaks in
+ways that mounting the root does not.
+
+**`Debug::NoLocking=1` is required.** Without it apt tries to take
+`/var/lib/dpkg/lock` on a read-only mount and fails.
+
+**`Dir::Cache` is the only directory apt genuinely needs to write**, and pointing
+it at a scratch directory inside the container is sufficient. `Dir::State::lists`
+can stay read-only despite apt's usual `lists/partial` handling, because
+simulation only reads the indices.
+
+**Security classification comes from the candidate version's origin.** Debian
+writes `Debian-Security:12/stable-security`, Ubuntu writes
+`Ubuntu:24.04/noble-security`. Matching on `-security` rather than a vendor name
+keeps both working — and keeps working for third-party security suites.
+
+**`apt-get -s dist-upgrade`, not `upgrade`.** `upgrade` will not install new
+packages, so it under-reports where a security fix pulls in a new dependency.
+
+## 6. The cost: the runtime base image
+
+Approach A needs `apt` and `dpkg` in the runtime image, so it cannot be
+distroless. Measured with Trivy:
+
+| | `gcr.io/distroless/cc-debian12` | `debian:12-slim` |
+|---|---|---|
+| Size | 8 MB | 26 MB |
+| Packages | 10 | 88 |
+| CRITICAL | 0 | 5 |
+| HIGH | 0 | 17 |
+| MEDIUM | 4 | 57 |
+| **Fixable** | **0** | **0** |
+
+Every one of those CVEs is currently unfixable — `will_not_fix`, `affected` or
+`fix_deferred` — so the Trivy gate (fixable CRITICAL/HIGH) stays green. Four of
+the five CRITICAL are in `perl-base`, which muninn never invokes and which is
+present because it is Essential in Debian, not because apt pulls it in.
+
+The sharper cost is qualitative: debian-slim ships a shell and a package manager
+inside a container that has the host filesystem mounted. That is a meaningful aid
+to anyone who achieves code execution there.
+
+**Decision: a single debian-slim image** (maintainer's call, made with these
+numbers in hand). A two-variant scheme — distroless by default, debian-slim for
+the updates module — was considered and set aside in favour of one artefact and
+one CI path, consistent with the brief's self-contained-container goal.
+
+The mitigations are therefore load-bearing rather than optional, and
+`docs/hardening.md` records them: non-root, read-only root filesystem,
+`--cap-drop=ALL`, `no-new-privileges`, all verified working with approach A.
+
+## 7. What WP10 implements
+
+The probe in `spikes/updates/probe.sh` is the specification. Its structure —
+preconditions first, each failing with a specific low-cardinality reason, then
+the simulated upgrade, then counting — is what the Rust implementation mirrors.
 
 ```text
 muninn_updates_pending{severity="all"}        gauge
@@ -134,46 +222,11 @@ muninn_updates_check_timestamp_seconds        gauge
 muninn_updates_lists_age_seconds              gauge
 ```
 
-**The invariant.** A failed check emits `check_success=0` and **omits** the
-pending gauges. It never emits zero. "No updates pending" and "I could not look"
-are opposite conclusions and must not share a representation — an alert rule
-cannot distinguish them afterwards.
+**The invariant, now demonstrated rather than asserted:** a failed check emits
+`check_success=0` and omits the pending counts. T8, T9 and T9b are the tests that
+hold it.
 
-A failure here produces `Degraded`, not `Failed`: the configuration is valid and
-Telegraf keeps collecting everything else. The failure stays visible in the logs,
-in `/status`, and in `check_success`.
-
-## 5. Acceptance criteria
-
-An approach may be adopted only if all hold:
-
-1. It works reproducibly across Debian 12/13 and Ubuntu 22.04/24.04.
-2. No host package data is modified. Verified by checksumming the mounted host
-   paths before and after.
-3. Failures are unambiguous (T8, T9, T10).
-4. The result is verified against a native check on a real host (T11).
-5. Required mounts and permissions are documented per module.
-6. It does not require capabilities the hardening baseline excludes.
-
-**If none qualifies:** the module ships marked `experimental`, disabled by
-default, checking its preconditions hard when enabled and failing loudly when
-they are absent. Approach D is documented as the supported path for operators who
-need the metric to be trustworthy.
-
-## 6. Deliverables
-
-| Artefact | Content |
-|---|---|
-| `spikes/updates/run.sh` | Runs the whole matrix; reproducible |
-| `spikes/updates/fixtures/` | Rootfs preparation per distribution and state |
-| `docs/spikes/updates-spike.md` | This file, extended with a result per cell |
-| `docs/adr/0009-updates-module-approach.md` | Finalised from "proposed" |
-| `docs/hardening.md` | Base-image consequence and its security assessment |
-
-## 7. Time box
-
-Two days of work. If no approach has satisfied the acceptance criteria by then,
-that is itself the result: record the findings, ship the module as experimental,
-document approach D, and move on. The rest of the MVP does not depend on this
-metric, and an open-ended investigation into apt internals is not a good trade
-against the twelve other work packages.
+Open for WP10: whether to keep a shell helper invoked through `inputs.exec`, or
+to shell out to `apt-get` from muninn itself and emit the line protocol from
+Rust. The spike does not decide this — both run the same apt invocation, which is
+the part that had to be proven.
