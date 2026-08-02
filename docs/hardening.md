@@ -31,7 +31,7 @@ than raising the baseline for everyone.
 ## The image
 
 - **Multi-stage build.** The runtime stage carries the muninn binary, the pinned
-  Telegraf binary, and nothing else.
+  Telegraf binary, and nothing else muninn does not need.
 - **Non-root**, with a read-only root filesystem.
 - **Telegraf pinned by SHA-256** and verified during the build, per architecture.
   A mismatch fails the build. [ADR-0011](adr/0011-telegraf-pinning.md)
@@ -39,11 +39,44 @@ than raising the baseline for everyone.
   scripts, default configuration or user setup — muninn manages all of that.
 - **SBOM generated** per release; **Trivy** blocks on fixable CRITICAL/HIGH.
 
-> **Open:** the runtime base image is decided by the WP1 spike. If reading host
-> package state needs `apt` and `dpkg` in the image, the base is debian-slim
-> rather than distroless — a real increase in attack surface, which is precisely
-> why that decision is made before the Dockerfile is written rather than after.
-> See [`risks.md#r1`](risks.md) and [`spikes/updates-spike.md`](spikes/updates-spike.md).
+### The base image is debian-slim, and what that costs
+
+The [WP1 spike](spikes/updates-spike.md) established that reading the host's
+package state needs real `apt` and `dpkg` in the runtime image. The base is
+therefore `debian:12-slim`, not distroless. This is a deliberate trade, made with
+measurements rather than estimates:
+
+| | `gcr.io/distroless/cc-debian12` | `debian:12-slim` |
+|---|---|---|
+| Size | 8 MB | 26 MB |
+| Packages | 10 | 88 |
+| CRITICAL / HIGH / MEDIUM | 0 / 0 / 4 | 5 / 17 / 57 |
+| **Fixable** | **0** | **0** |
+
+Every one of those CVEs is currently unfixable — `will_not_fix`, `affected` or
+`fix_deferred` — so the Trivy gate stays green. Four of the five CRITICAL are in
+`perl-base`, which muninn never invokes and which is present because Debian marks
+it Essential, not because apt pulls it in.
+
+**The sharper cost is not the CVE count.** debian-slim ships a shell and a
+package manager, inside a container that has the host filesystem mounted
+read-only. For anyone who achieves code execution there, that is a meaningful
+convenience.
+
+Which is why the measures below are load-bearing rather than decoration. All of
+them were verified to work with the updates module's apt invocation — non-root,
+`--cap-drop=ALL`, read-only root filesystem, tmpfs `/tmp`, producing the correct
+answer and leaving the host tree byte-identical:
+
+- run non-root with all capabilities dropped and `no-new-privileges`;
+- keep the root filesystem read-only, with tmpfs only where writes are needed;
+- keep the host mount read-only;
+- keep the image current — an unfixable CVE today is a fixable one after the next
+  Debian point release, and the Trivy gate will start blocking then.
+
+A two-variant scheme — distroless by default and debian-slim for the updates
+module — was considered and set aside in favour of one artefact and one CI path,
+consistent with the self-contained-container goal.
 
 ## Secrets
 

@@ -33,6 +33,22 @@ The release pipeline reads the version from this file — see
 - Reference documentation: architecture, configuration, modules, rendering,
   supervision, host mounts, hardening, testing, versioning, CI/CD, risks.
 
+- WP1 host update spike: `spikes/updates/probe.sh` (the specification WP10
+  implements), `spikes/updates/fixtures/build-host.sh` and
+  `spikes/updates/run.sh`, reproducing all twelve matrix cells.
+
+### Decided
+
+- Approach A adopted for reading host package state — read-only host mounts plus
+  `apt-get -s dist-upgrade`. Measured to reproduce each host's own answer exactly
+  on Debian 12/13 and Ubuntu 22.04/24.04, including across distributions, under
+  non-root with all capabilities dropped, leaving the host tree byte-identical.
+  ADR-0009 moves from proposed to accepted.
+- The runtime base image is `debian:12-slim` rather than distroless, because
+  approach A needs `apt` and `dpkg`. Measured cost: 88 packages instead of 10,
+  5 CRITICAL / 17 HIGH CVEs instead of none — all currently unfixable, four of the
+  five CRITICAL in `perl-base`, which muninn never invokes. Tracked as R7.
+
 ### Notes
 
 Nothing is released yet. `muninn` builds but exits immediately with a pointer to

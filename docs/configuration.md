@@ -279,7 +279,7 @@ modules:
 | `disk_io` | off | `include_devices`, `exclude_devices` | host `/proc`, `/sys` |
 | `network` | off | `include_interfaces`, `exclude_interfaces` | host `/proc` |
 | `docker` | off | `endpoint`, `container_include`, `container_exclude`, `timeout` | Docker socket |
-| `updates` | off | `interval`, `security_only_metric` | see below |
+| `updates` | off | `interval`, `security_only_metric` | host `/hostfs` (same mount as the rest) |
 
 ### Include and exclude
 
@@ -301,13 +301,17 @@ Both accept glob patterns: `veth*`, `/var/lib/docker/*`.
 
 ### `modules.updates`
 
-Experimental and off by default. Reading the host's package state from a
-container is genuinely unsolved here — enabling this is currently refused at
-startup rather than silently doing nothing. See
+Off by default. Reads the host's package state through the same read-only host
+mount the other modules use; verified against Debian 12/13 and Ubuntu 22.04/24.04
+to reproduce each host's own answer exactly. See
 [`spikes/updates-spike.md`](spikes/updates-spike.md).
 
+It is off by default because it is the one module that requires `apt` and `dpkg`
+in the image, which makes the runtime base debian-slim rather than distroless —
+see [`hardening.md`](hardening.md) for what that costs.
+
 What it will never do: report `0` updates when it could not read the host's
-package data.
+package data. A failed check reports the failure and omits the counts.
 
 ### `modules.docker`
 
