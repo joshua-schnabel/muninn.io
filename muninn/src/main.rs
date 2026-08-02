@@ -45,6 +45,7 @@ use muninn_modules::RenderContext;
 
 mod cli;
 mod logging;
+mod runtime_check;
 mod supervisor;
 
 use cli::{Cli, Command};
@@ -88,7 +89,7 @@ fn dispatch(args: &Cli) -> muninn_core::Result<()> {
             Ok(())
         }
         Command::Run => run(args),
-        Command::CheckRuntime => not_yet("check-runtime", "WP8 (container image)"),
+        Command::CheckRuntime => check_runtime(args),
         Command::Healthcheck => healthcheck(args),
     }
 }
@@ -182,6 +183,49 @@ fn render_config(
         }
     }
     Ok(())
+}
+
+/// Report every unmet runtime precondition.
+///
+/// Separate from `validate` because it answers a different question: `validate`
+/// asks whether the configuration is coherent, this asks whether the machine can
+/// do what it says. Hence exit 12 rather than 10 — the YAML is right, the
+/// deployment is not.
+fn check_runtime(args: &Cli) -> muninn_core::Result<()> {
+    let cfg = load(args)?;
+    let findings = runtime_check::check(&cfg);
+
+    if findings.is_empty() {
+        println!(
+            "{}: every runtime precondition is met.",
+            args.config.display()
+        );
+        return Ok(());
+    }
+
+    for f in &findings {
+        let label = match f.severity {
+            runtime_check::Severity::Error => "error",
+            runtime_check::Severity::Warning => "warning",
+        };
+        println!("{label}: {}: {}", f.subject, f.message);
+    }
+
+    if runtime_check::has_errors(&findings) {
+        let count = findings
+            .iter()
+            .filter(|f| f.severity == runtime_check::Severity::Error)
+            .count();
+        Err(MuninnError::runtime(format!(
+            "{count} runtime precondition(s) not met — see the report above"
+        )))
+    } else {
+        println!(
+            "
+No blocking problems; the warnings above are worth reading."
+        );
+        Ok(())
+    }
 }
 
 /// Query the local health endpoint, for a container `HEALTHCHECK`.
@@ -294,12 +338,6 @@ fn run(args: &Cli) -> muninn_core::Result<()> {
     })
 }
 
-fn not_yet(command: &str, where_: &str) -> muninn_core::Result<()> {
-    Err(MuninnError::internal(format!(
-        "`{command}` is not implemented yet — it lands in {where_}. See docs/roadmap.md"
-    )))
-}
-
 fn join(items: &[&str]) -> String {
     if items.is_empty() {
         "none".to_string()
@@ -316,15 +354,5 @@ mod tests {
     fn join_names_an_empty_list_rather_than_printing_nothing() {
         assert_eq!(join(&[]), "none");
         assert_eq!(join(&["cpu", "memory"]), "cpu, memory");
-    }
-
-    /// An unimplemented command must exit non-zero and say where the work is —
-    /// silently succeeding would be worse than failing.
-    #[test]
-    fn an_unimplemented_command_fails_with_a_pointer() {
-        let err = not_yet("run", "WP6").unwrap_err();
-        assert_eq!(err.exit_code(), muninn_core::exit::INTERNAL);
-        assert!(err.to_string().contains("WP6"));
-        assert!(err.to_string().contains("roadmap"));
     }
 }

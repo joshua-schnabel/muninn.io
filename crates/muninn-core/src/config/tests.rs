@@ -730,6 +730,45 @@ fn distinct_specific_addresses_may_share_a_port() {
     ));
 }
 
+/// Port 0 means "any free port", so two of them get different ones. Rejecting
+/// this would refuse a configuration that works — and it is what the tests and
+/// the integration stack use to avoid fighting over ports.
+#[test]
+fn port_zero_never_collides() {
+    ok(&with(
+        "health:
+  listen: \"127.0.0.1:0\"
+outputs:
+  prometheus:
+    enabled: true
+    listen: \"127.0.0.1:0\"
+",
+    ));
+    ok(&with(
+        "health:
+  listen: \"0.0.0.0:0\"
+outputs:
+  prometheus:
+    enabled: true
+    listen: \"0.0.0.0:0\"
+",
+    ));
+}
+
+/// ...but one real port and one zero must still not be confused for a conflict.
+#[test]
+fn a_real_port_does_not_collide_with_port_zero() {
+    ok(&with(
+        "health:
+  listen: \"0.0.0.0:8080\"
+outputs:
+  prometheus:
+    enabled: true
+    listen: \"0.0.0.0:0\"
+",
+    ));
+}
+
 /// A disabled listener cannot collide with anything.
 #[test]
 fn a_disabled_prometheus_output_does_not_collide() {

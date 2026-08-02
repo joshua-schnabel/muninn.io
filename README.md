@@ -25,18 +25,23 @@ is working.
 
 ---
 
-> ## Status: runnable, not yet packaged
+> ## Status: works, not yet published
 >
-> **WP0–WP7 are complete.** muninn reads its YAML, generates a Telegraf
-> configuration, has Telegraf verify it, starts Telegraf as a supervised child,
-> serves health and metrics endpoints, and shuts down cleanly on SIGTERM. Every
-> command works except `check-runtime`.
+> **WP0–WP8 are complete.** Every command works, and the container image builds
+> and passes its tests under the full hardening — non-root, read-only root
+> filesystem, all capabilities dropped.
 >
-> What is missing: the **container image** (WP8). There is nothing to pull yet —
-> the compose example below describes the target. Building from source and
-> pointing `MUNINN_TELEGRAF_BIN` at a Telegraf 1.39.2 binary does work today.
+> The one thing missing is a **published image**: CI and releases are WP12, so
+> `ghcr.io/joshua-schnabel/muninn.io` does not exist yet. Build it yourself and
+> the compose file below works as written:
 >
-> Progress and what is next: [`docs/roadmap.md`](docs/roadmap.md).
+> ```bash
+> docker build -t muninn:dev .
+> bash scripts/container-test.sh muninn:dev
+> ```
+>
+> Still outstanding: the Docker module (WP9), the updates module (WP10) and the
+> end-to-end InfluxDB tests (WP11). See [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 

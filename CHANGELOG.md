@@ -71,7 +71,23 @@ The release pipeline reads the version from this file — see
   The state machine moved from the binary into `muninn-health` as `HealthState`,
   next to the endpoints that read it. 223 tests.
 
+- WP8 container image: a three-stage `Dockerfile` that fetches Telegraf by
+  version and verifies its checksum per architecture, builds muninn, and
+  assembles a `debian:12-slim` runtime carrying only the two binaries. Runs
+  non-root (uid 10001) with a `HEALTHCHECK`. `docker-compose.yml` shows the
+  hardened deployment, and `scripts/container-test.sh` verifies it — 15 checks.
+- `muninn check-runtime`: reports every unmet runtime precondition rather than
+  stopping at the first — missing mounts, an occupied port, an unwritable
+  runtime directory, a non-Debian host for the updates module. Exits 12.
+
 ### Fixed
+
+- The port-collision check treated two listeners on port 0 as a conflict. Port 0
+  means "any free port" and the OS hands out a different one to each, so this
+  rejected a configuration that works — and it is what the tests and the
+  integration stack use to avoid fighting over ports.
+
+### Fixed (earlier)
 
 - Signal handlers were installed inside the supervise loop, leaving a window
   during startup where SIGTERM had its default disposition and killed muninn
