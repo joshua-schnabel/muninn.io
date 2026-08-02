@@ -1,0 +1,307 @@
+# muninn.io — annotated example configuration
+#
+# This file shows every key muninn understands, with the reasoning behind the
+# defaults. It is deliberately longer than a real config needs to be: copy it,
+# then delete what you do not need. `config/muninn.minimal.yaml` is the other
+# end of the scale.
+#
+# Rules that hold everywhere in this file:
+#   - Unknown keys are a fatal error, not a warning. A typo must stop the agent
+#     rather than silently disable a module you believed was running.
+#   - Secrets are never values here, only paths to files. See `outputs`.
+#   - Durations are written as "30s", "5m", "1h". Zero and negative are rejected.
+#
+# Full reference: docs/configuration.md · Module details: docs/modules.md
+
+# Schema version. Required. muninn refuses to start on a version it does not
+# know, rather than guessing which keys still mean what they used to.
+version: 1
+
+# ── Agent ────────────────────────────────────────────────────────────────────
+# Global collection behaviour, passed through to Telegraf's [agent] section.
+agent:
+  # How often every module collects. Lower means finer resolution and more
+  # write volume; 30s suits general server monitoring.
+  interval: 30s
+
+  # How often collected metrics are flushed to the outputs. Keeping it equal to
+  # `interval` means a metric is written in the cycle it was collected.
+  flush_interval: 30s
+
+  # The `host` tag on every metric.
+  #
+  # READ THIS IF YOU RUN IN A CONTAINER. Empty means "ask the operating system",
+  # and inside a container the operating system answers with the container ID.
+  # That ID changes on every recreate, so every deploy starts a brand-new time
+  # series and your dashboards quietly lose their history. Mounting the host's
+  # /etc does not fix it — the hostname comes from the UTS namespace, not a file.
+  #
+  # Set it explicitly, or give the container the host's name (`hostname:` in
+  # compose). muninn warns at startup if this is empty and it detects a
+  # container. See docs/configuration.md#hostname.
+  hostname: "web-01.example.internal"
+
+  # Emit metrics without a `host` tag at all. Only sensible when something
+  # downstream adds the identity instead.
+  omit_hostname: false
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+# How muninn manages itself and the Telegraf child process.
+runtime:
+  # On SIGTERM/SIGINT: how long Telegraf is given to flush and exit before it is
+  # killed. Should exceed `flush_interval` so a shutdown does not discard the
+  # cycle in progress. Docker's default stop timeout is 10s — if you raise this
+  # above that, raise `stop_grace_period` in compose too, or Docker kills the
+  # container before muninn finishes.
+  shutdown_grace_period: 20s
+
+  # How long Telegraf may take to come up before muninn gives up and exits with
+  # code 21. Generous enough for a loaded host, short enough that a broken
+  # deploy fails fast rather than hanging in "starting".
+  telegraf_start_timeout: 15s
+
+  # Where the generated Telegraf configuration is written. This file is
+  # ephemeral: it is rewritten from scratch on every start and must live on a
+  # tmpfs, never on a persistent volume. It contains the resolved secret values
+  # in plaintext — that is why it is a memory-backed, root-only directory and
+  # not something you should mount out for inspection. Use
+  # `muninn render-config` if you want to see it; that redacts secrets.
+  generated_config_path: /run/muninn/telegraf.conf
+
+  # Where the host filesystem is mounted inside the container.
+  #
+  # Host metrics from a container only work if the host's /proc, /sys and friends
+  # are visible. muninn sets Telegraf's HOST_PROC, HOST_SYS, HOST_ETC, HOST_VAR,
+  # HOST_RUN and HOST_MOUNT_PREFIX from this one value, so a single
+  # `-v /:/hostfs:ro` is all the container needs.
+  #
+  # Setting this to "" tells muninn it is running directly on the host and no
+  # prefix applies. Do not do that in a container: without the prefix, Telegraf
+  # reports the *container's* CPU, memory and disks as if they were the host's —
+  # numbers that look entirely plausible and are entirely wrong.
+  host_mount_prefix: /hostfs
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging:
+  # "human" for reading, "json" for shipping. JSON emits one complete object per
+  # line. Secret values are redacted in both.
+  format: human
+  # trace | debug | info | warn | error
+  level: info
+
+# ── Health endpoints ─────────────────────────────────────────────────────────
+# muninn's own HTTP server. Serves /health/live, /health/ready, /status and
+# /metrics.
+#
+# Note /metrics here is muninn's OWN operational metrics (is Telegraf running,
+# how long did config generation take), not your host metrics. Host metrics come
+# from the Prometheus output below, on its own port. Scraping the wrong one is
+# the single most common setup mistake — see docs/configuration.md#two-metrics-endpoints.
+health:
+  # Must be 0.0.0.0 in a container: a published port reaches the container's
+  # bridge address, never its loopback.
+  listen: "0.0.0.0:8080"
+
+# ── Modules ──────────────────────────────────────────────────────────────────
+# Every module is switched on or off explicitly. There are no profiles and no
+# implicit defaults, so what this file says is exactly what is collected.
+modules:
+
+  # CPU usage per core and in total.
+  cpu:
+    enabled: true
+
+  # Memory usage. Needs no options — "used", "available", "cached" and the rest
+  # are all worth having, and none of them are expensive.
+  memory:
+    enabled: true
+
+  # 1, 5 and 15-minute load averages.
+  #
+  # `load` and `system` both come from Telegraf's `inputs.system` plugin, which
+  # has no separate load input. muninn renders them into a single plugin
+  # instance so the metrics are not collected twice. You can enable either,
+  # both, or neither. See docs/adr/0008-system-and-load-merge.md.
+  load:
+    enabled: true
+
+  # Uptime and the number of logged-in users.
+  system:
+    enabled: true
+
+  # Swap usage and activity. Worth keeping on even on hosts with no swap: "swap
+  # is being used" is exactly the signal you want and cannot get retroactively.
+  swap:
+    enabled: true
+
+  # Process counts grouped by state (running, sleeping, zombie, ...).
+  # In a container this needs the host's /proc, i.e. `host_mount_prefix` set and
+  # `/:/hostfs:ro` mounted, or it counts the container's handful of processes.
+  processes:
+    enabled: true
+
+  # Filesystem usage per mount point.
+  disks:
+    enabled: true
+
+    # Filesystem types to skip. These are the ones that either report nothing
+    # useful or report the same bytes twice: pseudo filesystems, container
+    # layers, read-only snap images.
+    exclude_filesystems:
+      - tmpfs
+      - devtmpfs
+      - squashfs
+      - overlay
+
+    # Mount points to skip, as glob patterns matched against the reported path.
+    # Snap mounts and Docker's overlay directories are the usual noise — a busy
+    # host can have hundreds, each becoming its own time series.
+    exclude_mountpoints:
+      - "/snap*"
+      - "/var/lib/docker/*"
+
+    # Restrict collection to these mount points. Empty means "all of them, minus
+    # the exclusions above", which is almost always what you want. Setting this
+    # turns the module into an allow-list: a new filesystem someone mounts next
+    # month will NOT be monitored until it is added here.
+    include_mountpoints: []
+
+  # Block device I/O.
+  disk_io:
+    enabled: true
+
+    # Restrict to these devices (globs allowed). Empty means all of them.
+    include_devices: []
+
+    # Devices to drop. Loop devices back snap packages and ram devices are
+    # rarely interesting, and both are numerous.
+    exclude_devices:
+      - "loop*"
+      - "ram*"
+
+  # Network interface counters.
+  network:
+    enabled: true
+
+    # Restrict to these interfaces (globs allowed). Empty means all of them.
+    include_interfaces: []
+
+    # Interfaces to drop. Loopback traffic is not network traffic, and on a
+    # Docker host the veth interfaces are both numerous and short-lived — each
+    # one that appears and disappears leaves a dead time series behind.
+    exclude_interfaces:
+      - lo
+      - "veth*"
+      - "br-*"
+      - docker0
+
+  # Per-container metrics from the Docker engine.
+  #
+  # OFF BY DEFAULT, AND THAT IS A SECURITY DECISION. This module needs the
+  # Docker socket, and access to that socket is equivalent to root on the host —
+  # anyone who can reach it can start a privileged container. muninn only ever
+  # reads, but the socket does not know that.
+  #
+  # If you enable this, prefer a read-only socket proxy over mounting the socket
+  # directly. See docs/adr/0010-docker-socket.md for the reasoning and
+  # docs/modules.md#docker for a proxy configuration that works.
+  docker:
+    enabled: false
+    endpoint: "unix:///var/run/docker.sock"
+    # Container names to include (globs allowed). Empty means all of them.
+    container_include: []
+    # Container names to drop (globs allowed).
+    container_exclude: []
+    # Give up on a Docker API call after this long, so a wedged daemon slows
+    # collection down instead of stopping it.
+    timeout: 5s
+
+  # Pending package updates on the host.
+  #
+  # EXPERIMENTAL, AND OFF BY DEFAULT. Reading the *host's* package state from
+  # inside a container is genuinely hard: apt inside the container sees the
+  # container's package database, so a naive implementation reports the
+  # container's updates while looking completely healthy. Telegraf has no
+  # package input plugin, so there is no ready-made answer to fall back on.
+  #
+  # The approach is being settled by a documented spike before this module is
+  # implemented — see docs/spikes/updates-spike.md. Until that concludes,
+  # enabling this is refused at startup rather than silently doing nothing.
+  #
+  # What it will never do: report "0 updates" when it could not read the host's
+  # package data. A failed check reports a failure, not a clean bill of health.
+  updates:
+    enabled: false
+    # Package state changes slowly and the check is comparatively expensive, so
+    # it runs on its own schedule rather than at `agent.interval`.
+    interval: 1h
+    # Report security updates as a separate count alongside the total.
+    security_only_metric: true
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+# At least one output must be enabled — an agent that collects metrics and sends
+# them nowhere is a misconfiguration, so muninn refuses to start. Both may be
+# enabled at once.
+outputs:
+
+  # InfluxDB 2.x over HTTP.
+  influxdb:
+    enabled: true
+    url: "https://influxdb.example.internal:8086"
+    organization: "infrastructure"
+    bucket: "servers"
+
+    # Path to a file containing the API token — never the token itself.
+    #
+    # A token in this file would end up in your configuration management, your
+    # backups and every `docker inspect`. A path does not. The file must exist,
+    # be readable and be non-empty; a trailing newline is stripped. Any of those
+    # failing stops startup with exit code 11, naming the path and never the
+    # contents.
+    #
+    # With Docker: mount a secret or a 0400 file at this path.
+    token_file: "/run/secrets/influxdb_token"
+
+    # Give up on a write after this long. Failed writes are retried by Telegraf.
+    timeout: 5s
+
+    # TLS. Leave the file paths unset for the system trust store, which is what
+    # you want for a certificate from a public or corporate CA.
+    tls:
+      # Custom CA bundle, for an internal CA the system does not trust.
+      ca_file: null
+      # Client certificate, if InfluxDB requires mutual TLS.
+      cert_file: null
+      key_file: null
+      # Do not turn this on. It disables certificate verification entirely,
+      # which means anyone who can intercept the connection can read your
+      # metrics and feed you fabricated ones. If a certificate does not
+      # validate, fix the certificate. muninn logs a prominent warning for as
+      # long as this is true.
+      insecure_skip_verify: false
+
+  # Prometheus scrape endpoint.
+  #
+  # This is where your HOST metrics are served. muninn's own metrics are on the
+  # health port configured above — two different endpoints, two different
+  # purposes.
+  prometheus:
+    enabled: true
+
+    # 0.0.0.0 in a container, for the same reason as `health.listen`.
+    # Must not collide with `health.listen`; muninn checks, including the case
+    # where one is a wildcard address and the other is not.
+    listen: "0.0.0.0:9273"
+    path: "/metrics"
+
+    # How long a metric stays served after it was last collected. Shorter than
+    # your scrape interval and Prometheus sees gaps; much longer and a
+    # disappeared host keeps reporting its last known value as if it were
+    # current. Two to three collection intervals is a reasonable band.
+    expiration_interval: 60s
+
+    # Optional HTTP basic auth. Both keys must be set together, and the password
+    # is a file path for the same reason the InfluxDB token is.
+    basic_auth:
+      username: null
+      password_file: null
