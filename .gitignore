@@ -1,0 +1,23 @@
+/target/
+# Cargo.lock is committed for reproducible builds (binary crate)
+
+# secrets — never commit tokens, keys or credentials
+secrets/
+*.token
+*.pem
+*.key
+.env
+
+# local, uncommitted config: `muninn.yaml` is what an operator writes for their
+# own host, `*.local.yaml` is scratch. The shipped examples in config/ are
+# `muninn.example.yaml` / `muninn.minimal.yaml` / `muninn.integration.yaml`.
+/config/muninn.yaml
+*.local.yaml
+
+# spike scratch — spikes/updates/ holds committed scripts and fixtures, but the
+# rootfs snapshots and apt caches they produce are large and machine-specific
+/spikes/**/work/
+/spikes/**/out/
+
+# local integration-test scratch directory
+/temp-int/

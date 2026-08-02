@@ -1,0 +1,14 @@
+# Enforce LF line endings in the repo.
+#
+# This matters more here than in a pure-Linux project: development happens on
+# Windows while everything the repo produces runs in a Linux container. A CRLF
+# that slips into a shell script or a generated Telegraf config breaks at
+# runtime, not at commit time.
+* text=auto eol=lf
+*.rs   text eol=lf
+*.toml text eol=lf
+*.conf text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
+*.sh   text eol=lf
