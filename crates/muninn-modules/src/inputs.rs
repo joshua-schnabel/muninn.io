@@ -39,12 +39,9 @@ const RANK_DISK: u16 = 60;
 const RANK_DISKIO: u16 = 70;
 const RANK_NET: u16 = 80;
 const RANK_DOCKER: u16 = 90;
-const RANK_UPDATES: u16 = 100;
-
-/// The helper muninn ships for the updates module. Its behaviour is specified by
-/// `spikes/updates/probe.sh`, which the WP1 spike verified against four
-/// distributions.
-const UPDATE_HELPER: &str = "/usr/local/bin/muninn-update-check";
+/// The updates module renders from [`crate::updates`], but its rank belongs with
+/// the others so the uniqueness test below can see all ten at once.
+pub(crate) const RANK_UPDATES: u16 = 100;
 
 // ---------------------------------------------------------------------------
 
@@ -318,62 +315,6 @@ impl MonitoringModule for Docker {
     }
 }
 
-// ---------------------------------------------------------------------------
-
-/// Pending package updates on the host.
-///
-/// Telegraf has no package input plugin, so this runs the helper muninn ships
-/// and parses its influx line protocol. The approach — read-only host mounts
-/// plus a simulated `apt-get -s dist-upgrade` — was settled by the WP1 spike,
-/// which measured it against Debian 12/13 and Ubuntu 22.04/24.04.
-pub struct Updates;
-
-impl MonitoringModule for Updates {
-    fn id(&self) -> &'static str {
-        "updates"
-    }
-    fn enabled(&self, c: &Config) -> bool {
-        c.modules.updates.enabled
-    }
-    fn requirements(&self, _c: &Config) -> Requirements {
-        Requirements {
-            // /usr is needed because /etc/os-release is a symlink into it, and a
-            // mount set without it reports "not a Debian host" for a machine
-            // that plainly is. Found the hard way during the spike.
-            host_paths: vec!["var", "etc", "usr"],
-            debian_family_only: true,
-            ..Default::default()
-        }
-    }
-    fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
-        let m = &ctx.config.modules.updates;
-        let hostfs = ctx
-            .config
-            .runtime
-            .host_mount_prefix
-            .clone()
-            .unwrap_or_else(|| "/".to_string());
-
-        vec![
-            PluginInstance::input("exec", RANK_UPDATES)
-                .from_module("updates")
-                .scalar("commands", vec![UPDATE_HELPER])
-                .scalar("environment", vec![format!("HOSTFS={hostfs}")])
-                // Its own schedule: package state changes on the scale of hours,
-                // and a full apt resolution is expensive next to reading /proc.
-                .scalar("interval", m.interval.as_telegraf())
-                // Generous, because apt has to parse the host's whole package
-                // index. Well under the interval either way.
-                .scalar("timeout", "30s")
-                .scalar("data_format", "influx")
-                // The helper reports a failed check as data (check_success=0)
-                // and exits 0, so a non-zero exit would be a helper bug. Telegraf
-                // should surface it rather than swallow it.
-                .scalar("ignore_error", false),
-        ]
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,7 +395,7 @@ mod tests {
     /// so a mount set with /etc but not /usr reports "not a Debian host".
     #[test]
     fn the_updates_module_requires_usr_for_the_os_release_symlink() {
-        let req = Updates.requirements(&crate::tests::config_with(|_| {}));
+        let req = crate::updates::Updates.requirements(&crate::tests::config_with(|_| {}));
         assert!(req.host_paths.contains(&"usr"), "got: {:?}", req.host_paths);
         assert!(req.debian_family_only);
     }

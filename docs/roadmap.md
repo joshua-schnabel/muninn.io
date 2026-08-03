@@ -18,8 +18,8 @@ conversation.
 | [WP6](#wp6--telegraf-process-management) | Telegraf process management | ✅ |
 | [WP7](#wp7--health-server-and-state-machine) | Health server and state machine | ✅ |
 | [WP8](#wp8--container-image) | Container image | ✅ |
-| [WP9](#wp9--docker-module) | Docker module | ⬜ |
-| [WP10](#wp10--updates-module) | Updates module | ⬜ |
+| [WP9](#wp9--docker-module) | Docker module | ✅ |
+| [WP10](#wp10--updates-module) | Updates module | ✅ |
 | [WP11](#wp11--end-to-end-tests) | End-to-end tests | ⬜ |
 | [WP12](#wp12--cicd-and-release) | CI/CD and release | ⬜ |
 
@@ -471,6 +471,12 @@ the suite now exercises the documented deployment instead of one muninn rejects.
 
 ## WP10 — Updates module
 
+**Status: complete, 2026-08-03.** `bash scripts/updates-test.sh` — 17 cells, all
+passing: the shipped image against real Debian and Ubuntu host trees, a real host
+through WSL, the failure cells, and the module running end to end in a container.
+Numbers identical to the spike's: 41/3 on Debian 12, 39/2 on Debian 13, 50/40 on
+Ubuntu 22.04, 66 pending on Ubuntu 24.04, and 41/11 against the real WSL host.
+
 **Goal.** Implement approach A, as specified by `spikes/updates/probe.sh`.
 
 **Unblocked by WP1.** The probe script is the specification: preconditions first,
@@ -480,8 +486,9 @@ the shell helper and call it through `inputs.exec`, or to invoke `apt-get` from
 muninn and emit the line protocol from Rust. Both run the same apt invocation,
 which is the part that had to be proven.
 
-**Touches** `crates/muninn-modules/src/updates/{mod,debian}.rs`, the update
-helper, `docs/modules.md`.
+**Touches** `crates/muninn-modules/src/updates/{mod,debian}.rs`,
+`muninn/src/{cli,main,supervisor}.rs`, `scripts/updates-test.sh`,
+`docs/modules.md`.
 
 **Done when**
 
@@ -495,6 +502,76 @@ helper, `docs/modules.md`.
    check.
 6. A module failure degrades muninn rather than stopping it, and is visible in
    logs, `/status` and the metrics.
+
+All met.
+
+**The open question, decided: muninn runs itself.** `inputs.exec` executes
+`/usr/local/bin/muninn update-check`; there is no separate helper binary. The apt
+argument list is the spike's, unchanged — that is the part that was measured, and
+it did not move. What the port buys is that the invariant stops being a
+convention: in the shell probe, "never report zero on failure" held because every
+`fail()` call site remembered to exit before the counting, and in Rust the counts
+live inside the `Ok` arm, so a failed check has nothing to print them from.
+Recorded in [ADR-0009](adr/0009-updates-module-approach.md).
+
+**Three things this work changed, none of them foreseen in the plan:**
+
+**The specified metric names did not follow from the probe's fields.** The design
+fixed `muninn_updates_pending{severity="all"}`; the probe emitted fields called
+`pending_all` and `pending_security`, which Telegraf would have exported as
+`muninn_updates_pending_all`. The shipped shape is a field named `pending` with a
+`severity` tag. `status` and `reason` are on the check line in both the success
+and failure cases, because a tag present only on failure gives one metric two
+label sets, and both are exposed together for an expiration interval after a
+check recovers.
+
+**A failing check degrades muninn rather than stopping it** — the opposite of the
+Docker module's rule, and the contrast is what makes both correct. An unreachable
+Docker endpoint produces silence that reads as "no containers"; a failed update
+check produces `check_success=0` with a reason. Nothing is misrepresented, so
+taking a working agent out of service would cost more than it protects. muninn
+runs the check once at startup so the result reaches the logs, `/status` and
+`muninn_module_check_success` in seconds rather than after the first hourly
+interval.
+
+The module's *preconditions* are unchanged by this: an absent mount or a host
+that is not Debian-family still refuses the start with exit 12, as for every
+module.
+
+**And the bug that refusal turned up.** The Linux suite ran the module against a
+real host mount and muninn refused to start: "the host reports ID=\"\", which is
+not Debian-family". The host was Debian. Docker Desktop's VM ships an
+`/etc/os-release` containing only `PRETTY_NAME="Docker Desktop"` while
+`/usr/lib/os-release` holds `ID=debian`, and both muninn's startup check and the
+module's own preconditions read the first *file* they could open and stopped
+there. The result was a confident wrong conclusion about a supported host —
+precisely the failure mode this module exists to avoid, arrived at from the other
+direction. Both now read the files in order and take the first non-empty value of
+each field, in one shared function so the two cannot drift apart.
+
+**An empty `/hostfs` is a missing mount.** The image creates the directory so a
+bind mount has somewhere to land, so forgetting the mount left it existing and
+empty — and the first implementation reported `dpkg_status_unreadable`, which is
+true and points at the wrong thing. Caught by system-test cell S8 rather than by
+reasoning.
+
+**And the one that would have shipped broken.** apt takes ordinary temp files
+outside `Dir::Cache` — `mkstemp /tmp/clearsigned.message.XXXXXX`, while reading
+signed release files, even under `-s`. The rendered `inputs.exec` sets `TMPDIR` to
+the runtime tmpfs and worked; muninn's own startup check inherited an environment
+without it, hit the read-only root filesystem, and reported `apt_failed` on a host
+it could read perfectly. The spike never saw this because its hardened cell had a
+tmpfs on `/tmp`, which the documented deployment does not. `TMPDIR` is now set for
+the apt child itself, so it holds for every caller. Cell S12 found it — the first
+cell to run the module the way an operator will.
+
+**And one thing the tests taught, which is a limit rather than a bug.** Ubuntu
+copies security updates into `<release>-updates` as well as `<release>-security`.
+The Ubuntu 24.04 fixture that reported 66 pending / 34 security during the spike
+now reports 66 / **0** — same packages, and the host's own apt says the same
+thing, because the candidate now resolves through `-updates`. The total is exact;
+the security subset is a lower bound on Ubuntu. Documented at the metric and
+tracked as [R8](risks.md), with what a more thorough classification would cost.
 
 **Brief:** §7.2 Updates, §8.3, §18.6, §26 step 11.
 

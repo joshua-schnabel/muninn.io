@@ -31,6 +31,7 @@ use std::time::Duration;
 pub mod agent;
 pub mod inputs;
 pub mod outputs;
+pub mod updates;
 
 /// How a module reaches a service that is not a file on the host.
 ///
@@ -172,7 +173,7 @@ pub fn all_modules() -> Vec<Box<dyn MonitoringModule>> {
         Box::new(inputs::DiskIo),
         Box::new(inputs::Network),
         Box::new(inputs::Docker),
-        Box::new(inputs::Updates),
+        Box::new(updates::Updates),
     ]
 }
 

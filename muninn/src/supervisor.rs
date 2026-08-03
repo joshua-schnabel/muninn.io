@@ -156,7 +156,79 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
     transition(&state, State::Ready);
     info!(pid = telegraf.pid(), "muninn is ready");
 
+    // Only after readiness: the check runs apt over the host's whole package
+    // index and takes seconds, and delaying readiness for it would hold up an
+    // orchestrator for something that is not part of collecting metrics.
+    if config.modules.updates.enabled {
+        check_updates_once(&config, &state).await;
+    }
+
     supervise(&mut telegraf, &state, &config, &mut signals).await
+}
+
+/// Run the updates check once at startup, and record what it found.
+///
+/// Telegraf runs this same check on `modules.updates.interval` — hourly by
+/// default — and those results go to the outputs. This one exists because an
+/// hour is a long time to wait to discover that a deployment cannot read the
+/// host's package state, and because `/status` should be able to answer the
+/// question without a metrics database in the loop.
+///
+/// **A failure degrades muninn; it does not stop it.** That is the opposite of
+/// the Docker module's rule, and deliberately so: an unreachable Docker endpoint
+/// produces silence that reads as "no containers", while a failed update check
+/// produces `check_success=0` with a reason. Nothing is being misrepresented, so
+/// taking a working agent out of service would cost far more than it protects.
+async fn check_updates_once(config: &Config, state: &HealthState) {
+    use muninn_modules::updates;
+
+    let hostfs = std::path::PathBuf::from(updates::host_prefix(config));
+    let Some(scratch) = updates::scratch_directory(config) else {
+        warn!(
+            "the updates module is enabled but runtime.generated_config_path has no directory, \
+             so apt has nowhere to write its cache"
+        );
+        state.record_module_check("updates", false);
+        transition(state, State::Degraded);
+        return;
+    };
+
+    // On a blocking thread: apt parses the host's entire package index, which is
+    // seconds of CPU, and the reactor is also serving health checks.
+    let report =
+        tokio::task::spawn_blocking(move || updates::debian::check(&hostfs, &scratch)).await;
+
+    let report = match report {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "the updates check did not complete");
+            state.record_module_check("updates", false);
+            transition(state, State::Degraded);
+            return;
+        }
+    };
+
+    state.record_module_check("updates", report.succeeded());
+
+    match report.outcome {
+        Ok(counts) => {
+            info!(
+                pending = counts.all,
+                security = counts.security,
+                lists_age_seconds = report.lists_age_seconds,
+                "updates check"
+            );
+        }
+        Err(reason) => {
+            warn!(
+                reason = reason.as_str(),
+                detail = report.detail.as_deref().unwrap_or(""),
+                "the updates check could not read the host's package state — muninn continues \
+                 without it, and the metric reports the failure rather than a count"
+            );
+            transition(state, State::Degraded);
+        }
+    }
 }
 
 /// Wait for a stop signal, or for Telegraf to die first.

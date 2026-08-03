@@ -29,11 +29,10 @@
 //! Steps 1–9 touch nothing outside the container's own tmpfs, so a bad config
 //! costs an exit code and a log line — never a half-started agent.
 //!
-//! # Status
-//!
-//! Steps 1–4 and 6–8 are implemented, reachable through `validate` and
-//! `render-config`. Runtime checks (5), Telegraf validation (9) and supervision
-//! (10–12) land in WP6 and WP8 — see `docs/roadmap.md`.
+//! Steps 1–8 are reachable on their own through `validate` and `render-config`,
+//! which start nothing. A module that checks itself — today, updates — does so
+//! after step 11, because holding readiness for a check that takes seconds would
+//! delay an orchestrator over something unrelated to collecting metrics.
 
 use std::io::Write as _;
 use std::process::ExitCode;
@@ -92,6 +91,13 @@ fn dispatch(args: &Cli) -> muninn_core::Result<()> {
         Command::Run => run(args),
         Command::CheckRuntime => check_runtime(args),
         Command::Healthcheck => healthcheck(args),
+        Command::UpdateCheck {
+            hostfs,
+            no_security_metric,
+        } => {
+            update_check(hostfs.as_deref(), !no_security_metric);
+            Ok(())
+        }
     }
 }
 
@@ -287,6 +293,32 @@ fn healthcheck(args: &Cli) -> muninn_core::Result<()> {
             body.trim()
         )))
     }
+}
+
+/// Report the host's pending package updates, as Telegraf's `inputs.exec` reads
+/// them.
+///
+/// Returns nothing and takes no `Result`: this command has no failure mode that
+/// belongs in an exit code. Whatever happens, the line protocol on stdout is the
+/// answer — either counts, or `check_success=0` with a reason — and stderr
+/// carries the detail for the log. See `crates/muninn-modules/src/updates/`.
+fn update_check(hostfs: Option<&std::path::Path>, security_metric: bool) {
+    use muninn_modules::updates::debian;
+
+    let hostfs = hostfs.unwrap_or(std::path::Path::new("/"));
+    // Honours TMPDIR, which the rendered configuration sets to the runtime
+    // directory — the one writable place a read-only deployment has.
+    let scratch = std::env::temp_dir();
+
+    let report = debian::check(hostfs, &scratch);
+
+    if let Some(detail) = &report.detail {
+        // Telegraf logs the plugin's stderr, so this is where an operator finds
+        // the path or the apt error behind a low-cardinality reason tag.
+        eprintln!("muninn: update check: {detail}");
+    }
+
+    print!("{}", report.line_protocol(security_metric));
 }
 
 /// The full lifecycle. This is what the container runs.

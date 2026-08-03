@@ -691,3 +691,251 @@ fn the_healthcheck_command_reflects_readiness() {
         log.text()
     );
 }
+
+// ---------------------------------------------------------------------------
+// The updates module
+// ---------------------------------------------------------------------------
+
+/// Run `muninn update-check` exactly as Telegraf's `inputs.exec` would.
+fn update_check(hostfs: &Path) -> (std::process::Output, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("update-check")
+        .arg("--hostfs")
+        .arg(hostfs)
+        // Otherwise a HOSTFS in the developer's environment would decide what
+        // this test looks at.
+        .env_remove("HOSTFS")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    (out, stdout)
+}
+
+/// The invariant, observed on the shipped binary rather than on a function: a
+/// check that cannot look reports that it could not look. It never reports zero,
+/// and it never fails in a way that would make Telegraf emit nothing at all.
+#[test]
+fn an_update_check_without_a_host_mount_reports_failure_not_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let (out, line) = update_check(&dir.path().join("never-mounted"));
+
+    assert!(
+        out.status.success(),
+        "must exit 0 — a non-zero exit makes Telegraf log an error and emit nothing, \
+         which is indistinguishable from the module being off. stdout: {line}"
+    );
+    assert!(line.contains("check_success=0i"), "{line}");
+    assert!(line.contains("reason=hostfs_not_mounted"), "{line}");
+    assert!(
+        !line.contains("pending"),
+        "a failed check must not carry a count: {line}"
+    );
+    // The reason is a tag, so the detail behind it belongs on stderr, where
+    // Telegraf logs it.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("update check"),
+        "no detail for the log: {stderr}"
+    );
+}
+
+/// A host that is not Debian-family gets a refusal, not a number derived from a
+/// package manager it does not use.
+#[test]
+fn an_update_check_refuses_a_host_it_does_not_understand() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("var/lib/dpkg")).unwrap();
+    std::fs::create_dir_all(root.join("var/lib/apt/lists")).unwrap();
+    std::fs::create_dir_all(root.join("etc/apt")).unwrap();
+    std::fs::write(root.join("var/lib/dpkg/status"), "Package: x\n").unwrap();
+    std::fs::write(root.join("var/lib/apt/lists/x_Packages"), "Package: x\n").unwrap();
+    std::fs::write(root.join("etc/os-release"), "ID=alpine\n").unwrap();
+
+    let (out, line) = update_check(root);
+    assert!(out.status.success(), "{line}");
+    assert!(line.contains("reason=host_not_debian_family"), "{line}");
+    assert!(!line.contains("pending"), "{line}");
+}
+
+/// `HOSTFS` is what the rendered configuration passes, so it has to work as well
+/// as the flag. If it did not, the module would quietly check the container.
+#[test]
+fn the_update_check_reads_the_host_prefix_from_the_environment() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("also-never-mounted");
+    let out = Command::new(env!("CARGO_BIN_EXE_muninn"))
+        .arg("update-check")
+        .env("HOSTFS", &missing)
+        .output()
+        .unwrap();
+    let line = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{line}");
+    assert!(line.contains("reason=hostfs_not_mounted"), "{line}");
+}
+
+/// Whether the mounted host tree is one the updates module supports.
+///
+/// This decides which of two correct behaviours the test below asserts, and the
+/// distinction is real rather than a testing convenience: a host that is not
+/// Debian-family fails a *precondition*, which muninn refuses to start on, while
+/// a check that fails with its preconditions met only degrades it.
+#[cfg(unix)]
+fn hostfs_is_debian_family() -> bool {
+    ["/hostfs/etc/os-release", "/hostfs/usr/lib/os-release"]
+        .iter()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .any(|text| {
+            text.lines()
+                .filter(|l| l.starts_with("ID=") || l.starts_with("ID_LIKE="))
+                .any(|l| l.contains("debian") || l.contains("ubuntu"))
+        })
+}
+
+/// With the module enabled, muninn checks once at startup and reports what it
+/// found — and stays serving either way.
+///
+/// The point is the "either way". Whether this host's package state can be *read*
+/// decides which branch is asserted, not whether the agent survives: a module
+/// that cannot answer must degrade muninn, never stop it, because CPU, memory
+/// and disk collection have nothing to do with counting packages.
+///
+/// A host that is not Debian-family is the other case, and it is asserted here
+/// too: that is a *precondition*, checked before anything starts, and refusing
+/// with exit 12 is right — the operator enabled a module their host cannot
+/// support, and no amount of running would make it work.
+///
+/// Which branch runs is decided by reading the host, not by assuming one. That
+/// distinction found a real bug: on Docker Desktop this test took the refusal
+/// branch against a host that is plainly Debian, because its `/etc/os-release`
+/// carries only `PRETTY_NAME` and muninn stopped at the first file it could
+/// open.
+#[cfg(unix)]
+#[test]
+fn an_enabled_updates_module_reports_itself_and_never_stops_the_agent() {
+    let telegraf = require_telegraf!();
+    if !Path::new("/hostfs").is_dir() {
+        eprintln!(
+            "SKIP: no /hostfs mount. Run under scripts/test-linux.sh, which mounts the host root \
+             the way the documented deployment does."
+        );
+        return;
+    }
+    let debian_host = hostfs_is_debian_family();
+
+    let health_port = free_port();
+    let dir = tempfile::tempdir().unwrap();
+    let generated = dir.path().join("telegraf.conf");
+    let config = dir.path().join("muninn.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+version: 1
+agent:
+  interval: 1s
+  flush_interval: 1s
+  hostname: "lifecycle-test"
+runtime:
+  shutdown_grace_period: 10s
+  telegraf_start_timeout: 15s
+  generated_config_path: "{generated}"
+  host_mount_prefix: "/hostfs"
+logging:
+  format: json
+  level: info
+health:
+  listen: "127.0.0.1:{health_port}"
+modules:
+  cpu:
+    enabled: true
+  updates:
+    enabled: true
+    interval: 1h
+outputs:
+  prometheus:
+    enabled: true
+    listen: "127.0.0.1:{prom_port}"
+"#,
+            generated = generated.display(),
+            prom_port = free_port(),
+        ),
+    )
+    .unwrap();
+
+    if !debian_host {
+        // The precondition case: refuse, name the module, and say what to do.
+        let out = muninn(&telegraf)
+            .arg("--config")
+            .arg(&config)
+            .arg("run")
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(12),
+            "a host the module cannot support is a runtime precondition failure: {text}"
+        );
+        assert!(
+            text.contains("updates") && text.contains("Debian"),
+            "the refusal must name the module and the reason: {text}"
+        );
+        return;
+    }
+
+    let mut child = muninn(&telegraf)
+        .arg("--config")
+        .arg(&config)
+        .arg("run")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let log = LogTail::attach(child.stdout.take().unwrap());
+
+    let ready = wait_for_ready(&log, Duration::from_secs(30));
+    // The check runs after readiness, so give it its own window.
+    let checked = wait_until(Duration::from_secs(60), || {
+        http_get(health_port, "/metrics")
+            .map(|(_, b)| b.contains("muninn_module_check_success{module=\"updates\"}"))
+            .unwrap_or(false)
+    });
+
+    let metrics = http_get(health_port, "/metrics")
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let status = http_get(health_port, "/status")
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let still_serving = matches!(http_get(health_port, "/health/ready"), Some((200, _)));
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(ready, "never became ready:\n{}", log.text());
+    assert!(
+        checked,
+        "the startup check never reported a result:\n{}\n{metrics}",
+        log.text()
+    );
+    assert!(
+        status.contains("\"updates\""),
+        "/status should name the module and its check: {status}"
+    );
+    assert!(
+        still_serving,
+        "a failing updates module must not take a working agent out of service: {metrics}"
+    );
+
+    // Whichever way the check went, it has to be legible in the log.
+    let text = log.text();
+    assert!(
+        text.contains("updates check") || text.contains("could not read the host's package state"),
+        "the result should be in the log:\n{text}"
+    );
+}

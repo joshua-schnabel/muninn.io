@@ -258,6 +258,11 @@ modules:
     # it runs on its own schedule rather than at `agent.interval`.
     interval: 1h
     # Report security updates as a separate count alongside the total.
+    #
+    # On Ubuntu this is a LOWER BOUND: security updates are copied into
+    # <release>-updates as well as <release>-security, and an update whose
+    # candidate resolves through the former is not counted here. The total is
+    # exact either way, so alert on that. See docs/risks.md (R8).
     security_only_metric: true
 
 # ── Outputs ──────────────────────────────────────────────────────────────────

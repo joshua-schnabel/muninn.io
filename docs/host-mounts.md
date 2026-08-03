@@ -79,9 +79,17 @@ less trusted than the host.
 | disk_io | host `/proc`, `/sys` | No devices at all |
 | network | host `/proc` | The container's `eth0` only |
 | docker | **Docker socket** — separate, see below | — |
-| updates | to be decided by the spike | — |
+| updates | host `/var`, `/etc` **and** `/usr` | `check_success=0` with a reason — never a count |
 
-All the `/proc` and `/sys` rows are satisfied by the single `/:/hostfs:ro` mount.
+All of these are satisfied by the single `/:/hostfs:ro` mount — and the updates
+row is the clearest argument for mounting the root rather than a hand-picked list:
+`/etc/os-release` is a symlink into `/usr/lib`, so a mount set carrying `/etc` but
+not `/usr` leaves it dangling and the module reports "not a Debian host" for a
+machine that plainly is.
+
+The updates module also needs somewhere writable for apt's cache and temp files —
+the `/run/muninn` tmpfs the deployment already has. It writes nothing to the host
+tree, which is why that mount can be, and is, read-only.
 
 muninn checks at startup that the paths its **enabled** modules need are present
 and plausible. Nothing is demanded on behalf of a module you did not enable, and

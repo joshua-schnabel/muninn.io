@@ -233,51 +233,36 @@ fn check_host_paths(
 
 /// Confirm the host is Debian-family.
 ///
-/// Both locations are tried because `/etc/os-release` is a **symlink** to
-/// `../usr/lib/os-release` on Debian and Ubuntu. A mount set carrying `/etc` but
-/// not `/usr` leaves it dangling — found the hard way during the WP1 spike, and
-/// the reason the updates module declares `usr` among its host paths.
+/// The reading itself lives in `muninn_modules::updates::debian` so that this
+/// check and the module's own preconditions cannot drift apart. They ask the same
+/// question about the same files, and a startup check that disagreed with the
+/// running module would be worse than no check at all.
 fn check_debian_family(module: &'static str, prefix: &str, findings: &mut Vec<Finding>) {
-    let candidates = [
-        PathBuf::from(format!("{prefix}/etc/os-release")),
-        PathBuf::from(format!("{prefix}/usr/lib/os-release")),
-    ];
+    let root = PathBuf::from(if prefix.is_empty() { "/" } else { prefix });
 
-    let Some(text) = candidates
-        .iter()
-        .find_map(|p| std::fs::read_to_string(p).ok())
-    else {
+    let Some(ids) = muninn_modules::updates::debian::os_release_ids(&root) else {
+        let locations = muninn_modules::updates::debian::OS_RELEASE_LOCATIONS;
         findings.push(Finding::error(
             module,
             format!(
-                "cannot read os-release at '{}' or '{}'. Note /etc/os-release is a symlink into \
-                 /usr/lib, so a mount carrying /etc but not /usr leaves it dangling",
-                candidates[0].display(),
-                candidates[1].display()
+                "cannot read os-release at '{}/{}' or '{}/{}'. Note /etc/os-release is normally a \
+                 symlink into /usr/lib, so a mount carrying /etc but not /usr leaves it dangling",
+                root.display(),
+                locations[0],
+                root.display(),
+                locations[1]
             ),
         ));
         return;
     };
 
-    let field = |key: &str| {
-        text.lines()
-            .find_map(|l| l.strip_prefix(key))
-            .map(|v| v.trim_matches('"').to_string())
-            .unwrap_or_default()
-    };
-    let id = field("ID=");
-    let id_like = field("ID_LIKE=");
-
-    if !(id.contains("debian")
-        || id.contains("ubuntu")
-        || id_like.contains("debian")
-        || id_like.contains("ubuntu"))
-    {
+    if !ids.is_debian_family() {
         findings.push(Finding::error(
             module,
             format!(
-                "the host reports ID={id:?}, which is not Debian-family. The {module} module \
-                 only supports Debian and Ubuntu; disable it"
+                "the host reports ID={:?}, which is not Debian-family. The {module} module \
+                 only supports Debian and Ubuntu; disable it",
+                ids.id
             ),
         ));
     }

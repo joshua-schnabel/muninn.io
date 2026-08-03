@@ -317,6 +317,15 @@ see [`hardening.md`](hardening.md) for what that costs.
 What it will never do: report `0` updates when it could not read the host's
 package data. A failed check reports the failure and omits the counts.
 
+Unlike `modules.docker`, a failed check here does **not** stop muninn: it moves
+to `degraded` and keeps collecting everything else. Its preconditions still do —
+an absent host mount or a non-Debian host is exit `12`, as for every module. The difference is that this
+failure is visible in the metrics as `check_success=0` with a reason, where an
+unreachable Docker endpoint would be indistinguishable from a host with no
+containers. `muninn update-check --hostfs /hostfs` runs exactly what Telegraf
+runs, which is the fastest way to see the reason. Per-reason causes and fixes are
+in [`modules.md`](modules.md#what-a-reason-means).
+
 ### `modules.docker`
 
 Off by default, and that is a security decision rather than a convenience one.

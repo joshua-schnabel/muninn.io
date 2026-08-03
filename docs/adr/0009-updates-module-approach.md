@@ -66,6 +66,60 @@ mount, an empty dpkg status and a corrupt dpkg status each produce
 
 Full detail, including the rejected approaches: [the spike](../spikes/updates-spike.md).
 
+## Implementation (WP10)
+
+The spike deliberately left one question open: ship the shell probe and call it
+through `inputs.exec`, or invoke `apt-get` from muninn and emit the line protocol
+from Rust. Both run the same apt invocation, which is the part that had to be
+proven.
+
+**muninn runs itself.** `inputs.exec` is rendered as
+`/usr/local/bin/muninn update-check`, and the check lives in
+`crates/muninn-modules/src/updates/debian.rs`. The apt argument list is the one
+above, unchanged — the measured agreement belongs to those arguments, and moving
+them from `sh` to `std::process::Command` does not touch them.
+
+What the port buys is that the invariant stops being a convention. In the shell
+probe, "never report zero on failure" was upheld by every `fail()` call site
+remembering to `exit` before the counting; in Rust the counts live inside the
+`Ok` arm of the result, so a failed check has nothing to print them from. The
+precondition ladder and the `Inst`-line parsing are also ordinary unit tests now,
+including on a developer machine that has no apt at all.
+
+It costs one thing worth stating: the artefact under test is no longer the
+artefact the spike measured. `scripts/updates-test.sh` closes that by running the
+*image* against the same fixtures and the same ground truth, so a divergence
+between the two shows up as a failing cell rather than as a number nobody
+compares.
+
+**The metric shape follows the specified names, not the probe's fields.** The
+design fixed `muninn_updates_pending{severity="all"}`. Telegraf joins the
+measurement and the field name, so that is a field called `pending` carrying a
+`severity` tag — not the probe's `pending_all` and `pending_security`, which
+would have produced `muninn_updates_pending_all`. `status` and `reason` are
+present on the check line in both the success and failure cases (`reason=none`
+when there is nothing to report), because a tag that appeared only on failure
+would give one metric two label sets, and both would be exposed together for an
+expiration interval after a check recovers.
+
+**A failed check degrades muninn rather than stopping it.** This is the opposite
+of the Docker module's rule ([ADR-0010](0010-docker-socket.md)), and the
+difference is the point: an unreachable Docker endpoint produces silence that
+reads as "no containers", while a failed update check produces `check_success=0`
+with a reason.
+
+The module's *preconditions* are unaffected and still refuse the start with exit
+`12`: an absent host mount or a host that is not Debian-family is a deployment
+that cannot support the module at all, and every module is treated the same way
+there. What degrades muninn is a check that fails with its preconditions met —
+apt refusing, an unreadable package database, an index format the image does not
+understand. Those cannot be known before start, and none of them is a reason to
+stop reporting CPU. Nothing is being misrepresented, so taking a working agent out of
+service — and losing CPU, memory, disk and network collection — would cost far
+more than it protects. muninn runs the check once at startup so the result is in
+the logs, in `/status` and in `muninn_module_check_success` within seconds rather
+than after the first hourly interval.
+
 ## Consequences
 
 - **The runtime image is debian-slim.** Measured against distroless/cc: 88

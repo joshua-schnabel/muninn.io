@@ -172,6 +172,22 @@ cargo t-verbose                  # with stdout
 cargo snap-review                # review pending snapshots
 ```
 
+Against the image, which has to be built first (`docker build -t muninn:dev .`):
+
+```bash
+bash scripts/container-test.sh          # the artefact, in the documented posture
+bash scripts/updates-test.sh            # the updates module against real host trees
+bash scripts/updates-test.sh S8 S9      # selected cells
+```
+
+`updates-test.sh` is the system-test level the brief asks for in §18.6, and it is
+the only suite that can catch one particular kind of failure: the updates module
+runs real `apt` against a real host tree, so nothing below it has a truth to
+compare against. It shares its fixtures with the WP1 spike, and compares the
+shipped image's answers against the same ground truth the spike measured — if the
+implementation ever drifts from what was proven, a cell goes red rather than a
+number going quietly wrong.
+
 ## Quick reference
 
 | Change | Test type | Where |
