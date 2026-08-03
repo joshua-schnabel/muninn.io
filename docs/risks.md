@@ -64,82 +64,40 @@ It is a second apt invocation and a second parser, and it would change numbers
 that were measured, so it needs its own ADR amendment and its own ground truth
 rather than a quiet change here.
 
-## R2 — Two Prometheus endpoints invite scraping the wrong one
+## Mitigated
 
-**Severity: medium · Status: mitigated, monitor**
+Real failure modes, each closed by a decision that is documented where the
+decision lives. Kept by ID because other pages cite them.
 
-Telegraf serves host metrics on `:9273`. muninn serves its own operational
-metrics on the health port. Scraping only one gives a partial picture that looks
-complete: `:9273` alone cannot distinguish a dead agent from a dead host, and the
-health port alone gives nine metrics and no host data.
-
-The split is deliberate and load-bearing —
-[ADR-0012](adr/0012-self-metrics-on-health-server.md) — because
-`muninn_telegraf_running 0` has to be readable exactly when Telegraf's endpoint
-is gone.
-
-**Mitigation.** Called out in the annotated example config next to both keys, in
-the README, and in [`configuration.md`](configuration.md#two-metrics-endpoints)
-before the reference rather than inside it, with a two-job scrape configuration.
-
-## R3 — Container hostname silently fragments time series
-
-**Severity: medium · Status: mitigated**
-
-Telegraf uses `os.Hostname()`. In a container that is the container ID, which
-changes on every recreate — so every deploy starts a fresh time series and
-dashboards lose their history. Nothing errors. Mounting the host's `/etc` does
-not help; the hostname comes from the UTS namespace.
-
-**Mitigation.** muninn warns at startup when `agent.hostname` is empty and it
-detects a container. The example config carries a READ THIS marker at the key,
-and the compose example sets `hostname:`.
-
-**Residual.** A warning can be ignored. Making it fatal was considered and
-rejected — it would break the legitimate case of running muninn directly on a
-host, where the OS hostname is exactly right.
-
-## R4 — `config check` does not catch everything
-
-**Severity: medium · Status: mitigated by design**
-
-`telegraf config check` initialises plugins without starting them. It therefore
-cannot see a Docker endpoint that does not exist, a port already taken on the
-host, or a mount that is missing. Treating it as complete validation would mean
-those surface as a Telegraf crash after startup reported success.
-
-**Mitigation.** `muninn check-runtime` is a separate startup step (5) that checks
-exactly what `config check` cannot. Readiness is reported only after Telegraf is
-confirmed running — never after validation alone.
-
-## R5 — Telegraf plugin surface drifts between minor versions
-
-**Severity: low · Status: mitigated**
-
-Option names and defaults move. `inputs.system.include` and
-`outputs.prometheus_client.name_sanitization` are both recent additions, and
-`skip_processors_after_aggregators` changes its default in 1.40. A config
-generated for one version can be rejected — or worse, silently reinterpreted — by
-another.
-
-**Mitigation.** Telegraf is pinned by checksum
-([ADR-0011](adr/0011-telegraf-pinning.md)); muninn compares the runtime binary's
-version against the build-time pin and refuses to start on a mismatch; and
-`scripts/verify-design-package.sh` checks every documented plugin option against
-the pinned version's `sample.conf`.
-
-## R6 — Snapshot tests decay if accepted without review
-
-**Severity: low · Status: process control only**
-
-`cargo insta accept` is one keystroke, and a snapshot suite accepted without
-reading is a record of whatever the code happens to do rather than a check on it.
-This is the main way the determinism guarantee could rot.
-
-**Mitigation.** `cargo snap-review` is the documented workflow, the rule is in
-`AGENTS.md` and `testing.md`, and the reference config is verified against real
-Telegraf independently of any snapshot — so a wrongly-accepted snapshot still has
-one external check standing.
+- **R2 — two Prometheus endpoints invite scraping the wrong one.** `:9273` alone
+  cannot tell a dead agent from a dead host; the health port alone has no host
+  data. Both are needed, and the split is load-bearing
+  ([ADR-0012](adr/0012-self-metrics-on-health-server.md)). Stated in the README,
+  in the annotated example config at both keys, and in
+  [`configuration.md`](configuration.md#two-metrics-endpoints).
+- **R3 — a container hostname silently fragments time series.** Telegraf uses
+  `os.Hostname()`, which in a container changes on every recreate; nothing
+  errors, and dashboards lose their history. muninn warns at startup when
+  `agent.hostname` is empty and it detects a container. Deliberately a warning,
+  not a refusal — running muninn directly on a host is legitimate, and there the
+  OS hostname is exactly right.
+- **R4 — `config check` does not catch everything.** It initialises plugins
+  without starting them, so it cannot see a missing mount, an occupied port or an
+  absent Docker endpoint. `muninn check-runtime` is a separate startup step for
+  exactly those, and readiness follows Telegraf running rather than validation
+  passing.
+- **R5 — the Telegraf plugin surface drifts between minor versions.** Options and
+  defaults move, so a config generated for one version can be rejected or quietly
+  reinterpreted by another. Telegraf is pinned by checksum
+  ([ADR-0011](adr/0011-telegraf-pinning.md)), muninn refuses to start when the
+  runtime binary disagrees with the build-time pin, and
+  `scripts/verify-design-package.sh` checks every documented option against that
+  version's `sample.conf`.
+- **R6 — snapshot tests decay if accepted without review.** `cargo insta accept`
+  is one keystroke, and this is the main way the determinism guarantee could rot.
+  `cargo snap-review` is the documented workflow, the rule is in `AGENTS.md` and
+  [`testing.md`](testing.md), and the reference config is verified against real
+  Telegraf independently of any snapshot.
 
 ## Open questions
 

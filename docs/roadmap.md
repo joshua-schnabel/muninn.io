@@ -20,28 +20,23 @@ maintainer has to create by hand.
 
 ## Next
 
-**Ubuntu security counts are a lower bound.** `muninn_updates_pending{severity="security"}`
-classifies from the origin apt prints for the candidate version, which on Ubuntu
-is often `-updates` even for a security fix. The total is unaffected. Ubuntu's
-own `apt-check` asks whether the candidate *version* exists in any security
-origin instead, which `apt-cache policy` exposes — a second apt invocation and a
-second parser. It changes numbers that were measured, so it needs an amendment to
-[ADR-0009](adr/0009-updates-module-approach.md) and its own ground truth, not a
-quiet change. [R8](risks.md), and documented at the metric in
-[`modules.md`](modules.md#updates).
+**Classify Ubuntu security updates by candidate version, not by printed origin.**
+The security subset is a lower bound on Ubuntu today. Fixing it costs a second
+apt invocation and a second parser, and changes numbers that were measured — so
+it needs an amendment to
+[ADR-0009](adr/0009-updates-module-approach.md) and its own ground truth.
+[R8](risks.md).
 
-**Two suppressed image findings expire 2026-11-03.** `.trivyignore.yaml` holds
-`CVE-2026-49980` and `GHSA-hrxh-6v49-42gf`, both in Go modules vendored into the
-Telegraf binary and both unreachable from any configuration muninn can generate.
-Telegraf 1.39.2 is the newest release and carries neither fix. When the dates
-pass, the image scan blocks again — which is the point. Re-check upstream before
-then; the reasoning is in [`hardening.md`](hardening.md).
+**Two suppressed image findings expire 2026-11-03.** `CVE-2026-49980` and
+`GHSA-hrxh-6v49-42gf` sit in Go modules vendored into the Telegraf binary, are
+unreachable from any configuration muninn can generate, and have no upstream fix
+in 1.39.2. When the dates pass the image scan blocks again — which is the point,
+so re-check upstream before then. [`hardening.md`](hardening.md).
 
-**A bounded restart, if operational experience asks for it.**
-[ADR-0002](adr/0002-supervisor-no-restart-loop.md) leaves room for an optional
-restart — off by default, at most three attempts, exponential backoff. Whether it
-earns its complexity should be decided from watching muninn run, not in advance.
-[O3](risks.md).
+**A bounded restart, if operational experience asks for it.** Off by default, at
+most three attempts, exponential backoff — the room
+[ADR-0002](adr/0002-supervisor-no-restart-loop.md) left. Decide from watching
+muninn run, not in advance. [O3](risks.md).
 
 **Hosts beyond Debian and Ubuntu.** The updates module is the only Debian-shaped
 part; everything else is `gopsutil` reading `/proc` and works anywhere Telegraf

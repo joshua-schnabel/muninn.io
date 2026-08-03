@@ -8,7 +8,12 @@
 
 [![CI](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml/badge.svg)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml)
 [![Security](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml/badge.svg)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-b7410e?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Telegraf 1.39.2](https://img.shields.io/badge/telegraf-1.39.2%20pinned-22adf6?logo=influxdb&logoColor=white)](docs/adr/0011-telegraf-pinning.md)
+![Platforms](https://img.shields.io/badge/platforms-amd64%20%C2%B7%20arm64-4c566a)
+[![Coverage gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A5%2080%25-4c9a2a)](docs/testing.md)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 </div>
 
