@@ -1,0 +1,86 @@
+name: Security
+
+# Source-code SAST (Semgrep). Runs on every branch push and every PR: it needs
+# no build, so security feedback happens everywhere, early. Image CVE scanning
+# (Trivy) lives in ci.yml, next to the build that produces the exact image.
+
+on:
+  push:          # every branch — SAST feedback before a PR even exists
+  pull_request:  # every PR, including the dev → main release PR
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF to GitHub Security tab
+
+jobs:
+  # ── Semgrep SAST (source code analysis) ────────────────────────────────────
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Pinned by digest — `semgrep/semgrep` without a tag is `:latest`, i.e. a
+    # moving image that runs on every push and PR. Dependabot does NOT update
+    # `container:` references (dependabot-core#5819), so this needs a manual
+    # bump; that is acceptable because the *rules* are fetched at scan time from
+    # the Semgrep registry (`--config p/rust`, `p/secrets`), not baked into the
+    # image — a pinned image still scans with current rules.
+    container: semgrep/semgrep:1.172.0@sha256:65dcd4408adda7c183a6b4550cb1e9b19f7f627a6fbb7e0559bd466bedc44d7b
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Pass 1: full scan → SARIF, uploaded to the Security tab (never blocks).
+      - name: Semgrep – full scan (SARIF)
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --config p/secrets \
+            --config p/bash \
+            --sarif \
+            --output semgrep.sarif \
+            --exclude target \
+            .
+        continue-on-error: true
+
+      # GitHub code scanning ignores the SARIF `suppressions` property, so a
+      # `nosemgrep`-suppressed finding would stay open in the Security tab
+      # forever. Strip suppressed results before upload: a reviewed, in-code
+      # `// nosemgrep: <rule>` comment (with its why) is the single source of
+      # truth for accepted findings. The rule itself stays active everywhere
+      # else — only explicitly suppressed matches are dropped, never a rule.
+      - name: Drop nosemgrep-suppressed findings from SARIF
+        run: |
+          python3 - <<'EOF'
+          import json
+
+          with open("semgrep.sarif") as f:
+              sarif = json.load(f)
+          for run in sarif["runs"]:
+              kept = [r for r in run.get("results", []) if not r.get("suppressions")]
+              dropped = len(run.get("results", [])) - len(kept)
+              if dropped:
+                  print(f"dropping {dropped} suppressed finding(s) from the upload")
+              run["results"] = kept
+          with open("semgrep.sarif", "w") as f:
+              json.dump(sarif, f)
+          EOF
+
+      - name: Upload SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+
+      # Pass 2: blocking scan — ERROR-severity findings fail the run (gate).
+      - name: Semgrep – blocking scan (ERROR severity)
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --config p/secrets \
+            --config p/bash \
+            --error \
+            --exclude target \
+            .

@@ -56,8 +56,11 @@ cargo audit-all     # deny check
 cargo cov-ci        # coverage, ≥80% workspace lines
 ```
 
-CI enforces the same from WP12 onwards. Until then, run them locally — a PR that
-fails a gate is a PR that wastes a review.
+CI enforces every one of these on every PR, and adds the image build, the Trivy
+and Semgrep scans and the three system suites — see
+[`ci-cd.md`](ci-cd.md). Run them locally anyway: a PR that fails a gate is a PR
+that wastes a review, and the image jobs take tens of minutes to tell you the
+same thing `cargo fmt` would have said in one second.
 
 ## Standards
 

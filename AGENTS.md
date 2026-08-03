@@ -123,7 +123,10 @@ docker run --rm -v "$PWD/docs/reference:/ref:ro" telegraf:1.39.2 \
   telegraf config check --strict-env-handling --config /ref/telegraf.reference.conf
 ```
 
-CI lands in WP12; until then run the gates locally.
+CI runs all of these on every PR, plus the image build, Trivy, Semgrep and the
+three system suites — see [`docs/ci-cd.md`](docs/ci-cd.md). Run them locally
+anyway before pushing: the image jobs take tens of minutes, and a red pipeline
+is a slower way to learn that `cargo fmt` was not run.
 
 ---
 

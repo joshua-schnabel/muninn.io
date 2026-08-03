@@ -1,0 +1,47 @@
+name: Dependabot auto-merge
+
+# Auto-merges Dependabot PRs into dev once the branch ruleset's required checks
+# are green (the ruleset needs 0 approvals, so green checks are enough).
+#
+# Only patch/minor bumps — and the grouped minor/patch PR — are auto-merged.
+# Major bumps stay open for manual review: CI green does not prove a major has
+# no breaking runtime behaviour that the tests miss.
+#
+# Worth being clear about what "green" means here, because muninn's gates are
+# unusually good at catching a bad dependency: the full pipeline builds the
+# image, scans it, runs the stack against a real database and exercises the
+# updates module against real host trees. A crate that breaks any of that does
+# not merge.
+#
+# Requires the repo setting "Allow auto-merge" (Settings → General → Pull
+# Requests). `--auto` only *queues* the merge; GitHub still waits for every
+# required check before it actually merges.
+
+on: pull_request
+
+# For Dependabot-triggered runs the token is read-only by default; elevate it so
+# `gh pr merge --auto` can enable auto-merge.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only act on Dependabot's own PRs.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge (patch/minor only)
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+          steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

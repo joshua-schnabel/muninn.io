@@ -6,7 +6,9 @@
 # Telegraf format really work, does the documentation describe options that
 # exist, and is the pinned Telegraf the binary we think it is.
 #
-# WP12 lifts checks 3, 4 and 5 into CI. Until then, run this by hand:
+# CI runs this as the `reference` job with VERIFY_SKIP_CARGO=1, because `check`,
+# `test` and `supply-chain` are the same gates on their own runners there. Run
+# it whole locally:
 #   bash scripts/verify-design-package.sh
 #
 # Requires: cargo, python3, docker, curl, sha256sum.
@@ -35,13 +37,21 @@ fail() { echo "${RED}✗${NC} $*"; failures=$((failures + 1)); }
 info() { echo "${YELLOW}→${NC} $*"; }
 
 # ── 1. The workspace builds and the gates are clean ──────────────────────────
-info "1/7  cargo gates"
-cargo fmt --all -- --check          >/dev/null 2>&1 && pass "cargo fmt"    || fail "cargo fmt"
-cargo metadata --locked --format-version 1 >/dev/null 2>&1 \
-  && pass "cargo metadata --locked" || fail "cargo metadata --locked (Cargo.lock out of date?)"
-cargo clippy --workspace --all-targets --all-features -- -D warnings >/dev/null 2>&1 \
-  && pass "cargo clippy -D warnings" || fail "cargo clippy"
-cargo test --workspace --locked     >/dev/null 2>&1 && pass "cargo test"   || fail "cargo test"
+# VERIFY_SKIP_CARGO=1 in CI, where `check`, `test` and `supply-chain` have
+# already run these on their own runners. Skipping is not the same as not
+# running them: the point of this step is that a local run gates everything at
+# once. Anywhere else, leaving it out would be a way to pass by omission.
+if [ "${VERIFY_SKIP_CARGO:-0}" = "1" ]; then
+  info "1/7  cargo gates — skipped (VERIFY_SKIP_CARGO=1; CI runs them as separate jobs)"
+else
+  info "1/7  cargo gates"
+  cargo fmt --all -- --check          >/dev/null 2>&1 && pass "cargo fmt"    || fail "cargo fmt"
+  cargo metadata --locked --format-version 1 >/dev/null 2>&1 \
+    && pass "cargo metadata --locked" || fail "cargo metadata --locked (Cargo.lock out of date?)"
+  cargo clippy --workspace --all-targets --all-features -- -D warnings >/dev/null 2>&1 \
+    && pass "cargo clippy -D warnings" || fail "cargo clippy"
+  cargo test --workspace --locked     >/dev/null 2>&1 && pass "cargo test"   || fail "cargo test"
+fi
 
 # ── 2. The example configurations are valid YAML ─────────────────────────────
 info "2/7  example configurations parse"

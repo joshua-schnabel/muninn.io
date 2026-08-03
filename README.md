@@ -25,17 +25,17 @@ is working.
 
 ---
 
-> ## Status: works, not yet published
+> ## Status: feature-complete, first release not yet cut
 >
-> **WP0–WP11 are complete.** Every module works, including Docker and updates;
-> the container image builds and passes its tests under the full hardening —
-> non-root, read-only root filesystem, all capabilities dropped — and the whole
-> path is exercised end to end: a metric collected from the host arrives in
-> InfluxDB and is scraped by a real Prometheus.
+> **WP0–WP12 are complete** — every work package in
+> [`docs/roadmap.md`](docs/roadmap.md). Every module works, including Docker and
+> updates; the container image builds and passes its tests under the full
+> hardening — non-root, read-only root filesystem, all capabilities dropped —
+> the whole path is exercised end to end, and the pipeline builds, scans and
+> publishes it.
 >
-> The one thing missing is a **published image**: CI and releases are WP12, so
-> `ghcr.io/joshua-schnabel/muninn.io` does not exist yet. Build it yourself and
-> the compose file below works as written:
+> **No version has been released yet**, so there is no `:latest` to pull. Until
+> the first `dev → main` release, build it yourself:
 >
 > ```bash
 > docker build -t muninn:dev .
@@ -44,7 +44,8 @@ is working.
 > bash scripts/integration-test.sh muninn:dev   # the whole stack, with a database
 > ```
 >
-> Still outstanding: CI/CD (WP12). See [`docs/roadmap.md`](docs/roadmap.md).
+> Publishing needs two repository settings a maintainer has to add by hand —
+> see [`docs/ci-cd.md`](docs/ci-cd.md).
 
 ---
 

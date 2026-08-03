@@ -1,0 +1,275 @@
+name: Release
+
+# Fires when ci.yml's publish job pushes the release tag `vX.Y.Z`. It does the
+# two things that belong *after* the image is out, kept out of the image
+# pipeline on purpose:
+#   1. github-release — create the GitHub Release: notes from the matching
+#      CHANGELOG.md section, enriched with the published container images
+#      (pull commands + manifest digest).
+#   2. prepare-dev    — open an auto-merging PR into dev that reopens a fresh
+#      ## [Unreleased] block, fixes the compare links, and bumps Cargo.toml to
+#      the released version. It never pushes to main or dev directly.
+#
+# Tags are only ever created by publish after every gate passed. A hand-pushed
+# tag would make a Release without those gates — so don't push v* tags by hand.
+#
+# NOTE: prepare-dev needs a RELEASE_PAT secret (a PAT or fine-grained token with
+# contents:write + pull-requests:write on this repo). A PR opened with the
+# built-in GITHUB_TOKEN does NOT trigger ci.yml, so its required checks would
+# never run and auto-merge would hang. With RELEASE_PAT the PR is attributed to
+# a real identity, CI runs, and auto-merge completes. Without it the PR is still
+# opened (via GITHUB_TOKEN) but you must run CI / merge it yourself.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+jobs:
+  # ── Create the GitHub Release from the CHANGELOG section ───────────────────
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25   # includes a full test run for the report
+    permissions:
+      contents: write   # gh release create + asset upload
+    env:
+      TELEGRAF_VERSION: "1.39.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # needed to prove the tag is on main
+
+      # Nothing protects `refs/tags/v*` server-side, so a hand-pushed tag would
+      # otherwise create a GitHub Release — and trigger prepare-dev below — for a
+      # commit that never passed a release gate.
+      - name: Refuse tags that are not on main
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
+            exit 1
+          fi
+          echo "OK: $GITHUB_REF_NAME is on main"
+
+      # The image tag has no `v`; the git tag does. Computed once here so the
+      # steps below take it as an output rather than each stripping it again.
+      - name: Version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # ── Test report: re-run the full suite on the exact released commit ─────
+      # CI already gated these tests, so a failure here means the tag points at
+      # something CI never saw — fail loudly rather than release silently.
+      # Toolchain/cache steps mirror ci.yml's coverage job (same pins).
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Cache cargo-llvm-cov
+        id: cache-llvm-cov
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-${{ runner.os }}-0.8.7
+      - name: Install cargo-llvm-cov
+        if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      # Without this the unix-only tests skip loudly and the report would
+      # understate what was actually verified for the release.
+      - name: Extract the pinned Telegraf binary
+        run: |
+          cid="$(docker create "telegraf:${TELEGRAF_VERSION}")"
+          docker cp "$cid:/usr/bin/telegraf" "${{ runner.temp }}/telegraf"
+          docker rm "$cid" >/dev/null
+          chmod +x "${{ runner.temp }}/telegraf"
+
+      - name: Run tests with coverage on the tagged commit
+        env:
+          MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
+        run: cargo llvm-cov --workspace --locked 2>&1 | tee test-output.txt
+
+      - name: Build the test report
+        env:
+          COMMIT: ${{ github.sha }}
+        run: VERSION="${GITHUB_REF_NAME#v}" bash scripts/test-report.sh test-output.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          GHCR_REPO: ghcr.io/${{ github.repository_owner }}/muninn.io
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          echo "Releasing v$V"
+
+          # Notes = the lines under `## [X.Y.Z]` up to the next `## [` heading.
+          # Regex-free substring match: a dynamic awk regex with \[ \] is
+          # mis-compiled by gawk (the version's dots open a character class).
+          awk -v prefix="## [$V]" '
+            substr($0, 1, length(prefix)) == prefix { f=1; next }
+            f && substr($0, 1, 4) == "## [" { exit }
+            f { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "No CHANGELOG section for $V; using an autogenerated note."
+            echo "Release v$V" > notes.md
+          fi
+
+          # Container images: the multi-arch manifest was published (and its
+          # ghcr mirror created) before the tag existed — ci.yml tags last.
+          # The digest is fetched from the public registry; best-effort, a
+          # registry hiccup must not block the release.
+          {
+            echo ""
+            echo "## Container images"
+            echo ""
+            echo "Multi-arch (linux/amd64, linux/arm64), byte-identical on both registries:"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${DH_REPO}:${V}"
+            echo "docker pull ${GHCR_REPO}:${V}"
+            echo '```'
+            echo ""
+            echo "The image carries muninn and a checksum-verified Telegraf ${TELEGRAF_VERSION}."
+            echo "Run it non-root, read-only, with all capabilities dropped — see"
+            echo "[\`docs/hardening.md\`](https://github.com/${GITHUB_REPOSITORY}/blob/v${V}/docs/hardening.md)."
+          } >> notes.md
+          DIGEST=""
+          for i in 1 2 3; do
+            DIGEST="$(docker buildx imagetools inspect --format '{{json .Manifest}}' \
+              "docker.io/${DH_REPO}:${V}" 2>/dev/null | jq -r '.digest // empty')" || true
+            [ -n "$DIGEST" ] && break
+            echo "attempt $i: manifest for ${DH_REPO}:${V} not yet visible, retrying in 10s"
+            sleep 10
+          done
+          if [ -n "$DIGEST" ]; then
+            {
+              echo ""
+              echo "Manifest digest: \`docker.io/${DH_REPO}@${DIGEST}\` — [all tags](https://hub.docker.com/r/${DH_REPO}/tags)"
+            } >> notes.md
+          else
+            echo "::warning::could not resolve the manifest digest for ${DH_REPO}:${V}; the notes omit it"
+          fi
+
+          # Test summary from the report step above.
+          cat test-summary.md >> notes.md
+
+          # 0.x and any -prerelease build are marked as a pre-release.
+          PRE=""
+          case "$V" in 0.*|*-*) PRE="yes" ;; esac
+
+          if gh release view "v$V" >/dev/null 2>&1; then
+            echo "Release v$V already exists — skipping creation."
+          elif [ -n "$PRE" ]; then
+            gh release create "v$V" --title "v$V" --notes-file notes.md --prerelease
+          else
+            gh release create "v$V" --title "v$V" --notes-file notes.md
+          fi
+
+          # Attach (or refresh, on a re-run) the full test report.
+          gh release upload "v$V" test-report.md --clobber
+
+      # ── SBOM for the published image ──────────────────────────────────────
+      # ci.yml already produced one per architecture from the build artefact and
+      # kept it for 90 days. This one is generated from the *published* multi-arch
+      # tag, so the file attached to a release describes the image someone
+      # actually pulls, and outlives the CI artefact's retention.
+      - name: Generate SBOM for the released image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/muninn:${{ steps.version.outputs.version }}
+          format: cyclonedx
+          output: sbom.cdx.json
+          exit-code: "0"
+
+      - name: Attach the SBOM
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          if [ -s sbom.cdx.json ]; then
+            mv sbom.cdx.json "muninn-${V}.cdx.json"
+            gh release upload "v$V" "muninn-${V}.cdx.json" --clobber
+          else
+            echo "::warning::no SBOM was produced for v$V"
+          fi
+
+  # ── Reopen the changelog for the next cycle, on dev, via an auto-merge PR ──
+  prepare-dev:
+    name: Prepare dev for next cycle
+    runs-on: ubuntu-latest
+    needs: github-release
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dev
+          fetch-depth: 0
+          # PAT so the branch push + PR trigger ci.yml (GITHUB_TOKEN would not).
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+
+      - name: Open housekeeping PR into dev
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          DATE=$(date +%F)
+          BR="release/prepare-after-v${V}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BR"
+
+          # 1) Ensure dev ends with a released ## [X.Y.Z] section and a fresh
+          #    ## [Unreleased] on top.
+          if grep -q "^## \[${V}\]" CHANGELOG.md; then
+            if ! grep -q '^## \[Unreleased\]' CHANGELOG.md; then
+              awk 'BEGIN{done=0}
+                   done==0 && substr($0,1,4)=="## [" { print "## [Unreleased]"; print ""; done=1 }
+                   { print }' CHANGELOG.md > CHANGELOG.new
+              mv CHANGELOG.new CHANGELOG.md
+            fi
+          else
+            awk -v head="## [${V}] - ${DATE}" 'BEGIN{done=0}
+                 done==0 && $0=="## [Unreleased]" { print "## [Unreleased]"; print ""; print head; done=1; next }
+                 { print }' CHANGELOG.md > CHANGELOG.new
+            mv CHANGELOG.new CHANGELOG.md
+          fi
+
+          # 2) Point the Unreleased compare link at the new tag, add the tag link.
+          if grep -q '^\[Unreleased\]:' CHANGELOG.md; then
+            sed -i "s#^\[Unreleased\]:.*#[Unreleased]: ${REPO_URL}/compare/v${V}...HEAD#" CHANGELOG.md
+          else
+            printf '\n[Unreleased]: %s/compare/v%s...HEAD\n' "$REPO_URL" "$V" >> CHANGELOG.md
+          fi
+          if ! grep -q "^\[${V}\]:" CHANGELOG.md; then
+            sed -i "/^\[Unreleased\]:/a [${V}]: ${REPO_URL}/releases/tag/v${V}" CHANGELOG.md
+          fi
+
+          # 3) Keep Cargo.toml's workspace version in step with the release.
+          #    Scoped to [workspace.package], where the one version lives — an
+          #    unscoped sed would also rewrite dependency version pins.
+          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"${V}\"/" Cargo.toml
+
+          if git diff --quiet; then
+            echo "dev already prepared for the next cycle — nothing to do."
+            exit 0
+          fi
+
+          git add CHANGELOG.md Cargo.toml
+          git commit -m "chore: reopen changelog and bump version after v${V}"
+          git push -f origin "$BR"
+
+          if [ "$(gh pr list --head "$BR" --base dev --json number --jq length)" = "0" ]; then
+            gh pr create --base dev --head "$BR" \
+              --title "chore: prepare next cycle after v${V}" \
+              --body "Automated post-release housekeeping: fresh \`## [Unreleased]\`, updated compare links, and \`Cargo.toml\` bumped to ${V}. Merges automatically once checks pass."
+          fi
+          gh pr merge --auto --squash "$BR" || \
+            echo "::warning::Could not enable auto-merge (RELEASE_PAT missing?). Merge the PR manually."
