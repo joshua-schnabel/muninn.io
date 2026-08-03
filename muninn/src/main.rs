@@ -341,7 +341,13 @@ fn update_check(hostfs: Option<&std::path::Path>, security_metric: bool) {
 
     let hostfs = hostfs.unwrap_or(std::path::Path::new("/"));
     // Honours TMPDIR, which the rendered configuration sets to the runtime
-    // directory — the one writable place a read-only deployment has.
+    // directory — the one writable place a read-only deployment has. Run by
+    // hand on a host it is the shared /tmp instead, which is what the rule
+    // below is about: `Scratch::create` answers it by creating an
+    // unpredictably-named directory exclusively and 0700, so an existing path
+    // is an error rather than somewhere to write. See
+    // crates/muninn-modules/src/updates/debian.rs.
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let scratch = std::env::temp_dir();
 
     let report = debian::check(hostfs, &scratch);
