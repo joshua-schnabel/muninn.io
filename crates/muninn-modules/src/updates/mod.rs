@@ -194,6 +194,9 @@ mod tests {
     #[test]
     fn the_command_does_not_depend_on_the_running_executable() {
         let cfg = config_with(|c| c.modules.updates.enabled = true);
+        // nosemgrep: rust.lang.security.current-exe.current-exe — the rule is
+        // about trusting current_exe for a security decision. This asserts the
+        // opposite: that the rendered command does NOT contain it.
         let here = std::env::current_exe().unwrap();
         let out = scalar(&rendered(&cfg), "commands");
         assert!(

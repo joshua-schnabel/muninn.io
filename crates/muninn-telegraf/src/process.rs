@@ -221,6 +221,13 @@ impl Telegraf {
     fn request_stop(&self) -> Result<()> {
         // SIGTERM by raw syscall rather than `Child::kill`, which sends SIGKILL
         // and would deny Telegraf the chance to flush.
+        //
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage — audited, and
+        // the only `unsafe` in the workspace. `kill(2)` has no safe wrapper in
+        // std, the pid is this process's own child (never attacker-supplied),
+        // and the call reads no memory. The return code is checked below rather
+        // than discarded, so a failed signal surfaces instead of leaving the
+        // supervisor waiting out the grace period for a signal never delivered.
         let rc = unsafe { libc::kill(self.pid as libc::pid_t, libc::SIGTERM) };
         if rc == 0 {
             Ok(())

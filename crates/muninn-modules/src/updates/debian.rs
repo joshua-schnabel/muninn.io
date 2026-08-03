@@ -605,16 +605,45 @@ fn first_line(s: &str) -> String {
 /// A directory for apt's cache, removed when the check ends.
 ///
 /// Not `tempfile`: that is a dev-dependency, and this runs in the shipped
-/// binary. The name only has to be unique among concurrent checks on one host,
-/// and there is at most one of those.
+/// binary.
+///
+/// The name is unpredictable and the directory is created **exclusively**, both
+/// deliberately. In the shipped deployment `TMPDIR` points at the runtime tmpfs,
+/// which is 0700 and reachable by nobody else — but `muninn update-check` is a
+/// documented command an operator runs by hand, where `TMPDIR` is a shared
+/// `/tmp`. A fixed or pid-derived name there is a symlink-attack target: another
+/// local user pre-creates the path and chooses where apt's cache writes land.
 struct Scratch(PathBuf);
 
 impl Scratch {
     fn create(base: &Path) -> std::io::Result<Self> {
-        let dir = base.join(format!("muninn-update-check-{}", std::process::id()));
-        // A leftover from a previous run with the same pid would otherwise be
-        // reused with a stale cache in it.
-        let _ = fs::remove_dir_all(&dir);
+        // pid plus the sub-second clock. `create` rather than `create_dir_all`
+        // is what actually closes the hole — it fails if anything is already at
+        // the path, a symlink included, so losing the race is an error instead
+        // of a redirect. The clock component only makes winning it a guess.
+        let unique = format!(
+            "muninn-update-check-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        );
+        let dir = base.join(unique);
+
+        // `mut` is only used by the unix block below; on a developer's Windows
+        // machine that block is compiled out and the binding is not mutated.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        builder.create(&dir)?;
+
+        // Inside a directory this process just created and owns, so the
+        // recursive form is safe here.
         fs::create_dir_all(dir.join("archives/partial"))?;
         Ok(Scratch(dir))
     }
@@ -988,6 +1017,49 @@ Conf libc6 (2.36-9+deb12u7 Debian-Security:12/stable-security [amd64])
             scratch.path().to_path_buf()
         };
         assert!(!path.exists(), "the scratch directory outlived the check");
+    }
+
+    /// Two checks must not pick the same path. A pid-derived name alone would
+    /// collide here, and in a shared `/tmp` a predictable one is a symlink
+    /// target rather than merely a collision.
+    #[test]
+    fn scratch_directories_do_not_share_a_name() {
+        let base = tempfile::tempdir().unwrap();
+        let a = Scratch::create(base.path()).unwrap();
+        let b = Scratch::create(base.path()).unwrap();
+        assert_ne!(a.path(), b.path());
+    }
+
+    /// Created exclusively: anything already sitting at the path is an error,
+    /// not something to write into. This is what makes losing the race a
+    /// failure instead of a redirect — the clock component only makes winning
+    /// it a guess.
+    #[test]
+    fn an_occupied_scratch_path_is_refused() {
+        let base = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(base.path()).unwrap();
+
+        // The same path a second time, which is what an attacker who guessed it
+        // would have pre-created.
+        let mut builder = fs::DirBuilder::new();
+        assert!(
+            builder.recursive(false).create(scratch.path()).is_err(),
+            "an existing path must not be adopted"
+        );
+    }
+
+    /// apt's cache holds nothing secret, but the directory is created in a
+    /// world-writable `/tmp` and other users have no business reading it.
+    #[cfg(unix)]
+    #[test]
+    fn the_scratch_directory_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let base = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(base.path()).unwrap();
+
+        let mode = fs::metadata(scratch.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
     }
 
     /// The whole path, end to end, against a synthetic host tree.
