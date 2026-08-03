@@ -43,6 +43,7 @@ use muninn_core::config::{self, Overrides};
 use muninn_modules::RenderContext;
 
 mod cli;
+mod generated_config;
 mod logging;
 mod probe;
 mod runtime_check;
@@ -116,6 +117,23 @@ fn load(args: &Cli) -> muninn_core::Result<muninn_core::Config> {
     Ok(cfg)
 }
 
+/// Where `validate --with-telegraf` may put a file that holds resolved secrets.
+///
+/// The directory of `runtime.generated_config_path`, when it already exists —
+/// in the shipped image that is the tmpfs at `/run/muninn`, and it is the only
+/// writable place there: the root filesystem is read-only and `/tmp` with it,
+/// so `tempfile` alone fails with `Read-only file system` on exactly the
+/// deployment this command is most useful in.
+///
+/// Only when it already exists. Run on a developer's machine against a
+/// production configuration, creating `/run/muninn` would be muninn making a
+/// directory outside a container to hold a credential — the system temp
+/// directory is both writable and correct there.
+fn scratch_directory(generated_config_path: &str) -> Option<std::path::PathBuf> {
+    let dir = std::path::Path::new(generated_config_path).parent()?;
+    dir.is_dir().then(|| dir.to_path_buf())
+}
+
 fn validate(args: &Cli, with_telegraf: bool) -> muninn_core::Result<()> {
     let cfg = load(args)?;
 
@@ -129,14 +147,27 @@ fn validate(args: &Cli, with_telegraf: bool) -> muninn_core::Result<()> {
             &muninn_modules::build(&RenderContext::new(&cfg)),
             env!("CARGO_PKG_VERSION"),
         );
-        let dir = tempfile::tempdir().map_err(|e| {
-            MuninnError::internal(format!("cannot create a scratch directory: {e}"))
-        })?;
-        let path = dir.path().join("telegraf.conf");
-        std::fs::write(&path, &rendered)
-            .map_err(|e| MuninnError::internal(format!("cannot write the scratch file: {e}")))?;
 
-        muninn_telegraf::validator::check_config(&binary, &path)?;
+        // The scratch file holds resolved secrets, so it goes through the same
+        // writer as the real one and is removed as soon as Telegraf has read it.
+        let _guard;
+        let path = match scratch_directory(&cfg.runtime.generated_config_path) {
+            Some(dir) => dir.join(format!("telegraf.check.{}.conf", std::process::id())),
+            None => {
+                _guard = tempfile::tempdir().map_err(|e| {
+                    MuninnError::internal(format!("cannot create a scratch directory: {e}"))
+                })?;
+                _guard.path().join("telegraf.conf")
+            }
+        };
+        generated_config::write(&path, &rendered)?;
+
+        let verdict = muninn_telegraf::validator::check_config(&binary, &path);
+        // Before the `?`: a rejected configuration is the expected outcome of
+        // this command and must not leave a file holding a token behind.
+        let _ = std::fs::remove_file(&path);
+        verdict?;
+
         println!("Telegraf accepted the generated configuration.");
     }
 
@@ -179,9 +210,12 @@ fn render_config(
 
     match output {
         Some(path) => {
-            std::fs::write(path, &rendered).map_err(|e| {
-                MuninnError::config(format!("cannot write '{}': {e}", path.display()))
-            })?;
+            // The same writer the supervisor uses, so the file lands 0600
+            // whichever command produced it. With --unsafe-show-secrets this
+            // output holds a real token, and a redacted one still describes the
+            // deployment; neither is something to leave world-readable in
+            // whatever directory the operator happened to point at.
+            generated_config::write(path, &rendered)?;
             eprintln!("muninn: wrote {}", path.display());
         }
         None => {
@@ -387,5 +421,31 @@ mod tests {
     fn join_names_an_empty_list_rather_than_printing_nothing() {
         assert_eq!(join(&[]), "none");
         assert_eq!(join(&["cpu", "memory"]), "cpu, memory");
+    }
+
+    /// The tmpfs the deployment provides is the one writable directory in the
+    /// image, and the scratch file belongs there rather than in a `/tmp` the
+    /// read-only root filesystem does not offer.
+    #[test]
+    fn the_scratch_directory_is_the_runtime_directory_when_it_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let generated = dir.path().join("telegraf.conf");
+
+        assert_eq!(
+            scratch_directory(&generated.display().to_string()).as_deref(),
+            Some(dir.path())
+        );
+    }
+
+    /// And nothing is created when it does not: `muninn validate --with-telegraf`
+    /// on a laptop, against a production configuration, must not make a
+    /// directory outside a container to hold a resolved credential.
+    #[test]
+    fn no_scratch_directory_is_invented_when_the_runtime_one_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let absent = dir.path().join("run").join("muninn").join("telegraf.conf");
+
+        assert_eq!(scratch_directory(&absent.display().to_string()), None);
+        assert!(!absent.parent().unwrap().exists());
     }
 }

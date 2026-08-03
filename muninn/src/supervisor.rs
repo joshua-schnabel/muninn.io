@@ -130,7 +130,7 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
         env!("CARGO_PKG_VERSION"),
     );
     let config_path = Path::new(&config.runtime.generated_config_path);
-    write_config(config_path, &rendered)?;
+    crate::generated_config::write(config_path, &rendered)?;
     let generation = generation_started.elapsed();
     state.update(|d| d.config_generation = Some(generation));
     info!(path = %config_path.display(), bytes = rendered.len(), "wrote Telegraf configuration");
@@ -384,99 +384,13 @@ impl StopSignals {
     }
 }
 
-/// Write the generated configuration, creating its directory.
-///
-/// The file holds resolved secrets, so on Unix it is created 0600 — a
-/// world-readable configuration on a shared tmpfs would undo the reason it is
-/// not persisted in the first place.
-fn write_config(path: &Path, contents: &str) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| {
-            MuninnError::internal(format!("cannot create '{}': {e}", dir.display()))
-        })?;
-    }
-
-    std::fs::write(path, contents)
-        .map_err(|e| MuninnError::internal(format!("cannot write '{}': {e}", path.display())))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            MuninnError::internal(format!(
-                "cannot restrict permissions on '{}': {e}",
-                path.display()
-            ))
-        })?;
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // The state-machine tests moved to `muninn-health` with the state itself.
-    // What is left here is what belongs to the supervisor: writing the generated
-    // configuration.
-
-    #[test]
-    fn writing_the_configuration_creates_its_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested/deeper/telegraf.conf");
-        write_config(
-            &path, "[agent]
-",
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "[agent]
-"
-        );
-    }
-
-    /// The generated file holds resolved secrets. On a shared tmpfs a
-    /// world-readable copy would undo the reason it is never persisted.
-    #[cfg(unix)]
-    #[test]
-    fn the_generated_configuration_is_not_world_readable() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("telegraf.conf");
-        write_config(
-            &path,
-            "token = \"secret\"
-",
-        )
-        .unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "mode {mode:o} is readable by others");
-    }
-
-    /// The file is regenerated from scratch on every start; a leftover from a
-    /// previous configuration would be worse than no file at all.
-    #[test]
-    fn writing_the_configuration_replaces_a_previous_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("telegraf.conf");
-        write_config(
-            &path, "old
-",
-        )
-        .unwrap();
-        write_config(
-            &path, "new
-",
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "new
-"
-        );
-    }
+    // The state-machine tests moved to `muninn-health` with the state itself,
+    // and writing the generated configuration to `generated_config`, next to the
+    // permission rule it enforces. What is left is the supervisor's own state.
 
     /// A transition logs and moves; the state the health server reads is the one
     /// the supervisor last set.

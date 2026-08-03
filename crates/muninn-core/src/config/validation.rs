@@ -118,7 +118,11 @@ fn validate_runtime(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
         ));
     }
 
-    if !cfg.runtime.host_mount_prefix.is_empty() && !cfg.runtime.host_mount_prefix.starts_with('/')
+    // Through the same helper as `generated_config_path` above, and for the same
+    // reason: `starts_with('/')` is a Linux-shaped approximation of "absolute"
+    // that rejects a host-absolute path on the machine the tests run on.
+    if !cfg.runtime.host_mount_prefix.is_empty()
+        && !is_absolute_path(&cfg.runtime.host_mount_prefix)
     {
         return Err(MuninnError::config(format!(
             "runtime.host_mount_prefix '{}' must be an absolute path, or empty to mean \

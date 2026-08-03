@@ -27,9 +27,11 @@ is working.
 
 > ## Status: works, not yet published
 >
-> **WP0–WP10 are complete.** Every module works, including Docker and updates,
-> and the container image builds and passes its tests under the full hardening —
-> non-root, read-only root filesystem, all capabilities dropped.
+> **WP0–WP11 are complete.** Every module works, including Docker and updates;
+> the container image builds and passes its tests under the full hardening —
+> non-root, read-only root filesystem, all capabilities dropped — and the whole
+> path is exercised end to end: a metric collected from the host arrives in
+> InfluxDB and is scraped by a real Prometheus.
 >
 > The one thing missing is a **published image**: CI and releases are WP12, so
 > `ghcr.io/joshua-schnabel/muninn.io` does not exist yet. Build it yourself and
@@ -37,12 +39,12 @@ is working.
 >
 > ```bash
 > docker build -t muninn:dev .
-> bash scripts/container-test.sh muninn:dev
-> bash scripts/updates-test.sh muninn:dev
+> bash scripts/container-test.sh muninn:dev     # the image, hardened
+> bash scripts/updates-test.sh muninn:dev       # the updates module, real hosts
+> bash scripts/integration-test.sh muninn:dev   # the whole stack, with a database
 > ```
 >
-> Still outstanding: the end-to-end InfluxDB tests (WP11) and CI/CD (WP12). See
-> [`docs/roadmap.md`](docs/roadmap.md).
+> Still outstanding: CI/CD (WP12). See [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 

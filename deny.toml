@@ -40,6 +40,12 @@ allow = [
 multiple-versions = "warn"
 # A wildcard version pin is not a pin.
 wildcards = "deny"
+# Except between muninn's own crates. They are `{ path = ... }` entries in
+# [workspace.dependencies] with no version, which is a wildcard by cargo-deny's
+# reading and a directory on disk by cargo's — there is no registry, no
+# resolution and nothing to pin. Without this the gate fails on the workspace's
+# own structure, which is how a required gate stops being run at all.
+allow-wildcard-paths = true
 deny = [
     { name = "openssl", reason = "muninn adds no TLS stack of its own; see the licence note above" },
     { name = "openssl-sys", reason = "as above" },
