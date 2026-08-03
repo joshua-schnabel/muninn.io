@@ -70,9 +70,18 @@ jobs:
 
           TITLE="${TYPE}: ${DESCRIPTION}"
 
-          gh pr create \
-            --base dev \
-            --head "$BRANCH" \
-            --title "$TITLE" \
-            --body "Automatically opened by push to \`$BRANCH\`." \
-            --draft
+          # Not fatal. Opening the PR needs "Allow GitHub Actions to create and
+          # approve pull requests" (Settings → Actions → General); without it
+          # the API returns "GitHub Actions is not permitted to create or
+          # approve pull requests". That is a repository setting, and a
+          # convenience that cannot run must not turn every push to a correctly
+          # named branch red — the branch-naming rule above still applies, and
+          # opening the PR by hand is one command.
+          if ! gh pr create \
+                 --base dev \
+                 --head "$BRANCH" \
+                 --title "$TITLE" \
+                 --body "Automatically opened by push to \`$BRANCH\`." \
+                 --draft; then
+            echo "::warning::Could not open a PR for ${BRANCH}. If the error mentions permissions, enable Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests'. See docs/ci-cd.md."
+          fi

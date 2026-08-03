@@ -17,6 +17,45 @@ permissions:
   security-events: write   # required to upload SARIF to GitHub Security tab
 
 jobs:
+  # ── ShellCheck over the scripts ────────────────────────────────────────────
+  # The shell in this repository is not glue: scripts/*.sh are the three system
+  # test suites, and a quoting bug in one of them is a test that passes without
+  # testing. Semgrep has no registry ruleset for shell — `p/bash` and `p/shell`
+  # are both 404 — so this is the tool that covers them.
+  #
+  # actionlint already shellchecks the `run:` blocks inside the workflows; this
+  # covers the scripts those blocks call.
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pre-installed on GitHub's Ubuntu runners.
+      - name: shellcheck scripts/*.sh
+        run: shellcheck --severity=warning scripts/*.sh
+
+  # ── actionlint over the workflows ─────────────────────────────────────────
+  # It catches what YAML validity cannot: an unknown `uses:` input, a bad job
+  # dependency, a shell error inside a `run:` block — and expression syntax in
+  # places it is easy to forget is parsed, including comments.
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Pinned by digest and run as a container rather than through the
+      # upstream install script: `curl | bash` from a moving branch is exactly
+      # the supply-chain shape this repository refuses everywhere else. Same
+      # caveat as the Semgrep image below — Dependabot does not update
+      # `container:` or `docker run` references, so this needs a manual bump.
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color
+
   # ── Semgrep SAST (source code analysis) ────────────────────────────────────
   semgrep:
     name: Semgrep SAST
@@ -38,7 +77,6 @@ jobs:
           semgrep scan \
             --config p/rust \
             --config p/secrets \
-            --config p/bash \
             --sarif \
             --output semgrep.sarif \
             --exclude target \
@@ -80,7 +118,6 @@ jobs:
           semgrep scan \
             --config p/rust \
             --config p/secrets \
-            --config p/bash \
             --error \
             --exclude target \
             .

@@ -17,7 +17,7 @@ set -uo pipefail
 
 TELEGRAF_VERSION="1.39.2"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT"
+cd "$ROOT" || exit 1
 
 # Git Bash on Windows rewrites container-side paths like /ref into Windows paths
 # before docker ever sees them, so `--config /ref/x.conf` arrives as

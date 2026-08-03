@@ -96,17 +96,38 @@ real socket and through a socket proxy.
 
 **`updates`** is its own job because it builds Debian and Ubuntu fixture trees,
 which is minutes of apt work that should not sit in front of the stack test.
-Cell S11 — a real host through WSL — skips on a runner and says so; the other
-sixteen run.
+Cell S11 — a real host through WSL — **skips** on a runner and says so; the
+other sixteen run. It is the only cell that can skip, and it is counted and
+printed separately from a pass, because a skip that reads like a pass is worse
+than no cell at all.
 
-## Security workflow
+## Source scanning
 
-Separate from `ci.yml`, on every push and PR, because it needs no build and
-should give feedback before a PR exists.
+`security.yml` runs on every push and every PR, and needs no build:
 
-**Semgrep** with `p/rust` and `p/secrets`, pinned by image digest. Two passes: a
-full scan uploading SARIF to the Security tab (never blocks), and a blocking scan
-where ERROR-severity findings fail the run.
+| Job | Covers |
+|---|---|
+| `shellcheck` | `scripts/*.sh` at `--severity=warning`. The shell here is not glue — those files *are* the three system test suites, and a quoting bug in one is a test that passes without testing |
+| `actionlint` | The workflows themselves: unknown action inputs, bad job dependencies, and shell errors inside `run:` blocks |
+| `semgrep` | `p/rust` and `p/secrets`, two passes — full scan to the Security tab, then a blocking pass on ERROR severity |
+
+Semgrep has no registry ruleset for shell (`p/bash` and `p/shell` are both 404),
+which is why ShellCheck is a separate job rather than another `--config`.
+
+actionlint runs from a digest-pinned image rather than through the upstream
+install script: `curl | bash` from a moving branch is exactly the supply-chain
+shape this repository refuses everywhere else.
+
+## Suppressed image findings
+
+The blocking Trivy scan reads `.trivyignore.yaml`; the full scan deliberately
+does not, so a suppressed finding still reaches the Security tab. Every entry
+needs an expiry date and a reason the code is unreachable in muninn's generated
+configuration — not merely "not fixed upstream yet".
+
+Two entries today, both Go modules vendored into the Telegraf binary rather than
+muninn's own dependencies. The reasoning, and the table of what they are, is in
+[`hardening.md`](hardening.md#the-two-suppressed-findings-and-why).
 
 ## Architectures
 
@@ -161,6 +182,14 @@ still gate `publish`, so nothing unscanned ships either way.
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
 with `gh pr merge --auto`, which does nothing without it.
+
+**Enable "Allow GitHub Actions to create and approve pull requests"** (Settings
+→ Actions → General → Workflow permissions). Without it the API refuses with
+*"GitHub Actions is not permitted to create or approve pull requests"*, and two
+things stop working: `auto-pr.yml` cannot open its draft PR, and the
+post-release housekeeping PR cannot be opened. Both now warn instead of failing
+— the branch is pushed either way, so nothing is lost and you open the PR by
+hand. The setting is off by default on new repositories.
 
 **Repository variables**
 

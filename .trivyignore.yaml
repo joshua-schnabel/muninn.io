@@ -1,0 +1,48 @@
+# Suppressions for the blocking Trivy scan in .github/workflows/ci.yml.
+#
+# Rules for this file, so it does not quietly become the place findings go to
+# die:
+#
+#   1. Only the BLOCKING scan reads it. The full scan still reports everything
+#      to the Security tab, so nothing here disappears from view.
+#   2. Every entry carries `expired_at`. When the date passes the finding blocks
+#      again — a suppression with no expiry is a decision nobody revisits.
+#   3. Every entry states why the vulnerable code cannot be reached in muninn's
+#      deployment, not merely that it is inconvenient. "Not fixed upstream yet"
+#      alone is not a reason to ship it silently.
+#
+# Both entries below are Go modules vendored into the **Telegraf binary**, not
+# muninn's own dependencies — `cargo deny` covers those, and it is clean.
+# Telegraf is pinned by SHA-256 per architecture (ADR-0011) and 1.39.2 is the
+# newest upstream release as of 2026-08-03, so there is no version to move to.
+#
+# The reachability argument is the same for both, and it is stronger here than
+# it would be in most projects: muninn **generates the entire Telegraf
+# configuration**. There are no free-form TOML blocks (ADR-0004), so an operator
+# cannot enable a plugin muninn does not model. The complete set muninn can ever
+# emit is twelve plugins — cpu, disk, diskio, docker, exec, mem, net, processes,
+# swap, system, influxdb_v2, prometheus_client. Neither an rclone nor a gRPC
+# plugin is among them, and neither can be added through configuration.
+#
+# Recheck at each expiry: `docker run --rm aquasec/trivy image --input image.tar`
+# after a Telegraf bump, and delete the entry the moment upstream ships a fix.
+
+vulnerabilities:
+  - id: CVE-2026-49980
+    statement: >-
+      rclone RCE via unauthenticated requests to its remote-control daemon
+      (`rcd --rc-serve`). Vendored into Telegraf; fixed upstream in rclone
+      1.74.3, which no Telegraf release carries yet. muninn never starts
+      rclone's daemon and renders no plugin that uses rclone, so the affected
+      listener does not exist in this image at runtime. Re-evaluate on the next
+      Telegraf release.
+    expired_at: 2026-11-03
+
+  - id: GHSA-hrxh-6v49-42gf
+    statement: >-
+      gRPC-Go xDS RBAC and HTTP/2 issues, fixed upstream in grpc-go 1.82.1,
+      which no Telegraf release carries yet. Vendored into Telegraf. muninn
+      renders no gRPC input or output and no xDS configuration; the only
+      listener the generated config opens is outputs.prometheus_client, which is
+      net/http, not grpc-go. Re-evaluate on the next Telegraf release.
+    expired_at: 2026-11-03

@@ -352,6 +352,10 @@ jobs:
       matrix:
         platform: [linux/amd64, linux/arm64]
     steps:
+      # Needed for .trivyignore.yaml, which the blocking scan reads. The full
+      # scan below deliberately does not use it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Sanitise platform name
         env:
           platform: ${{ matrix.platform }}
@@ -387,6 +391,11 @@ jobs:
       # that trade is measured in docs/hardening.md: more unfixable CVEs, none
       # of them actionable. A gate that blocks on unfixable findings is a gate
       # that gets switched off.
+      #
+      # .trivyignore.yaml is read HERE and not by the full scan above, so a
+      # suppressed finding still reaches the Security tab. Every entry in it
+      # carries an expiry date and a reason the code is unreachable in muninn's
+      # generated configuration — see the file.
       - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -394,6 +403,7 @@ jobs:
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
           exit-code: "1"
 
       # ── SBOM, from the same tarball ──────────────────────────────────────

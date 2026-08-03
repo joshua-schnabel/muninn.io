@@ -267,9 +267,12 @@ jobs:
           git push -f origin "$BR"
 
           if [ "$(gh pr list --head "$BR" --base dev --json number --jq length)" = "0" ]; then
+            # The branch is pushed either way, so the work is never lost — see
+            # the note in auto-pr.yml about the repository setting this needs.
             gh pr create --base dev --head "$BR" \
               --title "chore: prepare next cycle after v${V}" \
-              --body "Automated post-release housekeeping: fresh \`## [Unreleased]\`, updated compare links, and \`Cargo.toml\` bumped to ${V}. Merges automatically once checks pass."
+              --body "Automated post-release housekeeping: fresh \`## [Unreleased]\`, updated compare links, and \`Cargo.toml\` bumped to ${V}. Merges automatically once checks pass." || \
+              echo "::warning::Could not open the housekeeping PR; branch ${BR} is pushed — open it by hand. If the error mentions permissions, see docs/ci-cd.md."
           fi
           gh pr merge --auto --squash "$BR" || \
             echo "::warning::Could not enable auto-merge (RELEASE_PAT missing?). Merge the PR manually."

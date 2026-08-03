@@ -44,6 +44,15 @@ The release pipeline reads the version from this file — see
   the version gate deliberately does not use it.
 - `scripts/test-report.sh` — every GitHub Release ships a per-suite test report
   and a coverage figure, produced by re-running the suite on the tagged commit.
+- ShellCheck and actionlint as their own gates. `scripts/*.sh` are the three
+  system test suites, so a quoting bug in one of them is a test that passes
+  without testing; Semgrep has no ruleset for shell. actionlint covers the
+  workflows and the shell inside them.
+- `.trivyignore.yaml` — read only by the *blocking* scan, so a suppressed
+  finding still reaches the Security tab. Every entry needs an expiry date and a
+  reason the code is unreachable in muninn's generated configuration. Two
+  entries today, both Go modules vendored into the Telegraf binary, documented
+  in `docs/hardening.md`.
 
 - End-to-end tests, completed (WP11). `scripts/integration-test.sh` brings up
   `docker-compose.integration.yml` — muninn, Telegraf, InfluxDB 2.7 and

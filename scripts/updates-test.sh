@@ -43,10 +43,15 @@ WORK="${UPDATES_WORK:-${SPIKE_WORK:-$ROOT/spikes/updates/work}}"
 native() { if [ -n "${MSYSTEM:-}" ]; then (cd "$1" && pwd -W); else (cd "$1" && pwd); fi; }
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; DIM=$'\033[2m'; NC=$'\033[0m'
-pass_n=0; fail_n=0
+pass_n=0; fail_n=0; skip_n=0
 
 pass() { pass_n=$((pass_n+1)); echo "  ${GREEN}✓ $1${NC}  $2"; }
 fail() { fail_n=$((fail_n+1)); echo "  ${RED}✗ $1${NC}  $2"; }
+# A cell whose *precondition* is absent, as opposed to one that failed. Counted
+# separately and printed loudly, because a skip that reads like a pass is worse
+# than no cell at all — the reason is always the missing precondition, never a
+# result. The only cell that can skip is S11, which needs a real host.
+skip() { skip_n=$((skip_n+1)); echo "  ${YELLOW}– $1${NC}  skipped: $2"; }
 
 trap 'docker rm -f muninn-updates-test >/dev/null 2>&1 || true' EXIT
 
@@ -206,8 +211,14 @@ S10() { # a host that is not Debian-family gets a refusal, not a number
 
 S11() { # a real host, which no container fixture can stand in for
     local distro="${WSL_DISTRO:-Debian}"
+    # The only cell with a precondition a machine can simply lack. It needs a
+    # real Debian host to compare against, which on the maintainer's machine is
+    # WSL and on a CI runner is nothing — every other cell builds its own
+    # fixture. Skipped rather than failed there: a suite that cannot go green on
+    # a runner stops being run, and this cell is the one that most needs to keep
+    # being run on the machine that HAS a host.
     if ! command -v wsl.exe >/dev/null 2>&1; then
-        fail S11 "wsl.exe not available — cannot compare against a real host"
+        skip S11 "no wsl.exe — this cell needs a real Debian host to compare against"
         return
     fi
 
@@ -438,5 +449,9 @@ for cell in "${CELLS[@]}"; do
 done
 
 echo
-echo "${GREEN}${pass_n} passed${NC}, ${RED}${fail_n} failed${NC}"
+if [ "$skip_n" -gt 0 ]; then
+    echo "${GREEN}${pass_n} passed${NC}, ${RED}${fail_n} failed${NC}, ${YELLOW}${skip_n} skipped${NC}"
+else
+    echo "${GREEN}${pass_n} passed${NC}, ${RED}${fail_n} failed${NC}"
+fi
 [ "$fail_n" -eq 0 ]
