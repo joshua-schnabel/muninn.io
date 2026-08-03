@@ -21,7 +21,7 @@ conversation.
 | [WP9](#wp9--docker-module) | Docker module | ✅ |
 | [WP10](#wp10--updates-module) | Updates module | ✅ |
 | [WP11](#wp11--end-to-end-tests) | End-to-end tests | ✅ |
-| [WP12](#wp12--cicd-and-release) | CI/CD and release | ⬜ |
+| [WP12](#wp12--cicd-and-release) | CI/CD and release | ✅ |
 
 ## Why this order differs from the brief
 
@@ -647,10 +647,15 @@ run on, which is the reason the shared helper exists.
 
 ## WP12 — CI/CD and release
 
+**Status: complete, 2026-08-03.** Twelve jobs in `ci.yml`, plus Semgrep, the
+release workflow, Dependabot and the branch automation — built to huginn.io's
+shape, with three jobs it does not have.
+
 **Goal.** Every gate automated, images published reproducibly.
 
-**Touches** `.github/workflows/{ci,security,release,auto-pr}.yml`,
-`.github/dependabot.yml`, `scripts/changelog-version.sh`, `docs/ci-cd.md`.
+**Touches** `.github/workflows/{ci,security,release,auto-pr,dependabot-auto-merge}.yml`,
+`.github/dependabot.yml`, `scripts/{changelog-version,test-report}.sh`,
+`docs/ci-cd.md`.
 
 **Done when**
 
@@ -666,6 +671,47 @@ run on, which is the reason the shared helper exists.
 6. `docs/ci-cd.md` records the repository settings a maintainer must apply by
    hand — branch protection and any registry secrets. Those are deliberately not
    automated.
+
+All met.
+
+**Three jobs huginn.io does not have**, each covering something no Rust test can
+see. `reference` re-checks that the pinned Telegraf still accepts
+`telegraf.reference.conf` — the file every snapshot is anchored to, so if it
+stops being valid the suite stays green and the artefact is wrong — plus the
+ADR-0007 ordering fixtures and every plugin option named in `modules.md`
+([R5](risks.md)). `integration` runs the stack test *and* the hardened-image
+tests. `updates` runs the module against real Debian and Ubuntu trees in its own
+job, because building those fixtures is minutes of apt work that should not sit
+in front of the stack test.
+
+`reference` also asserts that `ci.yml`'s `TELEGRAF_VERSION` matches the
+Dockerfile's, so the reference can never be verified against a version the image
+does not carry.
+
+**`test` and `coverage` extract Telegraf from the pinned image.** Without
+`MUNINN_TELEGRAF_BIN` the tests that need a real one skip loudly, and CI would
+report a green suite that never started a child process — the exact bug class
+`muninn/tests/` exists for.
+
+**O2 is decided: Docker Hub first, ghcr mirrored from the finished manifest.**
+`skopeo copy --all` copies the manifest list and every blob, so both registries
+carry byte-identical images with the same digests, from one build. The cost is
+that publishing now needs a `DOCKERHUB_USERNAME` variable and a
+`DOCKERHUB_TOKEN` secret, which the agent must not create — `push` fails with a
+message naming them, and [`ci-cd.md`](ci-cd.md) carries the checklist.
+
+**What is deliberately not a required check.** `build`, `scan`, `integration`
+and `updates` run on every PR and gate `publish`, but requiring them for merge
+would make a documentation typo wait for two container builds. Nothing
+unscanned ships either way, because `publish` needs all three.
+
+**One thing this work changed in the tree.** Before it, `CHANGELOG.md` had only
+`## [Unreleased]`, and a pipeline that reads the version from the changelog
+cannot run at all in that state. `scripts/changelog-version.sh` grew an
+`--allow-unreleased` fallback to the workspace version, used by `publish` so
+pushes to `dev` keep producing a `:x.y.z-dev` image before the first release —
+and deliberately *not* by the version gate, so a real release still has to name
+its version in the changelog.
 
 **Brief:** §19, §17.3, §26 step 13.
 

@@ -63,6 +63,36 @@ package manager, inside a container that has the host filesystem mounted
 read-only. For anyone who achieves code execution there, that is a meaningful
 convenience.
 
+### The two suppressed findings, and why
+
+The blocking Trivy gate reads `.trivyignore.yaml`. It currently holds two
+entries, both **Go modules vendored into the Telegraf binary** rather than
+muninn's own dependencies — `cargo deny` covers those and is clean:
+
+| Finding | Severity | Fixed upstream in |
+|---|---|---|
+| `CVE-2026-49980` — rclone RCE via `rcd --rc-serve` | CRITICAL | rclone 1.74.3 |
+| `GHSA-hrxh-6v49-42gf` — gRPC-Go xDS RBAC / HTTP/2 | HIGH | grpc-go 1.82.1 |
+
+Both are *fixable* in the sense Trivy means — the upstream library has a fix —
+but no Telegraf release carries it: 1.39.2 is the newest, and muninn pins
+Telegraf by checksum ([ADR-0011](adr/0011-telegraf-pinning.md)). There is no
+version to move to.
+
+The reason they are suppressed rather than merely deferred is the same for both,
+and it is stronger here than in most projects: **muninn generates the entire
+Telegraf configuration.** There are no free-form TOML blocks
+([ADR-0004](adr/0004-no-raw-toml.md)), so an operator cannot enable a plugin
+muninn does not model. The complete set muninn can ever emit is twelve plugins,
+and neither rclone nor gRPC is among them — rclone's remote-control daemon is
+never started, and the only listener the generated config opens is
+`outputs.prometheus_client`, which is `net/http`.
+
+Each entry carries `expired_at: 2026-11-03`. When that date passes the finding
+blocks again, because a suppression with no expiry is a decision nobody
+revisits. Only the *blocking* scan reads the file — the full scan still reports
+both to the Security tab, so nothing here is hidden from view.
+
 Which is why the measures below are load-bearing rather than decoration. All of
 them were verified to work with the updates module's apt invocation — non-root,
 `--cap-drop=ALL`, read-only root filesystem, tmpfs `/tmp`, producing the correct

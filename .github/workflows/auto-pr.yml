@@ -1,0 +1,87 @@
+name: Auto PR
+
+# Opens a draft PR against dev for branches with a valid prefix.
+# Deletes branches that don't follow the naming convention.
+#
+# The deletion is the part to know about before merging this: a push to, say,
+# `wip` or `joshua/experiment` removes the remote branch. The local one is
+# untouched, so nothing is lost — but the push is undone. The prefixes are the
+# ones AGENTS.md §8 names, and the rule exists so the branch protection and the
+# release flow have one shape of branch to reason about.
+#
+# Dependabot manages its own branches and PRs, and release.yml manages its own
+# release/* housekeeping branch + PR — both are ignored here, otherwise the
+# naming rule below would delete them on sight.
+on:
+  push:
+    branches-ignore:
+      - "main"
+      - "dev"
+      - "dependabot/**"
+      - "release/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr:
+    name: Open Draft PR or Delete Invalid Branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Enforce branch naming and create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          VALID_PATTERN="^(feature|fix|chore|docs|test)/.+"
+
+          # Delete branch if it doesn't match the naming convention
+          if ! echo "$BRANCH" | grep -qE "$VALID_PATTERN"; then
+            echo "::warning::Branch '$BRANCH' does not match naming convention. Deleting."
+            gh api -X DELETE "/repos/${REPO}/git/refs/heads/$BRANCH"
+            exit 0
+          fi
+
+          # Check if a PR already exists for this branch
+          EXISTING=$(gh pr list --head "$BRANCH" --base dev --json number --jq length)
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "PR already exists for $BRANCH — skipping."
+            exit 0
+          fi
+
+          # Derive a title from the branch name:
+          # "feature/add-docker-module" → "feat: add docker module"
+          PREFIX=$(echo "$BRANCH" | cut -d'/' -f1)
+          DESCRIPTION=$(echo "$BRANCH" | cut -d'/' -f2- | tr '-' ' ')
+
+          case "$PREFIX" in
+            feature) TYPE="feat" ;;
+            fix)     TYPE="fix" ;;
+            chore)   TYPE="chore" ;;
+            docs)    TYPE="docs" ;;
+            test)    TYPE="test" ;;
+            *)       TYPE="$PREFIX" ;;
+          esac
+
+          TITLE="${TYPE}: ${DESCRIPTION}"
+
+          # Not fatal. Opening the PR needs "Allow GitHub Actions to create and
+          # approve pull requests" (Settings → Actions → General); without it
+          # the API returns "GitHub Actions is not permitted to create or
+          # approve pull requests". That is a repository setting, and a
+          # convenience that cannot run must not turn every push to a correctly
+          # named branch red — the branch-naming rule above still applies, and
+          # opening the PR by hand is one command.
+          if ! gh pr create \
+                 --base dev \
+                 --head "$BRANCH" \
+                 --title "$TITLE" \
+                 --body "Automatically opened by push to \`$BRANCH\`." \
+                 --draft; then
+            echo "::warning::Could not open a PR for ${BRANCH}. If the error mentions permissions, enable Settings → Actions → General → 'Allow GitHub Actions to create and approve pull requests'. See docs/ci-cd.md."
+          fi

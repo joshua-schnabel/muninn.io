@@ -13,13 +13,11 @@
 set -uo pipefail
 
 IMAGE="${1:-muninn:dev}"
-UID_GID="10001:10001"
 TMPFS_OPTS="mode=0700,uid=10001,gid=10001"
 # Pinned, and the same tag docker-compose.docker-module.yml uses — the test and
 # the recommendation have to be about the same thing.
 PROXY_IMAGE="tecnativa/docker-socket-proxy:0.3.0"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -n "${MSYSTEM:-}" ] && export MSYS_NO_PATHCONV=1
 
 # Docker needs a native path on the host side of a bind mount. Under Git Bash a
@@ -72,6 +70,8 @@ outputs:
 YAML
 
 # The hardened run, as the compose file and the documentation describe it.
+# shellcheck disable=SC2120  # the extra-flags form is used by the docker-module
+# cells below; the plain call is the common case.
 run_muninn() {
     docker run -d --name muninn-test \
         --read-only \

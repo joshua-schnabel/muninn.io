@@ -165,12 +165,17 @@ Doing so requires the Telegraf binary, which effectively means it only works
 inside the image. Proposal: static validation by default, `--with-telegraf` as
 opt-in. Decide in WP2.
 
-**O2 — Docker Hub in addition to ghcr?**
-CI publishes to `ghcr.io/joshua-schnabel/muninn.io`, which works with the
-built-in `GITHUB_TOKEN`. A Docker Hub mirror needs a `DOCKERHUB_TOKEN`
-repository secret. Setting repository secrets is deliberately outside what the
-agent does, so `docs/ci-cd.md` records the steps for the maintainer. Decide in
-WP12.
+**O2 — Docker Hub in addition to ghcr? — decided in WP12: both, Docker Hub
+first.** `push` copies the scanned tarball to Docker Hub by digest, and
+`publish` mirrors the finished manifest to `ghcr.io/joshua-schnabel/muninn.io`
+with `skopeo copy --all`. Both registries end up carrying byte-identical images
+with the same digests, from one build — a second push path would be a second
+thing to keep correct. The cost is that publishing now depends on a
+`DOCKERHUB_USERNAME` variable and a `DOCKERHUB_TOKEN` secret. Creating those is
+deliberately outside what the agent does ([AGENTS.md §3](../AGENTS.md)), so
+`push` fails with a message naming them and
+[`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) records the
+steps.
 
 **O3 — Bounded restart mechanism?**
 [ADR-0002](adr/0002-supervisor-no-restart-loop.md) leaves room for an optional

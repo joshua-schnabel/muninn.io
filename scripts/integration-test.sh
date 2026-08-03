@@ -41,7 +41,8 @@ fail() { echo "  ${RED}✗ $1${NC}  ${*:2}"; failed=$((failed + 1)); }
 info() { echo "${YELLOW}→${NC} $*"; }
 
 WORK="$(mktemp -d)"
-export MUNINN_WORK="$(native "$WORK")"
+MUNINN_WORK="$(native "$WORK")"
+export MUNINN_WORK
 export MUNINN_IMAGE="$IMAGE"
 
 # A throwaway credential, generated per run, for a database destroyed with the

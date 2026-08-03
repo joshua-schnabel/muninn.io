@@ -12,6 +12,48 @@ The release pipeline reads the version from this file — see
 
 ### Added
 
+- CI/CD, completed (WP12) — `.github/workflows/`, built to huginn.io's shape.
+  Twelve jobs: format and lint, tests on stable and beta, `cargo deny`,
+  coverage, the Telegraf reference check, the version gate, a per-architecture
+  image build, Trivy, the system suites, and the push and publish path. Plus
+  Semgrep, the release workflow, Dependabot and the branch automation.
+- **The image is built once per architecture into an artefact, and every later
+  job consumes that same artefact.** The bytes that are scanned, tested and
+  published are byte-identical. A pipeline that rebuilds between scanning and
+  publishing has not scanned what it published.
+- Three jobs huginn.io does not have, each covering something no Rust test can
+  see. `reference` re-checks that the pinned Telegraf still accepts
+  `telegraf.reference.conf` — the file every snapshot is anchored to, so if it
+  stops being valid the suite stays green and the artefact is wrong — plus the
+  ordering fixtures and every plugin option the documentation names.
+  `integration` runs the stack test and the hardened-image tests. `updates` runs
+  the module against real Debian and Ubuntu trees.
+- An SBOM per architecture, generated from the same tarball that was scanned,
+  and one for the published multi-arch image attached to each GitHub Release.
+  An SBOM describing different bytes than the ones that shipped is worse than
+  none, because it will be believed.
+- Images go to Docker Hub and are mirrored to `ghcr.io` from the finished
+  manifest with `skopeo copy --all`, so both registries carry byte-identical
+  images with the same digests from one build. This settles O2. Publishing needs
+  a `DOCKERHUB_USERNAME` variable and a `DOCKERHUB_TOKEN` secret, which
+  `docs/ci-cd.md` lists — creating them is the maintainer's, not the agent's.
+- `scripts/changelog-version.sh` — the version, validated as SemVer before it is
+  printed, so no consumer can be handed a changelog heading that reaches a shell
+  as command substitution. `--allow-unreleased` falls back to the workspace
+  version so pushes to `dev` keep producing an image before the first release;
+  the version gate deliberately does not use it.
+- `scripts/test-report.sh` — every GitHub Release ships a per-suite test report
+  and a coverage figure, produced by re-running the suite on the tagged commit.
+- ShellCheck and actionlint as their own gates. `scripts/*.sh` are the three
+  system test suites, so a quoting bug in one of them is a test that passes
+  without testing; Semgrep has no ruleset for shell. actionlint covers the
+  workflows and the shell inside them.
+- `.trivyignore.yaml` — read only by the *blocking* scan, so a suppressed
+  finding still reaches the Security tab. Every entry needs an expiry date and a
+  reason the code is unreachable in muninn's generated configuration. Two
+  entries today, both Go modules vendored into the Telegraf binary, documented
+  in `docs/hardening.md`.
+
 - End-to-end tests, completed (WP11). `scripts/integration-test.sh` brings up
   `docker-compose.integration.yml` — muninn, Telegraf, InfluxDB 2.7 and
   Prometheus 3.5, every hop a real process — and follows one metric the whole
