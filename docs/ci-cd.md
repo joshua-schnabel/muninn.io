@@ -71,35 +71,24 @@ apt and dpkg; the cost of that trade is measured in
 [`hardening.md`](hardening.md) and is CVEs with no fix available. A gate that
 blocks on findings nobody can act on is a gate that gets switched off.
 
-### Three jobs huginn.io does not have
+Two jobs are worth explaining, because both cover something no Rust test can see.
 
-All three come from design-package findings, and each covers something no Rust test can
-see.
+**`reference`** guards the anchor. Every snapshot is anchored to
+`docs/reference/telegraf.reference.conf`, so if the pinned Telegraf stops
+accepting it, the snapshots still pass and the artefact is wrong. The job also
+re-checks the ordering fixtures behind
+[ADR-0007](adr/0007-tagdrop-and-render-order.md) — both pass `config check`, and
+only the emitted metric count tells them apart — cross-checks every
+`plugin.option` in [`modules.md`](modules.md) against the pinned `sample.conf`
+([R5](risks.md)), and asserts that the workflow's `TELEGRAF_VERSION` matches the
+Dockerfile's, so the reference can never be verified against a version the image
+does not carry.
 
-**`reference`.** `docs/reference/telegraf.reference.conf` is what the renderer
-targets and what every snapshot is anchored to. If the pinned Telegraf stops
-accepting it, the snapshots still pass and the artefact is wrong. The same job
-re-checks the ordering fixtures behind [ADR-0007](adr/0007-tagdrop-and-render-order.md)
-— both pass `config check`, and only the emitted metric count tells them apart —
-and cross-checks every `plugin.option` named in [`modules.md`](modules.md)
-against the pinned Telegraf's `sample.conf`, which is what catches documentation
-drifting away from the shipped version ([R5](risks.md)).
-
-It also asserts that the workflow's `TELEGRAF_VERSION` matches the Dockerfile's,
-so the reference can never be verified against a version the image does not
-carry.
-
-**`integration`** runs both system suites, not just the stack: the compose stack
-proves a metric reaches a database, and `container-test.sh` proves the image
-still behaves under the full hardening, including the Docker module against a
-real socket and through a socket proxy.
-
-**`updates`** is its own job because it builds Debian and Ubuntu fixture trees,
-which is minutes of apt work that should not sit in front of the stack test.
-Cell S11 — a real host through WSL — **skips** on a runner and says so; the
-other sixteen run. It is the only cell that can skip, and it is counted and
-printed separately from a pass, because a skip that reads like a pass is worse
-than no cell at all.
+**`updates`** is separate because building the Debian and Ubuntu fixture trees is
+minutes of apt work that should not sit in front of the stack test. Cell S11 — a
+real host through WSL — **skips** on a runner and says so; it is the only cell
+that can, and a skip is counted and printed separately from a pass, because a
+skip that reads like a pass is worse than no cell at all.
 
 ## Source scanning
 
@@ -248,24 +237,13 @@ test scaffolding whose silent bump would change what the stack test means.
 
 ## Local equivalents
 
-Everything CI runs, in the order it runs it:
+Every gate above runs locally, and the commands are in the
+[README](../README.md#development) — with `scripts/verify-design-package.sh`
+covering the `reference` job. Run them before pushing: the image jobs take tens
+of minutes to tell you what `cargo fmt` would have said in one second.
 
-```bash
-cargo fmt --all -- --check
-cargo lint                                    # clippy -D warnings
-cargo t-all                                   # test --workspace --locked
-cargo audit-all                               # cargo deny check
-cargo cov-ci                                  # llvm-cov --fail-under-lines 80
-bash scripts/verify-design-package.sh         # the `reference` job, plus the cargo gates
-
-docker build -t muninn:dev .
-bash scripts/integration-test.sh muninn:dev
-bash scripts/container-test.sh muninn:dev
-bash scripts/updates-test.sh muninn:dev
-```
-
-`scripts/test-linux.sh` is the one with no CI counterpart, because CI already
-runs on Linux. On the maintainer's Windows machine it is what keeps the
+`scripts/test-linux.sh` is the one script with no CI counterpart, because CI
+already runs on Linux. On the maintainer's Windows machine it is what keeps the
 `#[cfg(unix)]` tests from being silently absent.
 
 ## Related

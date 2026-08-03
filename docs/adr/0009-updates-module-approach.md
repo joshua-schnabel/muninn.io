@@ -79,18 +79,12 @@ proven.
 above, unchanged — the measured agreement belongs to those arguments, and moving
 them from `sh` to `std::process::Command` does not touch them.
 
-What the port buys is that the invariant stops being a convention. In the shell
-probe, "never report zero on failure" was upheld by every `fail()` call site
-remembering to `exit` before the counting; in Rust the counts live inside the
-`Ok` arm of the result, so a failed check has nothing to print them from. The
-precondition ladder and the `Inst`-line parsing are also ordinary unit tests now,
-including on a developer machine that has no apt at all.
-
-It costs one thing worth stating: the artefact under test is no longer the
-artefact the spike measured. `scripts/updates-test.sh` closes that by running the
-*image* against the same fixtures and the same ground truth, so a divergence
-between the two shows up as a failing cell rather than as a number nobody
-compares.
+What the port buys is that the invariant stops being a convention: the counts
+live inside the `Ok` arm of the result, so a failed check has nothing to print
+them from, where the shell probe relied on every `fail()` site remembering to
+exit first. It costs one thing — the artefact under test is no longer the one
+that was measured — which `scripts/updates-test.sh` closes by running the *image*
+against the same fixtures and ground truth.
 
 **The metric shape follows the specified names, not the probe's fields.** The
 design fixed `muninn_updates_pending{severity="all"}`. Telegraf joins the
@@ -109,16 +103,14 @@ reads as "no containers", while a failed update check produces `check_success=0`
 with a reason.
 
 The module's *preconditions* are unaffected and still refuse the start with exit
-`12`: an absent host mount or a host that is not Debian-family is a deployment
-that cannot support the module at all, and every module is treated the same way
-there. What degrades muninn is a check that fails with its preconditions met —
-apt refusing, an unreadable package database, an index format the image does not
-understand. Those cannot be known before start, and none of them is a reason to
-stop reporting CPU. Nothing is being misrepresented, so taking a working agent out of
-service — and losing CPU, memory, disk and network collection — would cost far
-more than it protects. muninn runs the check once at startup so the result is in
-the logs, in `/status` and in `muninn_module_check_success` within seconds rather
-than after the first hourly interval.
+`12`: an absent host mount or a non-Debian host is a deployment that cannot
+support the module at all. What degrades muninn instead is a check that fails
+with its preconditions met — apt refusing, an unreadable package database, an
+index format the image does not understand. None of those can be known before
+start, none is misrepresented, and none is a reason to stop reporting CPU. The
+check runs once at startup so the result reaches the logs, `/status` and
+`muninn_module_check_success` within seconds rather than after the first hourly
+interval.
 
 ## Consequences
 
