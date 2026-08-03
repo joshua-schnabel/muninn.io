@@ -73,6 +73,45 @@ dies.
 
 **Rule: if the behaviour depends on the process lifecycle, test the process.**
 
+## The system layer
+
+Above the binary there is one more boundary the tests below it cannot cross:
+whether a metric collected from the host actually *arrives* somewhere and can be
+read back. `scripts/integration-test.sh` brings up
+`docker-compose.integration.yml` — muninn, Telegraf, InfluxDB and Prometheus,
+every hop a real process — and asserts along the whole path.
+
+```bash
+docker build -t muninn:dev .
+bash scripts/integration-test.sh            # 24 cells, I1–I17
+```
+
+Three of its choices are worth copying into any future stack test:
+
+- **A real Prometheus, not a curl of `/metrics`.** A malformed exposition line
+  is still bytes over HTTP, so curl proves a string exists and nothing about
+  whether Prometheus would accept it. The assertion goes through
+  `/api/v1/query`. Both endpoints are scraped, because `:9273` alone cannot
+  distinguish a dead agent from a dead host ([R2](risks.md)).
+- **A value, not just a series name.** `cpu_usage_idle` between 0 and 100 is
+  the difference between "the series exists" and "the series describes a
+  machine".
+- **No volume for the database.** A named volume surviving a run would let one
+  run's metrics satisfy the next run's query — a broken write path that keeps
+  passing. Credentials are generated per run into a temporary directory, for a
+  database destroyed with the stack.
+
+The suite runs under the full hardening for the same reason the container tests
+do, and it earns its keep the same way: the read-only root filesystem broke
+`validate --with-telegraf`, which had been writing its scratch file to a `/tmp`
+the shipped image does not have.
+
+Failure paths that need no stack live next to the lifecycle tests, in
+`muninn/tests/secrets_and_mounts_test.rs`: what a missing, empty or
+directory-shaped secret does, that no command prints a token whatever goes
+wrong, and that a wrong host mount is refused with the path and the module
+named.
+
 ## Snapshot tests
 
 The generated Telegraf configuration is exactly the kind of large structured

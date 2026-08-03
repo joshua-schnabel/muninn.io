@@ -92,8 +92,15 @@ consistent with the self-contained-container goal.
 - **`muninn render-config` redacts by default.** Its output is safe to paste into
   an issue.
 - **The generated config holds resolved values** and therefore lives on a tmpfs,
-  root-only, never persisted, never mounted out.
+  owner-only, never persisted, never mounted out.
   [ADR-0003](adr/0003-ephemeral-generated-config.md)
+- **Every file muninn writes that can hold a resolved secret goes through one
+  writer**, `muninn/src/generated_config.rs`, which creates it `0600` — the
+  supervisor's copy, and whatever `render-config --output` produces. The mode is
+  set at creation rather than with a `chmod` afterwards, so there is no moment
+  when the file exists at the umask's mode and already contains the token. Two
+  writers sharing a rule only by convention is how the second one came to write
+  `0644` without anyone noticing, from WP4 until WP11 tested for it.
 
 ## The host mount
 

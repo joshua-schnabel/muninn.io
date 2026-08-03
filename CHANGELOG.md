@@ -12,6 +12,21 @@ The release pipeline reads the version from this file — see
 
 ### Added
 
+- End-to-end tests, completed (WP11). `scripts/integration-test.sh` brings up
+  `docker-compose.integration.yml` — muninn, Telegraf, InfluxDB 2.7 and
+  Prometheus 3.5, every hop a real process — and follows one metric the whole
+  way: collected from the host, written to a database, queried back with Flux,
+  and scraped from both endpoints by a real Prometheus. 24 cells.
+- A real Prometheus rather than a `curl` of `/metrics`, because a malformed
+  exposition line is still bytes over HTTP: curl proves a string exists and
+  nothing about whether Prometheus would accept it. Both endpoints are scraped —
+  `:9273` alone cannot tell a dead agent from a dead host.
+- `muninn/tests/secrets_and_mounts_test.rs` — twelve failure-path tests on the
+  compiled binary. A missing, empty, whitespace-only or directory-shaped secret
+  is exit `11` with the path named; no command prints a token whatever goes
+  wrong; a host mount that is absent, empty or not a directory is exit `12`
+  naming both the path and the module that needs it.
+
 - Updates module, completed (WP10). muninn reports the host's pending package
   updates by mounting its apt and dpkg state read-only and letting real apt
   resolve them — the approach the WP1 spike measured, now implemented in Rust and
@@ -124,6 +139,26 @@ The release pipeline reads the version from this file — see
 
 ### Fixed
 
+- `muninn validate --with-telegraf` failed inside the shipped image. It rendered
+  its scratch file through `tempfile`, which writes to `/tmp`, and the hardened
+  container has a read-only root filesystem — so the one command an operator
+  would run *in the container* to check a configuration exited `30` with
+  `Read-only file system`. It now writes into the tmpfs that
+  `runtime.generated_config_path` names, and falls back to the system temp
+  directory when that directory does not exist, so the command still works on a
+  developer's machine. It does not create the directory: that would be muninn
+  making a directory outside a container to hold a resolved credential.
+- `render-config --output` wrote a world-readable file. With
+  `--unsafe-show-secrets` that file holds a real token. The supervisor's writer
+  had produced `0600` since WP6; this second one used a plain `fs::write`. Both
+  now go through one writer, which sets the mode at creation rather than
+  afterwards — closing the window in which the file exists with the umask's mode
+  and already contains the token.
+- `runtime.host_mount_prefix` was still validated with `starts_with('/')`, the
+  Linux-shaped approximation of "absolute" that was corrected for
+  `runtime.generated_config_path` and left here. Harmless in production, where
+  the value is `/hostfs`; it rejected a host-absolute path on the machine the
+  tests run on.
 - A host whose `/etc/os-release` carries only `PRETTY_NAME` — Docker Desktop's VM
   does exactly this — was reported as "not Debian-family" and refused the start,
   because both the startup check and the updates module's preconditions read the

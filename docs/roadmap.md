@@ -20,7 +20,7 @@ conversation.
 | [WP8](#wp8--container-image) | Container image | ✅ |
 | [WP9](#wp9--docker-module) | Docker module | ✅ |
 | [WP10](#wp10--updates-module) | Updates module | ✅ |
-| [WP11](#wp11--end-to-end-tests) | End-to-end tests | ⬜ |
+| [WP11](#wp11--end-to-end-tests) | End-to-end tests | ✅ |
 | [WP12](#wp12--cicd-and-release) | CI/CD and release | ⬜ |
 
 ## Why this order differs from the brief
@@ -579,10 +579,16 @@ tracked as [R8](risks.md), with what a more thorough classification would cost.
 
 ## WP11 — End-to-end tests
 
+**Status: complete, 2026-08-03.** `bash scripts/integration-test.sh` — 24 cells,
+all passing, against a stack of muninn, Telegraf, InfluxDB 2.7 and Prometheus
+3.5. Plus 12 binary-level failure-path tests in
+`muninn/tests/secrets_and_mounts_test.rs`.
+
 **Goal.** Prove the whole path, not the pieces.
 
 **Touches** `scripts/integration-test.sh`, `docker-compose.integration.yml`,
-`muninn/tests/`.
+`config/prometheus.integration.yml`, `muninn/tests/secrets_and_mounts_test.rs`,
+`muninn/src/generated_config.rs`.
 
 **Done when**
 
@@ -593,6 +599,47 @@ tracked as [R8](risks.md), with what a more thorough classification would cost.
    expected measurements, with throwaway credentials only.
 3. A Telegraf crash is injected and detected.
 4. Secrets and mounts have failure-path tests, not only happy paths.
+
+All met, as cells I1–I17 and the twelve tests in `secrets_and_mounts_test.rs`.
+
+**A real Prometheus, not a curl of the endpoint.** The brief's step 7 says
+"scrape Prometheus", and curling `:9273/metrics` looks like it satisfies that.
+It does not: a malformed exposition line is still bytes over HTTP, so a curl
+that finds `cpu_usage_idle` proves the string exists and nothing about whether
+Prometheus would accept it. The stack runs Prometheus 3.5 against both
+endpoints and asserts on `/api/v1/query`, which is the same claim actually
+tested. Scraping *both* is deliberate and is [R2](risks.md): `:9273` alone
+cannot distinguish a dead agent from a dead host, because both look like a
+target that stopped answering.
+
+**Two bugs, both found by the read-only root filesystem — the same place WP10's
+apt bug came from.**
+
+`muninn validate --with-telegraf` **failed inside the shipped image.** It
+rendered its scratch file through `tempfile`, which writes to `/tmp`, and the
+hardened container has a read-only root filesystem — so the one command an
+operator would run *in the container* to check a configuration exited 30 with
+`Read-only file system`. It now writes into the directory
+`runtime.generated_config_path` names, the tmpfs the deployment already
+provides, and falls back to the system temp directory when that does not exist
+so the command still works on a laptop. It does not create the directory: doing
+so would have muninn making a directory outside a container to hold a resolved
+credential.
+
+**`render-config --output` wrote a world-readable file.** With
+`--unsafe-show-secrets` that file holds a real token. The supervisor's own
+writer had taken care to produce 0600 since WP6; this second writer, added in
+WP4, used a plain `fs::write`. Both now go through `muninn/src/generated_config.rs`
+— one writer, one permission rule — and the mode is set at creation rather than
+by a `set_permissions` call afterwards, which closes the window in which the
+file exists with the umask's mode and already contains the token.
+
+**And one left over from an earlier fix.** `runtime.host_mount_prefix` was still
+validated with `starts_with('/')`, the Linux-shaped approximation of "absolute"
+that was corrected for `runtime.generated_config_path` during WP6 and not for
+this key. Harmless in production, where the value is `/hostfs`; it meant the
+mount tests could not point the prefix at a real directory on the machine they
+run on, which is the reason the shared helper exists.
 
 **Brief:** §18.3, §18.4, §26 step 12.
 

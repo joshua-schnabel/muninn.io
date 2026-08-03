@@ -1,0 +1,34 @@
+# Prometheus scrape configuration for the integration stack.
+#
+# This is not a muninn configuration — it belongs to the test stack in
+# docker-compose.integration.yml, and it is here so it can be reviewed rather
+# than generated inside a shell script.
+#
+# It scrapes BOTH endpoints, because that is the pair the deployment documents
+# and the pair an operator has to get right:
+#
+#   muninn:9273  Telegraf's prometheus_client output — the host's metrics
+#   muninn:8080  muninn's own /metrics — whether the agent is alive at all
+#
+# Scraping only :9273 cannot distinguish a dead agent from a dead host: both
+# look like a target that stopped answering. That is R2 in docs/risks.md, and
+# the reason a real Prometheus is in this stack rather than a curl of the
+# endpoint — a scrape proves the exposition format is one Prometheus accepts,
+# which curl cannot.
+
+global:
+  # Far below anything sensible in production. The test asserts on a scraped
+  # series and should not wait a minute for the first sample.
+  scrape_interval: 2s
+  scrape_timeout: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: telegraf
+    static_configs:
+      - targets: ["muninn:9273"]
+
+  - job_name: muninn
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["muninn:8080"]

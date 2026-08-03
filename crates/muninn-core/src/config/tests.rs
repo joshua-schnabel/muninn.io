@@ -475,6 +475,28 @@ fn an_empty_host_mount_prefix_warns_when_host_modules_are_on() {
     );
 }
 
+#[test]
+fn a_relative_host_mount_prefix_is_rejected() {
+    let msg = rejects(
+        &with("runtime:\n  host_mount_prefix: \"hostfs\"\n"),
+        "runtime.host_mount_prefix",
+    );
+    assert!(msg.contains("absolute"), "got: {msg}");
+}
+
+/// The same rule `generated_config_path` follows, and for the same reason: a
+/// path the host calls absolute has to validate too, or the tests cannot point
+/// the prefix at a temporary directory on the machine they run on. It was fixed
+/// for one key and left `starts_with('/')` for the other.
+#[test]
+fn a_host_absolute_host_mount_prefix_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().display().to_string().replace('\\', "/");
+    ok(&with(&format!(
+        "runtime:\n  host_mount_prefix: \"{prefix}\"\n"
+    )));
+}
+
 /// The include list is already an allow-list, so exclusions on top only apply
 /// within it — worth pointing at, not worth refusing.
 #[test]

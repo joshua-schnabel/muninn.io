@@ -31,6 +31,11 @@ rust-version = "1.88"
 authors = ["muninn.io contributors"]
 license = "MIT"
 repository = "https://github.com/joshua-schnabel/muninn.io"
+# muninn ships as a container image, not as crates. The crate APIs are internal
+# structure and `docs/versioning.md` says so explicitly — this makes that a
+# property of the manifest rather than a promise in a document, and stops an
+# accidental `cargo publish` from turning them into someone's dependency.
+publish = false
 
 [workspace.dependencies]
 # ── Internal crates ────────────────────────────────────────────────────────
