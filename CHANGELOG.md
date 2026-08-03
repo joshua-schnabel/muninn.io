@@ -16,7 +16,8 @@ The release pipeline reads the version from this file — see
   updates by mounting its apt and dpkg state read-only and letting real apt
   resolve them — the approach the WP1 spike measured, now implemented in Rust and
   verified against the same hosts: 41/3 on Debian 12, 39/2 on Debian 13, 50/40 on
-  Ubuntu 22.04, 66/34 on Ubuntu 24.04, each identical to the host's own answer.
+  Ubuntu 22.04 and 66 pending on Ubuntu 24.04, each identical to the host's own
+  answer at the time of the run.
 - `muninn update-check` — the command the module runs through `inputs.exec`, and
   the one to run by hand when a count looks wrong. It prints the same influx line
   Telegraf parses, and the detail behind the failure reason on stderr. It always
@@ -29,12 +30,6 @@ The release pipeline reads the version from this file — see
   within seconds rather than after the first hourly interval. The result degrades
   muninn rather than stopping it: the failure is visible in the metrics, so
   nothing is being misrepresented and everything else keeps collecting.
-- **Fixed:** a host whose `/etc/os-release` carries only `PRETTY_NAME` — Docker
-  Desktop's VM does exactly this — was reported as "not Debian-family" and refused
-  the start, because both the startup check and the module's preconditions read
-  the first os-release file they could open and stopped there. `/usr/lib/os-release`
-  held `ID=debian` all along. Both now read the locations in order and take the
-  first non-empty value of each field, through one shared function.
 - `scripts/updates-test.sh` — 17 system-test cells (brief §18.6) running the
   shipped image against real Debian and Ubuntu host trees, a real host through
   WSL, the failure cells that prove a failed check never reports a count, and the
@@ -129,6 +124,12 @@ The release pipeline reads the version from this file — see
 
 ### Fixed
 
+- A host whose `/etc/os-release` carries only `PRETTY_NAME` — Docker Desktop's VM
+  does exactly this — was reported as "not Debian-family" and refused the start,
+  because both the startup check and the updates module's preconditions read the
+  first os-release file they could open and stopped there. `/usr/lib/os-release`
+  held `ID=debian` all along. Both now read the locations in order and take the
+  first non-empty value of each field, through one shared function.
 - The port-collision check treated two listeners on port 0 as a conflict. Port 0
   means "any free port" and the OS hands out a different one to each, so this
   rejected a configuration that works — and it is what the tests and the
@@ -167,10 +168,12 @@ The release pipeline reads the version from this file — see
 
 ### Notes
 
-Nothing is released yet. `muninn run`, `validate`, `render-config` and `version`
-work; `check-runtime` and `healthcheck` still fail with a pointer to the work
-package that delivers them. There is no container image yet (WP8) and no health
-server (WP7), so muninn is not deployable — only runnable.
+Nothing is released yet. Every command works — `run`, `validate`,
+`render-config`, `check-runtime`, `healthcheck`, `update-check` and `version` —
+and the container image builds and passes its tests under the full hardening.
+What is missing is a *published* image: CI and releases are WP12, so
+`ghcr.io/joshua-schnabel/muninn.io` does not exist yet and the image has to be
+built locally.
 
 Three findings during WP0 changed the design away from the project brief:
 

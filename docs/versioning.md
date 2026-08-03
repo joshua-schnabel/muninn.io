@@ -32,9 +32,12 @@ May change in any release:
 - **The Rust crate APIs.** `muninn-core`, `muninn-telegraf`, `muninn-modules` and
   `muninn-health` are internal structure, not a published library.
 - **Log messages, fields and formatting**, in both human and JSON output.
-- **Anything marked experimental**, currently the updates module. It may change
-  shape or be removed entirely without a major release. That is what the marker
-  is for.
+- **Anything marked experimental.** Such a feature may change shape or be removed
+  entirely without a major release — that is what the marker is for. Nothing
+  carries it today: the updates module held it until the WP1 spike decided
+  whether approach A worked at all, and shed it when ADR-0009 was accepted and
+  WP10 shipped the module against real hosts. Its one known limit is a documented
+  lower bound ([R8](risks.md)), not an unsettled design.
 
 ## The metrics Telegraf emits
 

@@ -17,9 +17,10 @@ It ships as one hardened, multi-arch container holding both binaries.
 
 Telegraf is the telemetry engine. muninn never touches a metric.
 
-**Status: WP0 (design package) complete. The binary is not implemented yet.**
-Start at [`docs/roadmap.md`](docs/roadmap.md), then
-[`docs/architecture.md`](docs/architecture.md).
+**Status: the binary works and the container image builds; nothing is published
+yet.** [`docs/roadmap.md`](docs/roadmap.md) carries the per-work-package state
+and is the one place it is tracked — do not restate it here, it goes stale.
+Start there, then [`docs/architecture.md`](docs/architecture.md).
 
 Sibling project: [huginn.io](https://github.com/joshua-schnabel/huginn.io), same
 maintainer. muninn takes its conventions — see

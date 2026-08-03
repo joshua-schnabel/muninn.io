@@ -550,10 +550,15 @@ Measured against each host's own answer:
 | debian:12 | 41 / 3 | **41 / 3** |
 | debian:13 | 39 / 2 | **39 / 2** |
 | ubuntu:22.04 | 50 / 40 | **50 / 40** |
-| ubuntu:24.04 | 66 / 34 | **66 / 34** |
+| ubuntu:24.04 | 66 / 0 | **66 / 0** |
 
 Including from a container running a *different* distribution than the host,
 which is the normal case rather than the exotic one.
+
+The Ubuntu 24.04 zero is not an error and not a disagreement: the host's own apt
+says zero too, because the candidate versions now resolve through
+`noble-updates`. [The security subset is a lower bound on Ubuntu](#the-security-subset-is-a-lower-bound-on-ubuntu)
+explains why, and why the total is unaffected.
 
 **Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
 the same mount CPU, memory and disk already need. No extra capabilities, no root,
