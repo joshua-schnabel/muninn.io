@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Pre-installed on GitHub's Ubuntu runners.
       - name: shellcheck scripts/*.sh
-        run: shellcheck --severity=warning scripts/*.sh
+        run: shellcheck --severity=warning scripts/*.sh scripts/fixtures/*.sh
 
   # ── actionlint over the workflows ─────────────────────────────────────────
   # It catches what YAML validity cannot: an unknown `uses:` input, a bad job

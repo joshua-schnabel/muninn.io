@@ -4,14 +4,14 @@
 #
 #   build-host-native.sh <outdir>
 #
-# Run it ON the host being measured — for the spike, inside WSL Debian:
-#   wsl -d Debian -- bash spikes/updates/fixtures/build-host-native.sh /mnt/c/…/wsl-real
+# Run it ON the host being measured — for S11, inside WSL Debian:
+#   wsl -d Debian -- bash scripts/fixtures/build-host-native.sh /mnt/c/…/wsl-real
 #
 # Everything it writes goes to <outdir> and a scratch directory under /tmp.
 # It needs no root, and it does NOT touch the system's own apt state: the
 # indices are fetched into the scratch directory via Dir::State::lists, so
-# /var/lib/apt/lists is left exactly as it was. That matters — a spike that
-# modified the machine it was measuring would invalidate its own criterion.
+# /var/lib/apt/lists is left exactly as it was. That matters — a measurement
+# that modified the machine it was measuring would invalidate its own criterion.
 #
 # Why fetch fresh indices at all: a host whose lists are months old reports zero
 # pending updates, correctly, and a cell that compares zero against zero does not
@@ -19,7 +19,7 @@
 # answer to be checked against.
 set -e
 DEST="$1"
-S=/tmp/mspike
+S=/tmp/muninn-fixture
 rm -rf "$S" "$DEST"
 mkdir -p "$S/lists/partial" "$S/cache/archives/partial"
 mkdir -p "$DEST/rootfs/var/lib/apt" "$DEST/rootfs/var/lib/dpkg" "$DEST/rootfs/etc" "$DEST/rootfs/usr/lib"

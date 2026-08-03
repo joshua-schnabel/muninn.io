@@ -41,7 +41,7 @@ than raising the baseline for everyone.
 
 ### The base image is debian-slim, and what that costs
 
-The [WP1 spike](spikes/updates-spike.md) established that reading the host's
+The [measured evidence](updates-evidence.md) established that reading the host's
 package state needs real `apt` and `dpkg` in the runtime image. The base is
 therefore `debian:12-slim`, not distroless. This is a deliberate trade, made with
 measurements rather than estimates:
@@ -130,7 +130,7 @@ consistent with the self-contained-container goal.
   set at creation rather than with a `chmod` afterwards, so there is no moment
   when the file exists at the umask's mode and already contains the token. Two
   writers sharing a rule only by convention is how the second one came to write
-  `0644` without anyone noticing, from WP4 until WP11 tested for it.
+  `0644` without anyone noticing, until an end-to-end test asserted on the mode.
 
 ## The host mount
 

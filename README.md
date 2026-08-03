@@ -1,6 +1,20 @@
+<div align="center">
+
+<img src="docs/logo.png" alt="Muninn — a low-poly raven" width="200">
+
 # muninn.io
 
-Uniform server monitoring without learning Telegraf's configuration format.
+**Uniform server monitoring without learning Telegraf's configuration format.**
+
+[![CI](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml/badge.svg)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml)
+[![Security](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml/badge.svg)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+</div>
+
+> *Muninn* (Old Norse: *Memory*) is the second of Odin's two ravens. Huginn flies
+> out and observes; Muninn is the one who remembers. **muninn.io** does the
+> remembering for your fleet.
 
 You write this:
 
@@ -19,81 +33,18 @@ outputs:
     enabled: true
 ```
 
-muninn turns it into a complete Telegraf configuration, has Telegraf verify that
-configuration, starts Telegraf, supervises it, and tells you honestly whether it
-is working.
+muninn turns it into a complete Telegraf configuration, has **Telegraf itself**
+verify that configuration, starts Telegraf, supervises it, and tells you honestly
+whether it is working. Telegraf remains the telemetry engine — muninn never
+touches a metric.
 
----
-
-> ## Status: feature-complete, first release not yet cut
->
-> **WP0–WP12 are complete** — every work package in
-> [`docs/roadmap.md`](docs/roadmap.md). Every module works, including Docker and
-> updates; the container image builds and passes its tests under the full
-> hardening — non-root, read-only root filesystem, all capabilities dropped —
-> the whole path is exercised end to end, and the pipeline builds, scans and
-> publishes it.
->
-> **No version has been released yet**, so there is no `:latest` to pull. Until
-> the first `dev → main` release, build it yourself:
->
-> ```bash
-> docker build -t muninn:dev .
-> bash scripts/container-test.sh muninn:dev     # the image, hardened
-> bash scripts/updates-test.sh muninn:dev       # the updates module, real hosts
-> bash scripts/integration-test.sh muninn:dev   # the whole stack, with a database
-> ```
->
-> Publishing needs two repository settings a maintainer has to add by hand —
-> see [`docs/ci-cd.md`](docs/ci-cd.md).
-
----
-
-## The problem
-
-Telegraf is an excellent metrics agent with a large and detailed configuration
-surface. Setting up uniform monitoring across a fleet means learning it, then
-maintaining hand-written TOML per host, then discovering the parts that only bite
-in a container:
-
-- collecting the **container's** CPU and memory instead of the host's, with
-  plausible numbers and no error;
-- a hostname that changes on every recreate, starting a fresh time series each
-  time;
-- exclusion options that do not exist on the plugins you need them for;
-- credentials in a config file that ends up in your configuration management.
-
-muninn takes a small YAML file and handles all of it — or refuses to start and
-tells you which key is wrong.
-
-## What muninn does
-
-1. Loads and validates the YAML. Unknown keys are errors, not warnings.
-2. Reads secrets from files. Never from the YAML, never from the environment.
-3. Checks that enabled modules have what they need — mounts, sockets, host OS.
-4. Renders a deterministic Telegraf configuration.
-5. Has **Telegraf itself** verify it, before starting anything.
-6. Starts Telegraf as a child process and supervises it.
-7. Serves liveness, readiness, status and its own operational metrics.
-8. Forwards signals and shuts down cleanly.
-
-Telegraf remains the telemetry engine. muninn never touches a metric.
-
-## Design principles
-
-**Opinionated.** Each module exposes the handful of options server operators
-actually need, not everything the plugin supports.
-
-**Explicit.** No profiles, no implicit defaults. A module you did not enable is
-off. What the YAML says is what is collected.
-
-**Fail before you start.** Everything decidable is decided before Telegraf runs.
-A bad config costs an exit code and a log line, not a half-started agent.
-
-**Never report a healthy value for a failed check.** If a module cannot read what
-it needs, it reports failure. It does not report zero. This is the sharpest rule
-in the project — `0 updates` when the check failed is worse than no metric at
-all, because an alert rule cannot tell them apart afterwards.
+Hand-written Telegraf TOML per host is where fleet monitoring usually goes wrong,
+and the ways it goes wrong are quiet: the container's CPU collected instead of
+the host's, with plausible numbers and no error; a hostname that changes on every
+recreate and starts a fresh time series; exclusion options that do not exist on
+the plugin you need them for; credentials sitting in a config file that ends up
+in configuration management. muninn handles all of it — or refuses to start and
+names the key that is wrong.
 
 ## Quick start
 
@@ -146,6 +97,9 @@ Four details in that compose file are easy to get wrong and slow to debug —
 `stop_grace_period`, `hostname`, the tmpfs and the two ports. Each is explained
 in [`docs/host-mounts.md`](docs/host-mounts.md).
 
+No version is published yet; until the first release, build the image with
+`docker build -t muninn:dev .` and use that tag.
+
 ## Two metrics endpoints
 
 The most common setup mistake, so it is up front.
@@ -155,60 +109,32 @@ The most common setup mistake, so it is up front.
 | `9273/metrics` | **Host metrics** — CPU, memory, disk, network | Telegraf |
 | `8080/metrics` | **Agent metrics** — is Telegraf running, how long generation took | muninn |
 
-Both are needed. `:9273` alone cannot distinguish a dead agent from a dead host;
-`:8080` alone gives you nine agent metrics and no host data.
+Both are needed, and they are separate for a reason: `muninn_telegraf_running 0`
+is only useful if you can read it while Telegraf is down, which is exactly when
+Telegraf's endpoint is gone. A two-job scrape configuration is in
+[`docs/configuration.md`](docs/configuration.md#two-metrics-endpoints);
+[ADR-0012](docs/adr/0012-self-metrics-on-health-server.md) has the reasoning.
 
-```yaml
-scrape_configs:
-  - job_name: muninn-hosts
-    static_configs: [{ targets: ["web-01:9273"] }]
-  - job_name: muninn-agents
-    static_configs: [{ targets: ["web-01:8080"] }]
-```
+## What you get
 
-Why they are separate: `muninn_telegraf_running 0` is only useful if you can read
-it while Telegraf is down — which is exactly when Telegraf's endpoint is gone.
-[ADR-0012](docs/adr/0012-self-metrics-on-health-server.md).
+| | |
+|---|---|
+| **Modules** | `cpu` · `memory` · `load` · `system` · `swap` · `processes` · `disks` · `disk_io` · `network` · `docker` · `updates` |
+| **Outputs** | InfluxDB v2 · Prometheus — separately or together, at least one required |
+| **Config** | One YAML file. Unknown keys are errors, not warnings |
+| **Secrets** | File paths only, redacted by type — never inline, never from the environment |
+| **Health** | Liveness, readiness, status and muninn's own operational metrics |
+| **Hosts** | Debian and Ubuntu (and compatible derivatives), `linux/amd64` and `linux/arm64` |
+| **Container** | Non-root · read-only root filesystem · all capabilities dropped · `no-new-privileges` |
 
-## Modules
+Every module is **off by default** — you enable what you want, and what the YAML
+says is what is collected. Per-module options, metrics and host requirements:
+[`docs/modules.md`](docs/modules.md).
 
-| Module | Collects | Default |
-|---|---|---|
-| `cpu` | Per-core and total CPU time | off |
-| `memory` | RAM usage | off |
-| `load` | Load averages | off |
-| `system` | Uptime, logged-in users | off |
-| `swap` | Swap usage and activity | off |
-| `processes` | Process counts by state | off |
-| `disks` | Filesystem usage | off |
-| `disk_io` | Block device I/O | off |
-| `network` | Interface counters | off |
-| `docker` | Per-container metrics | off — **needs the Docker socket** |
-| `updates` | Pending package updates on the host | off |
-
-Everything is off by default; you enable what you want. Per-module options,
-metrics and requirements: [`docs/modules.md`](docs/modules.md).
-
-## Outputs
-
-**InfluxDB v2** and **Prometheus**, separately or together. At least one must be
-enabled — an agent that collects and sends nowhere is a misconfiguration, so
-muninn refuses to start.
-
-## Secrets
-
-Every secret is a file path. There is no key anywhere that takes a token inline.
-
-```yaml
-outputs:
-  influxdb:
-    token_file: /run/secrets/influxdb_token
-```
-
-The file must exist, be readable and be non-empty; a trailing newline is
-stripped. Errors name the path and never the contents. The value is wrapped in a
-type whose `Debug` and `Display` render `***`, so no log line, error or
-diagnostic dump can print it.
+**Never report a healthy value for a failed check.** If a module cannot read what
+it needs, it reports failure; it does not report zero. This is the sharpest rule
+in the project — `0 updates` when the check failed is worse than no metric at
+all, because an alert rule cannot tell them apart afterwards.
 
 ## Security
 
@@ -221,20 +147,15 @@ Both are stated plainly rather than softened:
   that — it protects the socket file, not the API. The module is off by default
   and a socket proxy is the recommended deployment.
   [`docs/modules.md#docker`](docs/modules.md#docker)
-- The container runs non-root, read-only, with all capabilities dropped and
-  `no-new-privileges`. Never `--privileged`.
-- Telegraf is pinned by SHA-256 and verified at build time.
+- **Every secret is a file path.** No key anywhere takes a token inline. The
+  value is wrapped in a type whose `Debug` and `Display` render `***`, so no log
+  line, error or diagnostic dump can print it; errors name the path, never the
+  contents.
+- **Telegraf is pinned by SHA-256** and verified at build time.
   [ADR-0011](docs/adr/0011-telegraf-pinning.md)
 
-Full posture: [`docs/hardening.md`](docs/hardening.md).
-
-## Supported platforms
-
-**Hosts:** Debian and Ubuntu (and compatible derivatives). Other distributions
-are not part of the MVP — the architecture allows adding them without rewriting
-the Debian path.
-
-**Architectures:** `linux/amd64` and `linux/arm64`.
+Full posture and the measured CVE trade: [`docs/hardening.md`](docs/hardening.md).
+To report a vulnerability: [`docs/SECURITY.md`](docs/SECURITY.md).
 
 ## Known limitations
 
@@ -247,15 +168,35 @@ the Debian path.
   seemingly-healthy container. [ADR-0002](docs/adr/0002-supervisor-no-restart-loop.md)
 - **The image is debian-slim, not distroless.** Reading the host's package state
   needs real `apt` and `dpkg`, which costs 88 packages instead of 10 and a shell
-  in the image. Measured, and traded deliberately —
+  in the image. Measured and traded deliberately —
   [`docs/hardening.md`](docs/hardening.md) has the numbers and the mitigations.
 - **Windows and macOS hosts** are out of scope.
+
+## Development
+
+```bash
+cargo t-all         # every test in the workspace
+cargo lint          # clippy --all-targets --all-features -- -D warnings
+cargo fmt-check     # formatting, as CI checks it
+cargo audit-all     # cargo-deny: advisories, licences, bans, sources
+cargo cov-ci        # coverage gate, >= 80 % workspace lines
+```
+
+The system suites need the image (`docker build -t muninn:dev .`):
+
+```bash
+bash scripts/container-test.sh muninn:dev     # the image, hardened
+bash scripts/updates-test.sh muninn:dev       # the updates module, real hosts
+bash scripts/integration-test.sh muninn:dev   # the whole stack, with a database
+```
+
+Start at [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md); if you are an AI coding
+agent, read [`AGENTS.md`](AGENTS.md) first.
 
 ## Documentation
 
 | | |
 |---|---|
-| [Roadmap](docs/roadmap.md) | Work packages, status, what is next |
 | [Architecture](docs/architecture.md) | Components, startup sequence, state machine |
 | [Configuration](docs/configuration.md) | Every key: type, default, effect, security |
 | [Modules](docs/modules.md) | Per-module metrics, options and requirements |
@@ -263,6 +204,10 @@ the Debian path.
 | [Supervision](docs/supervision.md) | Signals, exit codes, diagnosis |
 | [Rendering](docs/telegraf-rendering.md) | How the Telegraf config is produced |
 | [Hardening](docs/hardening.md) | Container security posture |
+| [Testing](docs/testing.md) | Test pyramid, coverage, the no-sleep rule |
+| [CI/CD](docs/ci-cd.md) | Pipeline, release path, repository setup |
+| [Versioning](docs/versioning.md) | SemVer policy and the stable surface |
+| [Roadmap](docs/roadmap.md) | What is still open |
 | [Risks](docs/risks.md) | Open risks and questions |
 | [Decisions](docs/adr/) | Twelve ADRs |
 
@@ -270,8 +215,7 @@ the Debian path.
 
 [huginn.io](https://github.com/joshua-schnabel/huginn.io) — the sibling project,
 an uptime and latency monitor by the same maintainer. muninn inherits its
-conventions; [`docs/analysis/huginn-review.md`](docs/analysis/huginn-review.md)
-records what carried over and what did not.
+conventions.
 
 ## Licence
 

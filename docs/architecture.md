@@ -198,7 +198,7 @@ is the whole model, and it is why the generated config can be ephemeral.
 - [`telegraf-rendering.md`](telegraf-rendering.md) — how the TOML is produced
 - [`supervision.md`](supervision.md) — signals, exit codes, error classification
 - [`host-mounts.md`](host-mounts.md) — what to mount and why
-- [`roadmap.md`](roadmap.md) — what is built and what is next
+- [`roadmap.md`](roadmap.md) — what is still open
 
 ### Architecture decisions
 

@@ -34,9 +34,19 @@ inside it.
 
 Both are needed. Scraping only the health port gives you nine agent metrics and
 no host data; scraping only `:9273` means you cannot tell a dead agent from a
-dead host. A two-job Prometheus configuration is in the [README](../README.md).
+dead host. Scrape both:
 
-Why they are separate: [ADR-0012](adr/0012-self-metrics-on-health-server.md).
+```yaml
+scrape_configs:
+  - job_name: muninn-hosts
+    static_configs: [{ targets: ["web-01:9273"] }]
+  - job_name: muninn-agents
+    static_configs: [{ targets: ["web-01:8080"] }]
+```
+
+Why they are separate: `muninn_telegraf_running 0` is only useful if you can read
+it while Telegraf is down, which is exactly when Telegraf's endpoint is gone.
+[ADR-0012](adr/0012-self-metrics-on-health-server.md).
 
 ---
 
@@ -308,7 +318,7 @@ Both accept glob patterns: `veth*`, `/var/lib/docker/*`.
 Off by default. Reads the host's package state through the same read-only host
 mount the other modules use; verified against Debian 12/13 and Ubuntu 22.04/24.04
 to reproduce each host's own answer exactly. See
-[`spikes/updates-spike.md`](spikes/updates-spike.md).
+[`updates-evidence.md`](updates-evidence.md).
 
 It is off by default because it is the one module that requires `apt` and `dpkg`
 in the image, which makes the runtime base debian-slim rather than distroless —

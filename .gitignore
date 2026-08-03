@@ -14,10 +14,9 @@ secrets/
 /config/muninn.yaml
 *.local.yaml
 
-# spike scratch — spikes/updates/ holds committed scripts and fixtures, but the
+# fixture scratch — scripts/fixtures/ holds the committed builders, but the
 # rootfs snapshots and apt caches they produce are large and machine-specific
-/spikes/**/work/
-/spikes/**/out/
+/.fixtures/
 
 # local integration-test scratch directory
 /temp-int/

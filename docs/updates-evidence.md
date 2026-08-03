@@ -1,10 +1,12 @@
-# Spike — reading the host's pending package updates from a container
+# Reading the host's pending package updates from a container
 
-**Status: complete.** Approach A adopted. Decides
-[ADR-0009](../adr/0009-updates-module-approach.md) and the runtime base image.
-Unblocks WP8 and WP10.
+The measured basis for the updates module. Approach A was chosen here, and
+[ADR-0009](adr/0009-updates-module-approach.md) records the decision; this page
+is the evidence behind it, including the numbers the module is still checked
+against and the failure modes that were found the hard way.
 
-Run it yourself: `bash spikes/updates/run.sh` (needs Docker; T11 needs WSL).
+The same ground truth is asserted continuously by `scripts/updates-test.sh`,
+which runs the shipped image against these fixtures on every pipeline run.
 
 ## Result in one paragraph
 
@@ -52,8 +54,9 @@ patched and every cell would trivially report zero.
 | deb12-oldlists | as deb12-stale, indices backdated 30 days | 41 pending |
 
 Ground truth is what each host answers about *itself*, from inside itself, with
-the same `apt-get -s dist-upgrade` the probe runs. The probe is
-`spikes/updates/probe.sh`, run from `debian:12-slim`.
+the same `apt-get -s dist-upgrade` the probe runs. The probe was a shell script
+run from `debian:12-slim`; `muninn update-check` replaced it and is what
+`scripts/updates-test.sh` measures today.
 
 The fixture deliberately preserves `/etc/os-release` as a symlink **and**
 `/usr/lib/os-release` as its target, because flattening that would have hidden a
@@ -103,9 +106,9 @@ does not exercise the counting path.
 
 **T11b closes that**, and is the more faithful cell anyway because it runs the
 probe the way muninn actually will: from a container, against the host's
-filesystem. `spikes/updates/fixtures/build-host-native.sh` fetches fresh indices
+filesystem. `scripts/fixtures/build-host-native.sh` fetches fresh indices
 into a scratch directory — via `Dir::State::lists`, so `/var/lib/apt/lists` is
-left untouched; a spike that modified the machine it was measuring would
+left untouched; a measurement that modified the machine it was measuring would
 invalidate its own criterion — and exports the host's real dpkg status alongside
 them.
 
@@ -171,7 +174,7 @@ who will not mount the host filesystem at all.
 version read only `/etc/os-release` and reported `os_release_unreadable` for a
 plainly Debian host, because a mount that includes `/etc` but not `/usr/lib`
 leaves the symlink dangling. The probe now tries both. This is concrete support
-for [ADR-0005](../adr/0005-hostfs-mount.md): mounting hand-picked paths breaks in
+for [ADR-0005](adr/0005-hostfs-mount.md): mounting hand-picked paths breaks in
 ways that mounting the root does not.
 
 **`Debug::NoLocking=1` is required.** Without it apt tries to take
@@ -222,11 +225,12 @@ The mitigations are therefore load-bearing rather than optional, and
 `docs/hardening.md` records them: non-root, read-only root filesystem,
 `--cap-drop=ALL`, `no-new-privileges`, all verified working with approach A.
 
-## 7. What WP10 implements
+## 7. What the module implements
 
-The probe in `spikes/updates/probe.sh` is the specification. Its structure —
-preconditions first, each failing with a specific low-cardinality reason, then
-the simulated upgrade, then counting — is what the Rust implementation mirrors.
+The probe's structure is what the Rust implementation mirrors: preconditions
+first, each failing with a specific low-cardinality reason, then the simulated
+upgrade, then counting. It lives in
+`crates/muninn-modules/src/updates/debian.rs`.
 
 ```text
 muninn_updates_pending{severity="all"}        gauge
@@ -240,23 +244,20 @@ muninn_updates_lists_age_seconds              gauge
 `check_success=0` and omits the pending counts. T8, T9 and T9b are the tests that
 hold it.
 
-Open for WP10: whether to keep a shell helper invoked through `inputs.exec`, or
-to shell out to `apt-get` from muninn itself and emit the line protocol from
-Rust. The spike does not decide this — both run the same apt invocation, which is
-the part that had to be proven.
+One question the measurements deliberately left open was whether to keep a shell
+helper invoked through `inputs.exec` or to shell out to `apt-get` from muninn
+itself — both run the same apt invocation, which is the part that had to be
+proven. **It is muninn itself**, as `muninn update-check`, with the apt arguments
+above unchanged. `scripts/updates-test.sh` runs the shipped image against these
+same fixtures, so a divergence between code and evidence shows up as a failing
+cell.
 
-**Decided in WP10: muninn itself**, as `muninn update-check`, with the apt
-arguments above unchanged. `spikes/updates/probe.sh` stays as the specification
-this was written from and as the record of what was measured;
-`scripts/updates-test.sh` runs the shipped image against these same fixtures, so
-a divergence between the two shows up as a failing cell.
-
-Two things the implementation found that this spike could not, because both are
-properties of the deployment rather than of the approach:
+Two things the implementation found that these measurements could not, because
+both are properties of the deployment rather than of the approach:
 
 - **apt takes temp files outside `Dir::Cache`.** It calls
   `mkstemp /tmp/clearsigned.message.XXXXXX` while reading signed release files,
-  even with `-s`. The spike's hardened cell had a tmpfs on `/tmp`; muninn's
+  even with `-s`. The hardened cell above had a tmpfs on `/tmp`; muninn's
   documented deployment does not, and the check failed there with
   `GetTempFile (30: Read-only file system)` on a host it could read perfectly.
   `TMPDIR` is now set to the scratch directory for the apt child itself.
@@ -265,4 +266,4 @@ properties of the deployment rather than of the approach:
   66/34 here — the packages are the same, but the candidate now resolves through
   `noble-updates` rather than `noble-security`. The host's own apt says the same,
   so this is a property of the classification rule rather than a regression. See
-  [R8](../risks.md).
+  [R8](risks.md).

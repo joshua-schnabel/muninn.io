@@ -7,7 +7,8 @@ All modules are **off by default**. `enabled: true` is the only thing every
 module has in common.
 
 Verified against **Telegraf 1.39.2**. Every plugin option named here exists in
-that version's `sample.conf`; WP0's verification suite checks that mechanically.
+that version's `sample.conf`, and `scripts/verify-design-package.sh` checks that
+mechanically on every pipeline run.
 
 ## At a glance
 
@@ -535,8 +536,8 @@ root filesystem is read-only with exactly one writable tmpfs.
 
 `apt` inside a container reads the *container's* package database. A naive
 implementation reports the updates pending for debian-slim: not a crash, a
-number, and a believable one. The [WP1 spike](spikes/updates-spike.md) settled
-the approach with measurements before any of it was written.
+number, and a believable one. The [measured evidence](updates-evidence.md) settled
+the approach before any of it was written.
 
 What it does: mounts the host's apt and dpkg state read-only, points apt's
 directory options at it, and runs `apt-get -s dist-upgrade`. Real apt does the
@@ -608,7 +609,7 @@ Ubuntu publishes security updates to `<release>-security` **and** copies them in
 `<release>-updates`. When apt resolves the candidate through the latter, the line
 reads `Ubuntu:24.04/noble-updates` and muninn does not count it as security. The
 same fixture measured a year apart shows it plainly: Ubuntu 24.04 reported 66
-pending / 34 security during the WP1 spike, and 66 pending / **0** security when
+pending / 34 security when first measured, and 66 pending / **0** security when
 rebuilt against today's archive. Same packages, different pocket.
 
 The host's own `apt-get -s dist-upgrade` says exactly the same thing, so muninn is
