@@ -7,18 +7,17 @@
 # Requires Docker, and the image built first: docker build -t muninn:dev .
 # S11 additionally requires WSL with a Debian distribution.
 #
-# # How this differs from the WP1 spike
+# # What this measures
 #
-# `spikes/updates/run.sh` measured whether approach A can work, using a shell
-# probe. This measures whether the *artefact* does: `muninn update-check` inside
-# the runtime image, against the same fixtures, compared against the same ground
-# truth. If these two ever disagree, the implementation has drifted from what the
-# spike proved — which is the whole reason this is a separate script and not an
-# extension of that one.
+# The evidence in docs/updates-evidence.md established that reading a host's
+# package state from a container can work, using a shell probe. This measures
+# whether the *artefact* does: `muninn update-check` inside the runtime image,
+# against the same fixtures, compared against the same ground truth. If the two
+# ever disagree, the implementation has drifted from what was proved.
 #
-# The fixtures are shared with the spike (spikes/updates/work) so a matrix built
-# once serves both. Each one pulls an image and runs apt-get update, which is by
-# far the slow part.
+# Fixtures live in .fixtures/updates (gitignored) and are built on demand by
+# scripts/fixtures/build-host.sh. Each one pulls an image and runs apt-get
+# update, which is by far the slow part — so a matrix built once is reused.
 #
 # # Every run is hardened
 #
@@ -37,7 +36,7 @@ esac
 TMPFS_OPTS="mode=0700,uid=10001,gid=10001"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${UPDATES_WORK:-${SPIKE_WORK:-$ROOT/spikes/updates/work}}"
+WORK="${UPDATES_WORK:-$ROOT/.fixtures/updates}"
 
 [ -n "${MSYSTEM:-}" ] && export MSYS_NO_PATHCONV=1
 native() { if [ -n "${MSYSTEM:-}" ]; then (cd "$1" && pwd -W); else (cd "$1" && pwd); fi; }
@@ -55,7 +54,7 @@ skip() { skip_n=$((skip_n+1)); echo "  ${YELLOW}– $1${NC}  skipped: $2"; }
 
 trap 'docker rm -f muninn-updates-test >/dev/null 2>&1 || true' EXIT
 
-# Dated tags, matching the spike: the current images are fully patched and would
+# Dated tags: the current images are fully patched and would
 # give every cell zero pending updates. An outdated host is the interesting case
 # and has to be pinned to stay reproducible.
 HOST_DEB12="debian:bookworm-20240211"
@@ -68,7 +67,7 @@ fixture() { # image  name  state  → prints the fixture directory
     local dir="$WORK/$2"
     if [ ! -f "$dir/meta.txt" ]; then
         echo "  ${DIM}building fixture $2 ($1, $3)...${NC}" >&2
-        bash "$ROOT/spikes/updates/fixtures/build-host.sh" "$1" "$dir" "$3" >/dev/null 2>&1 \
+        bash "$ROOT/scripts/fixtures/build-host.sh" "$1" "$dir" "$3" >/dev/null 2>&1 \
             || { echo "  ${RED}fixture build failed: $2${NC}" >&2; return 1; }
     fi
     echo "$dir"
@@ -234,16 +233,16 @@ S11() { # a real host, which no container fixture can stand in for
         return
     fi
 
-    # The host's state, exported the way a /:/hostfs:ro mount presents it. Shared
-    # with the spike's T11b fixture, and built by the same script — it runs
-    # inside WSL, on the machine it is measuring, and fetches fresh indices into
-    # a scratch directory so the host's own apt state is left untouched.
+    # The host's state, exported the way a /:/hostfs:ro mount presents it. The
+    # export script runs inside WSL, on the machine it is measuring, and fetches
+    # fresh indices into a scratch directory so the host's own apt state is left
+    # untouched.
     local d="$WORK/wsl-real"
     if [ ! -f "$d/meta.txt" ]; then
         echo "  ${DIM}exporting a fixture from the real WSL ${distro} host...${NC}" >&2
         local wsl_out wsl_script
         wsl_out=$(wsl.exe -d "$distro" -- wslpath -u "$(native "$WORK")" 2>/dev/null | tr -d '\r')/wsl-real
-        wsl_script=$(wsl.exe -d "$distro" -- wslpath -u "$(native "$ROOT/spikes/updates/fixtures")" 2>/dev/null | tr -d '\r')/build-host-native.sh
+        wsl_script=$(wsl.exe -d "$distro" -- wslpath -u "$(native "$ROOT/scripts/fixtures")" 2>/dev/null | tr -d '\r')/build-host-native.sh
         wsl.exe -d "$distro" -- bash "$wsl_script" "$wsl_out" >/dev/null 2>&1 \
             || { fail S11 "could not export the WSL host's state"; return; }
     fi

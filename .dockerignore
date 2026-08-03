@@ -5,7 +5,7 @@ temp-int/
 .vscode/
 .claude/
 docs/
-spikes/
+.fixtures/
 scripts/
 secrets/
 docker-compose*.yml

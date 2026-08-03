@@ -2,9 +2,9 @@
 
 ## Before you start
 
-muninn is at WP0: the design exists, the implementation does not. Read
-[`roadmap.md`](roadmap.md) to see what is claimed and what is open, and
-[`architecture.md`](architecture.md) for the shape of the thing.
+muninn is feature-complete and unreleased. Read
+[`architecture.md`](architecture.md) for the shape of the thing, and
+[`roadmap.md`](roadmap.md) for what is still open.
 
 If you are an AI coding agent, read [`../AGENTS.md`](../AGENTS.md) first — it is
 the operating manual and it is more specific than this page.

@@ -222,8 +222,8 @@ bash scripts/updates-test.sh S8 S9      # selected cells
 `updates-test.sh` is the system-test level the brief asks for in §18.6, and it is
 the only suite that can catch one particular kind of failure: the updates module
 runs real `apt` against a real host tree, so nothing below it has a truth to
-compare against. It shares its fixtures with the WP1 spike, and compares the
-shipped image's answers against the same ground truth the spike measured — if the
+compare against. It compares the shipped image's answers against the same ground
+truth recorded in [`updates-evidence.md`](updates-evidence.md) — if the
 implementation ever drifts from what was proven, a cell goes red rather than a
 number going quietly wrong.
 

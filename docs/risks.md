@@ -3,28 +3,11 @@
 Live document. Risks are removed when they are resolved, not when they stop being
 mentioned.
 
-## R1 — The updates module may have no safe answer
-
-**Severity: was high · Owner: WP1 · Status: RESOLVED 2026-08-02**
-
-Reading the host's package state from a container turned out to be solvable, and
-the [spike](spikes/updates-spike.md) measured it rather than argued it: approach A
-reproduces the host's own answer exactly across Debian 12/13 and Ubuntu
-22.04/24.04, including from a container running a different distribution, under
-non-root with `--cap-drop=ALL` and a read-only root filesystem, leaving the host
-tree byte-identical.
-
-Failure is detectable, which was the property the module stood on: a missing
-mount, an empty dpkg status and a corrupt one each produce `check_success=0` with
-the pending counts omitted — never a zero.
-
-Accepted in [ADR-0009](adr/0009-updates-module-approach.md). Superseded by R7.
-
 ## R7 — The runtime image carries a shell and a package manager
 
-**Severity: medium · Owner: WP8/WP12 · Status: accepted trade, monitor**
+**Severity: medium · Status: accepted trade, monitor**
 
-R1's resolution needs real `apt` and `dpkg` in the image, so the base is
+The updates module needs real `apt` and `dpkg` in the image, so the base is
 `debian:12-slim` rather than distroless: 88 packages instead of 10, and 5
 CRITICAL / 17 HIGH CVEs instead of none. All are currently unfixable, and four of
 the five CRITICAL are in `perl-base`, which muninn never invokes.
@@ -49,7 +32,7 @@ unworkable.
 
 ## R8 — The security subset under-reports on Ubuntu
 
-**Severity: medium · Owner: WP10 · Status: known limit, documented**
+**Severity: medium · Status: known limit, documented**
 
 `muninn_updates_pending{severity="security"}` classifies an update as security
 when the origin apt prints for the **candidate version** names a `-security`
@@ -60,10 +43,10 @@ On Ubuntu it is a lower bound. Ubuntu publishes security updates to
 `<release>-security` *and* copies them into `<release>-updates`; when apt resolves
 the candidate through the latter, the `Inst` line reads `Ubuntu:24.04/noble-updates`
 and muninn does not count it as security. This is measurable rather than
-theoretical: the WP1 spike's Ubuntu 24.04 fixture reported 66 pending / 34
-security, and the same fixture rebuilt against today's archive reports **66
-pending / 0 security** — the packages are the same, the pocket holding the
-candidate has moved. The total is unaffected.
+theoretical: the Ubuntu 24.04 fixture reported 66 pending / 34 security, and the
+same fixture rebuilt against today's archive reports **66 pending / 0 security**
+— the packages are the same, the pocket holding the candidate has moved. The
+total is unaffected.
 
 The host's own `apt-get -s dist-upgrade` says exactly the same thing, so muninn is
 not diverging from its host — which is why this is a limit rather than a bug, and
@@ -77,13 +60,13 @@ relevant is pending.
 **Fix, if it is worth the cost.** Ubuntu's own `apt-check` classifies by asking
 whether the candidate *version* is available from any security origin, rather than
 reading the one origin apt happens to print — `apt-cache policy` exposes that.
-It is a second apt invocation and a second parser, and it would change the numbers
-the spike measured, so it needs its own ADR amendment and its own ground truth
+It is a second apt invocation and a second parser, and it would change numbers
+that were measured, so it needs its own ADR amendment and its own ground truth
 rather than a quiet change here.
 
 ## R2 — Two Prometheus endpoints invite scraping the wrong one
 
-**Severity: medium · Owner: WP0/WP7 · Status: mitigated, monitor**
+**Severity: medium · Status: mitigated, monitor**
 
 Telegraf serves host metrics on `:9273`. muninn serves its own operational
 metrics on the health port. Scraping only one gives a partial picture that looks
@@ -96,12 +79,12 @@ The split is deliberate and load-bearing —
 is gone.
 
 **Mitigation.** Called out in the annotated example config next to both keys, in
-`configuration.md` before the reference rather than inside it, and in the README
-with a two-job scrape configuration.
+the README, and in [`configuration.md`](configuration.md#two-metrics-endpoints)
+before the reference rather than inside it, with a two-job scrape configuration.
 
 ## R3 — Container hostname silently fragments time series
 
-**Severity: medium · Owner: WP2/WP7 · Status: mitigated**
+**Severity: medium · Status: mitigated**
 
 Telegraf uses `os.Hostname()`. In a container that is the container ID, which
 changes on every recreate — so every deploy starts a fresh time series and
@@ -118,7 +101,7 @@ host, where the OS hostname is exactly right.
 
 ## R4 — `config check` does not catch everything
 
-**Severity: medium · Owner: WP6/WP8 · Status: mitigated by design**
+**Severity: medium · Status: mitigated by design**
 
 `telegraf config check` initialises plugins without starting them. It therefore
 cannot see a Docker endpoint that does not exist, a port already taken on the
@@ -131,7 +114,7 @@ confirmed running — never after validation alone.
 
 ## R5 — Telegraf plugin surface drifts between minor versions
 
-**Severity: low · Owner: WP6 · Status: mitigated**
+**Severity: low · Status: mitigated**
 
 Option names and defaults move. `inputs.system.include` and
 `outputs.prometheus_client.name_sanitization` are both recent additions, and
@@ -141,13 +124,13 @@ another.
 
 **Mitigation.** Telegraf is pinned by checksum
 ([ADR-0011](adr/0011-telegraf-pinning.md)); muninn compares the runtime binary's
-version against the build-time pin and refuses to start on a mismatch; WP0's
-verification suite checks every documented plugin option against the pinned
-version's `sample.conf`.
+version against the build-time pin and refuses to start on a mismatch; and
+`scripts/verify-design-package.sh` checks every documented plugin option against
+the pinned version's `sample.conf`.
 
 ## R6 — Snapshot tests decay if accepted without review
 
-**Severity: low · Owner: WP3+ · Status: process control only**
+**Severity: low · Status: process control only**
 
 `cargo insta accept` is one keystroke, and a snapshot suite accepted without
 reading is a record of whatever the code happens to do rather than a check on it.
@@ -160,30 +143,29 @@ one external check standing.
 
 ## Open questions
 
-**O1 — Should `muninn validate` invoke `telegraf config check`?**
-Doing so requires the Telegraf binary, which effectively means it only works
-inside the image. Proposal: static validation by default, `--with-telegraf` as
-opt-in. Decide in WP2.
-
-**O2 — Docker Hub in addition to ghcr? — decided in WP12: both, Docker Hub
-first.** `push` copies the scanned tarball to Docker Hub by digest, and
-`publish` mirrors the finished manifest to `ghcr.io/joshua-schnabel/muninn.io`
-with `skopeo copy --all`. Both registries end up carrying byte-identical images
-with the same digests, from one build — a second push path would be a second
-thing to keep correct. The cost is that publishing now depends on a
-`DOCKERHUB_USERNAME` variable and a `DOCKERHUB_TOKEN` secret. Creating those is
-deliberately outside what the agent does ([AGENTS.md §3](../AGENTS.md)), so
-`push` fails with a message naming them and
-[`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) records the
-steps.
-
 **O3 — Bounded restart mechanism?**
 [ADR-0002](adr/0002-supervisor-no-restart-loop.md) leaves room for an optional
 bounded restart — off by default, at most three attempts, exponential backoff.
 Whether it is worth the complexity should be decided from operational experience,
-not in advance. Revisit after the MVP.
+not in advance.
+
+## Decided
+
+Kept as one line each, because other pages cite them.
+
+- **R1 — can the host's package state be read from a container at all?** Yes,
+  exactly, and a failure is always distinguishable from a zero. Accepted in
+  [ADR-0009](adr/0009-updates-module-approach.md); measured in
+  [`updates-evidence.md`](updates-evidence.md). What remains of it is R7.
+- **O1 — should `muninn validate` invoke `telegraf config check`?** Static
+  validation by default, `--with-telegraf` as opt-in, because the check needs the
+  Telegraf binary and therefore only works inside the image.
+- **O2 — Docker Hub in addition to ghcr?** Both, Docker Hub first, ghcr mirrored
+  from the finished manifest with `skopeo copy --all` — one build, byte-identical
+  images, no second push path.
+  [`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand).
 
 ## Related
 
-- [`roadmap.md`](roadmap.md) — which work package owns each risk
-- [`spikes/updates-spike.md`](spikes/updates-spike.md) — R1 in detail
+- [`roadmap.md`](roadmap.md) — what is still open
+- [`updates-evidence.md`](updates-evidence.md) — the measurements behind R1 and R8

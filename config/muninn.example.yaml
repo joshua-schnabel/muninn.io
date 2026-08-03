@@ -243,7 +243,7 @@ modules:
   # other modules use, and lets real apt resolve what is pending — so holds, pins
   # and phased updates are honoured. Verified against Debian 12/13 and Ubuntu
   # 22.04/24.04 to reproduce each host's own answer exactly, including from a
-  # container running a different distribution. See docs/spikes/updates-spike.md.
+  # container running a different distribution. See docs/updates-evidence.md.
   #
   # What it will never do: report "0 updates" when it could not read the host's
   # package data. A failed check reports a failure, not a clean bill of health —

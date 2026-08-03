@@ -17,15 +17,14 @@ It ships as one hardened, multi-arch container holding both binaries.
 
 Telegraf is the telemetry engine. muninn never touches a metric.
 
-**Status: the binary works and the container image builds; nothing is published
-yet.** [`docs/roadmap.md`](docs/roadmap.md) carries the per-work-package state
-and is the one place it is tracked — do not restate it here, it goes stale.
-Start there, then [`docs/architecture.md`](docs/architecture.md).
+**Status: feature-complete; nothing is published yet.**
+[`docs/roadmap.md`](docs/roadmap.md) carries what is still open and is the one
+place it is tracked — do not restate it here, it goes stale. What already shipped
+is in [`CHANGELOG.md`](CHANGELOG.md). Start with
+[`docs/architecture.md`](docs/architecture.md).
 
 Sibling project: [huginn.io](https://github.com/joshua-schnabel/huginn.io), same
-maintainer. muninn takes its conventions — see
-[`docs/analysis/huginn-review.md`](docs/analysis/huginn-review.md) for what
-carried over and what was deliberately rejected.
+maintainer. muninn takes its conventions.
 
 ---
 
@@ -95,9 +94,9 @@ config → validate → check runtime → render → write → telegraf config c
        → spawn telegraf → supervise → forward signals → wait → exit
 ```
 
-Other locations: `config/` (three example YAMLs), `docs/reference/` (the verified
-target TOML and the ordering fixtures), `docs/adr/`, `spikes/` (WP1 onwards),
-`deny.toml`, `.cargo/config.toml`.
+Other locations: `config/` (the example YAMLs), `docs/reference/` (the verified
+target TOML and the ordering fixtures), `docs/adr/`, `scripts/` (the system test
+suites and the fixture builders they use), `deny.toml`, `.cargo/config.toml`.
 
 ---
 
@@ -251,7 +250,7 @@ explicitly and flagged in the PR.
 
 | Topic | Read |
 |---|---|
-| Work packages, what is next | [`docs/roadmap.md`](docs/roadmap.md) |
+| What is still open | [`docs/roadmap.md`](docs/roadmap.md) |
 | Architecture, startup, state machine | [`docs/architecture.md`](docs/architecture.md) |
 | Config reference (every key) | [`docs/configuration.md`](docs/configuration.md) |
 | Module reference | [`docs/modules.md`](docs/modules.md) |
@@ -265,6 +264,5 @@ explicitly and flagged in the PR.
 | SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |
 | CI/CD and repository setup | [`docs/ci-cd.md`](docs/ci-cd.md) |
 | Open risks | [`docs/risks.md`](docs/risks.md) |
-| What huginn.io contributed | [`docs/analysis/huginn-review.md`](docs/analysis/huginn-review.md) |
 | Architecture decisions | [`docs/adr/`](docs/adr/) |
-| The update spike | [`docs/spikes/updates-spike.md`](docs/spikes/updates-spike.md) |
+| Why the updates module works | [`docs/updates-evidence.md`](docs/updates-evidence.md) |

@@ -1,6 +1,6 @@
 # CI/CD and repository setup
 
-> **Status: shipped (WP12).** The workflows are in `.github/workflows/`. This
+> **Status: shipped.** The workflows are in `.github/workflows/`. This
 > page describes what they do and lists the settings a maintainer still has to
 > apply by hand — the pipeline cannot configure its own branch protection or
 > create its own credentials.
@@ -73,7 +73,7 @@ blocks on findings nobody can act on is a gate that gets switched off.
 
 ### Three jobs huginn.io does not have
 
-All three come from WP0 findings, and each covers something no Rust test can
+All three come from design-package findings, and each covers something no Rust test can
 see.
 
 **`reference`.** `docs/reference/telegraf.reference.conf` is what the renderer

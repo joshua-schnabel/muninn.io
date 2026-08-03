@@ -1,7 +1,7 @@
 //! Reading the host's pending package updates from inside a container.
 //!
 //! This is the implementation of approach A, settled by the
-//! [WP1 spike](../../../../docs/spikes/updates-spike.md) and recorded in
+//! [measured evidence](../../../../docs/updates-evidence.md) and recorded in
 //! ADR-0009: mount the host filesystem read-only, point apt's directory options
 //! at the host's dpkg status, sources and package indices, and let real apt do
 //! the resolution.

@@ -124,19 +124,14 @@ The release pipeline reads the version from this file — see
 - `docs/reference/ordering-{correct,broken}.conf` — fixtures for the sub-table
   ordering rule.
 - Twelve architecture decision records.
-- `docs/roadmap.md` — work packages WP0–WP12 with scope and definition of done.
-- `docs/analysis/huginn-review.md` — what huginn.io contributes and what was
-  deliberately rejected.
-- `docs/spikes/updates-spike.md` — plan and test matrix for reading host package
-  state from a container.
 - Reference documentation: architecture, configuration, modules, rendering,
-  supervision, host mounts, hardening, testing, versioning, CI/CD, risks.
+  supervision, host mounts, hardening, testing, versioning, CI/CD, risks and
+  roadmap.
 
-- WP1 host update spike: `spikes/updates/probe.sh` (the specification WP10
-  implements), `spikes/updates/fixtures/build-host.sh` and
-  `spikes/updates/run.sh`, reproducing all thirteen matrix cells — including
-  T11b, which checks the probe from a container against a real host with a
-  non-zero answer.
+- `docs/updates-evidence.md` — the measured basis for the updates module, with
+  `scripts/fixtures/build-host.sh` and `build-host-native.sh` building the
+  fixtures behind it. All thirteen cells reproduce, including the one that
+  checks a container's answer against a real host with a non-zero result.
 
 - WP2 configuration model: `muninn-core` gains typed errors with exit-code
   mapping, a `Secret` type whose `Debug`/`Display` render `***`, duration
@@ -178,6 +173,23 @@ The release pipeline reads the version from this file — see
 - `muninn check-runtime`: reports every unmet runtime precondition rather than
   stopping at the first — missing mounts, an occupied port, an unwritable
   runtime directory, a non-Debian host for the updates module. Exits 12.
+
+### Changed
+
+- The repository no longer carries the scaffolding it was built with. The
+  work-package roadmap is replaced by a short forward-looking one — what shipped
+  is this file and the git history. `docs/spikes/updates-spike.md` becomes
+  `docs/updates-evidence.md`, because it is the measured basis the updates module
+  still rests on rather than a discarded experiment. `spikes/` is dissolved: the
+  two fixture builders CI depends on move to `scripts/fixtures/`, the two scripts
+  nothing runs are removed, and the fixture scratch directory moves to
+  `.fixtures/`. `docs/analysis/huginn-review.md`, a one-time design-intake
+  record, is removed.
+- The README leads with the product rather than with project status: logo,
+  badges, and the quick start at the top instead of behind a work-package
+  report. The two-job Prometheus scrape configuration moves to
+  `configuration.md`, which is where the endpoints are documented — the two
+  pages had been pointing at each other.
 
 ### Fixed
 
@@ -248,11 +260,12 @@ The release pipeline reads the version from this file — see
 Nothing is released yet. Every command works — `run`, `validate`,
 `render-config`, `check-runtime`, `healthcheck`, `update-check` and `version` —
 and the container image builds and passes its tests under the full hardening.
-What is missing is a *published* image: CI and releases are WP12, so
-`ghcr.io/joshua-schnabel/muninn.io` does not exist yet and the image has to be
-built locally.
+The pipeline builds, scans, tests and publishes it. What is missing is a cut
+version: `ghcr.io/joshua-schnabel/muninn.io` does not exist yet, so the image
+has to be built locally.
 
-Three findings during WP0 changed the design away from the project brief:
+Three findings during the design package changed the design away from the
+project brief:
 
 - Validation uses `telegraf config check`, not `--test`, so it never binds the
   port the real process needs.

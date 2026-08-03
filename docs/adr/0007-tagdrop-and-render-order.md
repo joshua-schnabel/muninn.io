@@ -67,7 +67,7 @@ Both files are kept as `docs/reference/ordering-{correct,broken}.conf`.
 - Include and exclude use different mechanisms: includes are plugin options
   (collection is narrowed), excludes are filters (results are dropped). Where both
   are set the include applies first. Documented in `docs/modules.md`.
-- WP3 carries a regression test asserting on the *rendered bytes*, not on
+- The renderer carries a regression test asserting on the *rendered bytes*, not on
   Telegraf's verdict — because Telegraf's verdict is `0` either way.
 
 ## Alternatives considered

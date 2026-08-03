@@ -70,8 +70,9 @@ Both accepted. In the second, `ignore_fs` became
 `inputs.disk.tagdrop.ignore_fs` — a drop rule for a tag no metric carries — so
 the exclusions did nothing and ten unwanted series appeared.
 
-Both files live in `docs/reference/ordering-{correct,broken}.conf`, and WP3
-asserts on the **rendered bytes**, because Telegraf's verdict is `0` either way.
+Both files live in `docs/reference/ordering-{correct,broken}.conf`, and the
+renderer's tests assert on the **rendered bytes**, because Telegraf's verdict is
+`0` either way.
 
 ## Rule 2 — determinism comes from declared order, not sorting
 

@@ -34,10 +34,11 @@ May change in any release:
 - **Log messages, fields and formatting**, in both human and JSON output.
 - **Anything marked experimental.** Such a feature may change shape or be removed
   entirely without a major release — that is what the marker is for. Nothing
-  carries it today: the updates module held it until the WP1 spike decided
-  whether approach A worked at all, and shed it when ADR-0009 was accepted and
-  WP10 shipped the module against real hosts. Its one known limit is a documented
-  lower bound ([R8](risks.md)), not an unsettled design.
+  carries it today: the updates module held it while it was still open whether
+  the approach worked at all, and shed it once
+  [`updates-evidence.md`](updates-evidence.md) settled that and the module
+  shipped against real hosts. Its one known limit is a documented lower bound
+  ([R8](risks.md)), not an unsettled design.
 
 ## The metrics Telegraf emits
 

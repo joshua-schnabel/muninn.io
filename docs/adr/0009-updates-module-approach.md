@@ -1,7 +1,7 @@
 # ADR-0009 — Read host package state via read-only mounts and a simulated upgrade
 
 **Status:** accepted · **Date:** 2026-08-02 · **Decided by:** the
-[WP1 spike](../spikes/updates-spike.md)
+[measured evidence](../updates-evidence.md)
 
 ## Context
 
@@ -64,9 +64,9 @@ Failure is detectable, which is the property the module stands on. A missing
 mount, an empty dpkg status and a corrupt dpkg status each produce
 `check_success=0` with the pending counts **omitted** — never a zero.
 
-Full detail, including the rejected approaches: [the spike](../spikes/updates-spike.md).
+Full detail, including the rejected approaches: [the measurements](../updates-evidence.md).
 
-## Implementation (WP10)
+## Implementation
 
 The spike deliberately left one question open: ship the shell probe and call it
 through `inputs.exec`, or invoke `apt-get` from muninn and emit the line protocol

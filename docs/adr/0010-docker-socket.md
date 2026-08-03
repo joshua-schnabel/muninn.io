@@ -33,7 +33,7 @@ muninn only ever issues read calls. The socket has no way of knowing that.
    the annotated example config, next to `enabled: false` — not in an appendix
    nobody reaches.
 
-## Implementation (WP9)
+## Implementation
 
 Two details were settled while implementing point 5, and both changed the design
 rather than merely realising it.
