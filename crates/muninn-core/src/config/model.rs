@@ -274,6 +274,16 @@ pub struct DockerModule {
     pub container_exclude: Vec<String>,
     #[serde(default = "default_docker_timeout")]
     pub timeout: ConfigDuration,
+    /// Which container states to collect.
+    ///
+    /// Defaults to running only, which is the honest representation: a stopped
+    /// container that disappears from the metrics is unambiguous, where one
+    /// reporting zero CPU is indistinguishable from an idle container.
+    ///
+    /// Add `exited` when the interesting event is a container that stopped —
+    /// alerting on a crashed container needs it to still be reported.
+    #[serde(default = "default_container_states")]
+    pub container_states: Vec<String>,
 }
 
 fn default_docker_endpoint() -> String {
@@ -281,6 +291,9 @@ fn default_docker_endpoint() -> String {
 }
 fn default_docker_timeout() -> ConfigDuration {
     ConfigDuration::from_secs(5)
+}
+fn default_container_states() -> Vec<String> {
+    vec!["running".to_string()]
 }
 
 impl Default for DockerModule {
@@ -291,6 +304,7 @@ impl Default for DockerModule {
             container_include: Vec::new(),
             container_exclude: Vec::new(),
             timeout: default_docker_timeout(),
+            container_states: default_container_states(),
         }
     }
 }

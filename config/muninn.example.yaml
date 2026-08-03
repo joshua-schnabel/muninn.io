@@ -208,8 +208,12 @@ modules:
   # reads, but the socket does not know that.
   #
   # If you enable this, prefer a read-only socket proxy over mounting the socket
-  # directly. See docs/adr/0010-docker-socket.md for the reasoning and
-  # docs/modules.md#docker for a proxy configuration that works.
+  # directly. See docs/adr/0010-docker-socket.md for the reasoning, and
+  # docker-compose.docker-module.yml for a proxy deployment that is tested.
+  #
+  # Enabling it with an endpoint that does not answer is a STARTUP FAILURE
+  # (exit 12), not an empty metric set: a Docker module reporting nothing looks
+  # exactly like a host running no containers, and that must not be ambiguous.
   docker:
     enabled: false
     endpoint: "unix:///var/run/docker.sock"
@@ -217,8 +221,20 @@ modules:
     container_include: []
     # Container names to drop (globs allowed).
     container_exclude: []
+
+    # Which container states to collect. Running only, by default: a container
+    # that exits then disappears from the metrics rather than reporting zeros,
+    # and zeros are indistinguishable from an idle container.
+    #
+    # Add `exited` if the event you alert on is a container that STOPPED. Note
+    # the cost: every container that ever exited stays in the metrics until it
+    # is removed, so on a host with short-lived containers this grows without
+    # bound. Valid: created, restarting, running, removing, paused, exited, dead.
+    container_states: [running]
+
     # Give up on a Docker API call after this long, so a wedged daemon slows
-    # collection down instead of stopping it.
+    # collection down instead of stopping it. Also how long muninn waits for the
+    # endpoint to answer during the startup check.
     timeout: 5s
 
   # Pending package updates on the host.

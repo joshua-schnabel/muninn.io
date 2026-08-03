@@ -55,11 +55,18 @@ JOBS="${MUNINN_LINUX_JOBS:-2}"
 
 # A separate target directory: sharing one with the host build means cargo
 # rebuilds the whole workspace on every switch between platforms.
+#
+# `-v /:/hostfs:ro` mounts the host root the way the documented deployment does.
+# muninn refuses to start with host modules enabled and no host mount while it is
+# in a container — that combination makes Telegraf report the container's CPU and
+# disks as the host's. Without the mount the lifecycle tests would be running in
+# a deployment muninn is right to reject.
 echo "→ running the test suite on Linux (${RUST_IMAGE}, ${JOBS} jobs)"
 docker run --rm \
     -v "$(native "$ROOT"):/work" \
     -v "$(native "$WORK/telegraf"):/tg" \
     -v "$(native "$WORK/target"):/target" \
+    -v /:/hostfs:ro \
     -w /work \
     -e CARGO_TARGET_DIR=/target \
     -e MUNINN_TELEGRAF_BIN=/tg/telegraf \

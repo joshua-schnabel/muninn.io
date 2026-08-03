@@ -375,6 +375,76 @@ fn docker_endpoint_must_not_be_empty_when_enabled() {
     );
 }
 
+/// A bare scheme passes a `starts_with` test and names nothing. Left unchecked
+/// it reaches the runtime layer with no address to probe, which reports no
+/// problem — so the module would start and quietly collect nothing.
+#[test]
+fn a_docker_endpoint_that_is_only_a_scheme_is_rejected() {
+    for endpoint in ["unix://", "tcp://"] {
+        let msg = rejects(
+            &with(&format!(
+                "modules:
+  docker:
+    enabled: true
+    endpoint: \"{endpoint}\"
+"
+            )),
+            "modules.docker.endpoint",
+        );
+        assert!(
+            msg.contains("docker.sock") || msg.contains("proxy"),
+            "should show what a complete endpoint looks like: {msg}"
+        );
+    }
+}
+
+/// Telegraf does not reject an unknown container state — it simply matches no
+/// container. A typo would therefore produce a module that runs and reports
+/// nothing, which reads as "no containers".
+#[test]
+fn an_unknown_container_state_is_rejected() {
+    let msg = rejects(
+        &with(
+            "modules:
+  docker:
+    enabled: true
+    container_states: [runnning]
+",
+        ),
+        "modules.docker.container_states",
+    );
+    assert!(msg.contains("running"), "should list the valid ones: {msg}");
+}
+
+/// The same failure by a different route: selecting no state at all.
+#[test]
+fn an_empty_container_state_list_is_rejected() {
+    rejects(
+        &with(
+            "modules:
+  docker:
+    enabled: true
+    container_states: []
+",
+        ),
+        "modules.docker.container_states",
+    );
+}
+
+/// Alerting on a container that crashed needs it to still be reported, so
+/// `exited` has to be selectable.
+#[test]
+fn exited_containers_can_be_selected() {
+    let cfg = ok(&with(
+        "modules:
+  docker:
+    enabled: true
+    container_states: [running, exited]
+",
+    ));
+    assert_eq!(cfg.modules.docker.container_states, ["running", "exited"]);
+}
+
 /// Enabling the Docker module grants root-equivalent access to the host. The
 /// operator should be told at startup, not only in the documentation they may
 /// not have read.

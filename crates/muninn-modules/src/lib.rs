@@ -26,10 +26,41 @@
 
 use muninn_core::Config;
 use muninn_telegraf::{PluginInstance, TelegrafConfig};
+use std::time::Duration;
 
 pub mod agent;
 pub mod inputs;
 pub mod outputs;
+
+/// How a module reaches a service that is not a file on the host.
+///
+/// Carries the timeout rather than leaving the prober to invent one: the
+/// operator already said how long this module may wait for Docker, and a probe
+/// that used its own number could refuse a deployment the running agent would
+/// have been perfectly happy with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    pub kind: EndpointKind,
+    pub timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndpointKind {
+    /// A unix domain socket at this path.
+    UnixSocket(String),
+    /// A TCP address, `host:port`.
+    Tcp(String),
+}
+
+impl Endpoint {
+    /// How the endpoint reads in a message, as the operator wrote it.
+    pub fn describe(&self) -> String {
+        match &self.kind {
+            EndpointKind::UnixSocket(path) => format!("unix://{path}"),
+            EndpointKind::Tcp(addr) => format!("tcp://{addr}"),
+        }
+    }
+}
 
 /// What a module needs from the host in order to report the truth.
 ///
@@ -46,6 +77,13 @@ pub struct Requirements {
     pub capabilities: Vec<&'static str>,
     /// True when the module only works on a Debian-family host.
     pub debian_family_only: bool,
+    /// Services the module has to be able to talk to.
+    ///
+    /// Separate from `absolute_paths` because existence is not reachability: a
+    /// socket file can be present and the daemon behind it gone, and a Docker
+    /// module that reported nothing in that case would look exactly like a host
+    /// with no containers.
+    pub endpoints: Vec<Endpoint>,
 }
 
 impl Requirements {
@@ -106,7 +144,12 @@ pub trait MonitoringModule {
     fn enabled(&self, config: &Config) -> bool;
 
     /// What the module needs from the host.
-    fn requirements(&self) -> Requirements;
+    ///
+    /// Takes the configuration because for at least one module the answer
+    /// depends on it: the Docker module needs a unix socket or a TCP endpoint
+    /// according to `modules.docker.endpoint`, and hard-coding the socket path
+    /// would demand a file that a proxy deployment does not have.
+    fn requirements(&self, config: &Config) -> Requirements;
 
     /// The plugin instances this module contributes. Called only when enabled.
     fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance>;
@@ -165,7 +208,7 @@ pub fn requirements_of_enabled(config: &Config) -> Vec<(&'static str, Requiremen
     all_modules()
         .into_iter()
         .filter(|m| m.enabled(config))
-        .map(|m| (m.id(), m.requirements()))
+        .map(|m| (m.id(), m.requirements(config)))
         .collect()
 }
 

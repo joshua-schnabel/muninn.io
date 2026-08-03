@@ -15,6 +15,9 @@ set -uo pipefail
 IMAGE="${1:-muninn:dev}"
 UID_GID="10001:10001"
 TMPFS_OPTS="mode=0700,uid=10001,gid=10001"
+# Pinned, and the same tag docker-compose.docker-module.yml uses — the test and
+# the recommendation have to be about the same thing.
+PROXY_IMAGE="tecnativa/docker-socket-proxy:0.3.0"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -n "${MSYSTEM:-}" ] && export MSYS_NO_PATHCONV=1
@@ -34,7 +37,7 @@ info() { echo "${YELLOW}→${NC} $*"; }
 
 WORK="$(mktemp -d)"
 WORK_NATIVE="$(native "$WORK")"
-trap 'rm -rf "$WORK"; docker rm -f muninn-test >/dev/null 2>&1 || true' EXIT
+trap 'rm -rf "$WORK"; docker rm -f muninn-test muninn-proxy >/dev/null 2>&1 || true;       docker network rm muninn-test-net >/dev/null 2>&1 || true' EXIT
 
 printf 'container-test-token' > "$WORK/token"
 
@@ -97,7 +100,7 @@ echo "container tests against ${IMAGE}"
 echo
 
 # ── 1. It starts, becomes healthy, and serves both endpoints ─────────────────
-info "1/8  starts hardened, becomes healthy, serves both endpoints"
+info "1/10  starts hardened, becomes healthy, serves both endpoints"
 cleanup
 run_muninn
 
@@ -133,7 +136,7 @@ else
 fi
 
 # ── 2. Docker's own health check agrees ──────────────────────────────────────
-info "2/8  the image's HEALTHCHECK reports healthy"
+info "2/10  the image's HEALTHCHECK reports healthy"
 if wait_for 60 bash -c \
     '[ "$(docker inspect --format "{{.State.Health.Status}}" muninn-test)" = healthy ]'; then
     pass "docker reports the container healthy"
@@ -142,7 +145,7 @@ else
 fi
 
 # ── 3. SIGTERM shuts down cleanly, inside the grace period ───────────────────
-info "3/8  SIGTERM shuts down cleanly"
+info "3/10  SIGTERM shuts down cleanly"
 start=$SECONDS
 docker stop --timeout 30 muninn-test >/dev/null 2>&1
 elapsed=$(( SECONDS - start ))
@@ -162,7 +165,7 @@ fi
 # ── 4. A dead Telegraf takes the container down ──────────────────────────────
 # The failure this project most wants to avoid is a container that looks healthy
 # while Telegraf crash-loops invisibly inside it.
-info "4/8  a dead Telegraf takes the container down with exit 22"
+info "4/10  a dead Telegraf takes the container down with exit 22"
 cleanup
 run_muninn
 if ! wait_for 60 bash -c 'curl -sf http://localhost:18080/health/ready'; then
@@ -197,7 +200,7 @@ else
 fi
 
 # ── 5. A missing configuration file ──────────────────────────────────────────
-info "5/8  a missing configuration file exits 10"
+info "5/10  a missing configuration file exits 10"
 cleanup
 out="$(docker run --rm --read-only --cap-drop=ALL \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
@@ -215,7 +218,7 @@ else
 fi
 
 # ── 6. A missing secret ──────────────────────────────────────────────────────
-info "6/8  a missing secret file exits 11"
+info "6/10  a missing secret file exits 11"
 cleanup
 sed 's|^outputs:|outputs:\n  influxdb:\n    enabled: true\n    url: "https://influx.example:8086"\n    organization: o\n    bucket: b\n    token_file: "/run/secrets/absent"|' \
     "$WORK/muninn.yaml" > "$WORK/muninn-influx.yaml"
@@ -233,7 +236,7 @@ fi
 # ── 7. A missing host mount is reported, not worked around ───────────────────
 # Without the mount Telegraf would report the container's own CPU and disks as
 # the host's — plausible numbers about the wrong machine.
-info "7/8  check-runtime reports a missing host mount"
+info "7/10  check-runtime reports a missing host mount"
 cleanup
 out="$(docker run --rm --read-only --cap-drop=ALL \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
@@ -264,7 +267,7 @@ else
 fi
 
 # ── 8. The healthcheck command fails when there is nothing to reach ──────────
-info "8/8  healthcheck fails when nothing is running"
+info "8/10  healthcheck fails when nothing is running"
 cleanup
 out="$(docker run --rm --read-only --cap-drop=ALL \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
@@ -274,6 +277,194 @@ if [ $? != 0 ]; then
     pass "healthcheck exits non-zero with no agent running"
 else
     fail "healthcheck reported healthy with nothing running: ${out}"
+fi
+
+# ── 9. The Docker module against a real socket ───────────────────────────────
+# WP9's acceptance criterion: enabling the module with an endpoint that does not
+# answer must be a startup failure, not an empty metric set. Both halves are
+# tested — the refusal, and that a reachable socket really does produce
+# per-container metrics.
+info "9/10  the docker module against a real Docker socket"
+cleanup
+
+# Whether the DAEMON has a unix socket, which is not the same question as
+# whether this shell can see one. On Docker Desktop the client talks to a named
+# pipe on Windows while the daemon inside the VM has the ordinary socket, so
+# `[ -S /var/run/docker.sock ]` here answers about the wrong machine and skips
+# the whole section on a host where it would have worked.
+has_socket() {
+    # --entrypoint, because the image's own entrypoint is muninn: a bare
+    # `test` would be an argument to muninn rather than a command.
+    docker run --rm --entrypoint /usr/bin/test \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
+        "$IMAGE" -S /var/run/docker.sock >/dev/null 2>&1
+}
+
+# The working configuration plus the docker module. Written in full rather than
+# patched into the base file: `modules:` is not the last section there, so
+# appending would land the block under `outputs:` — and the resulting error
+# ("missing required key") points nowhere near the actual mistake.
+docker_config() { # endpoint  outfile
+    cat > "$2" <<YAML
+version: 1
+agent:
+  interval: 1s
+  flush_interval: 1s
+  hostname: "container-test"
+runtime:
+  shutdown_grace_period: 8s
+  telegraf_start_timeout: 20s
+  host_mount_prefix: /hostfs
+logging:
+  format: json
+  level: info
+health:
+  listen: "0.0.0.0:8080"
+modules:
+  cpu:
+    enabled: true
+  docker:
+    enabled: true
+    endpoint: "$1"
+    timeout: 5s
+outputs:
+  prometheus:
+    enabled: true
+    listen: "0.0.0.0:9273"
+YAML
+}
+
+# First the refusal, which needs no socket at all and so always runs. Port 1 on
+# the loopback is never listening.
+docker_config "tcp://127.0.0.1:1" "$WORK/muninn-docker-dead.yaml"
+out="$(docker run --rm --read-only --cap-drop=ALL \
+        --tmpfs "/run/muninn:${TMPFS_OPTS}" \
+        -v "$WORK_NATIVE/muninn-docker-dead.yaml:/etc/muninn/muninn.yaml:ro" \
+        -v /:/hostfs:ro \
+        "$IMAGE" run 2>&1)"
+code=$?
+if [ "$code" = "12" ]; then
+    pass "an unreachable endpoint refuses the start with exit 12"
+else
+    fail "expected exit 12 for an unreachable Docker endpoint, got ${code}: ${out}"
+fi
+if grep -qi "nothing to report" <<<"$out"; then
+    pass "and says why silence is not an acceptable answer"
+else
+    fail "the message should explain the refusal: ${out}"
+fi
+
+if has_socket; then
+    docker_config "unix:///var/run/docker.sock" "$WORK/muninn-docker.yaml"
+
+    # muninn runs as uid 10001 and the socket is owned by root:docker, so
+    # mounting it is not enough — the process has to be in the socket's group.
+    # `--group-add` rather than `--user 0:0`: running as root would prove the
+    # image works in a posture nobody should ship, which the header of this file
+    # says these tests must never do.
+    #
+    # Needing this at all is the strongest practical argument for the proxy in
+    # test 10, which needs no group, no socket and no relaxation.
+    sock_gid="$(docker run --rm --entrypoint /usr/bin/stat \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
+        "$IMAGE" -c '%g' /var/run/docker.sock 2>/dev/null | tr -d '\r')"
+    : "${sock_gid:=0}"
+
+    docker run -d --name muninn-test \
+        --read-only --cap-drop=ALL --security-opt no-new-privileges:true \
+        --group-add "$sock_gid" \
+        --tmpfs "/run/muninn:${TMPFS_OPTS}" \
+        -v "$WORK_NATIVE/muninn-docker.yaml:/etc/muninn/muninn.yaml:ro" \
+        -v /:/hostfs:ro \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
+        -p 18080:8080 -p 19273:9273 \
+        "$IMAGE" >/dev/null
+
+    if wait_for 60 bash -c 'curl -sf http://localhost:18080/health/ready'; then
+        pass "starts with the socket mounted (group ${sock_gid})"
+        # The container running this test is itself a container, so there is
+        # always at least one to report — no fixture needed.
+        if wait_for 40 bash -c \
+            'curl -sf http://localhost:19273/metrics | grep -q "^docker_container_"'; then
+            pass "per-container metrics arrive through the socket"
+        else
+            fail "no docker_container_* metrics within 40s"
+            docker logs muninn-test 2>&1 | tail -20
+        fi
+    else
+        fail "never became ready with the socket mounted"
+        docker logs muninn-test 2>&1 | tail -20
+    fi
+else
+    info "     skipped the live-socket half: the daemon has no unix socket to mount"
+fi
+
+# ── 10. The recommended deployment: through a socket proxy ───────────────────
+# docs/modules.md recommends this as the way to enable the module. A
+# recommendation nobody tests is a recommendation nobody should follow.
+info "10/10  the docker module through a socket proxy"
+cleanup
+docker rm -f muninn-proxy >/dev/null 2>&1 || true
+docker network rm muninn-test-net >/dev/null 2>&1 || true
+
+if has_socket && docker pull -q "$PROXY_IMAGE" >/dev/null 2>&1; then
+    docker network create muninn-test-net >/dev/null 2>&1
+    docker_config "tcp://muninn-proxy:2375" "$WORK/muninn-proxy.yaml"
+
+    docker run -d --name muninn-proxy --network muninn-test-net \
+        -e CONTAINERS=1 -e INFO=1 -e VERSION=1 -e PING=1 -e POST=0 \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
+        "$PROXY_IMAGE" >/dev/null
+
+    docker run -d --name muninn-test --network muninn-test-net \
+        --read-only --cap-drop=ALL --security-opt no-new-privileges:true \
+        --tmpfs "/run/muninn:${TMPFS_OPTS}" \
+        -v "$WORK_NATIVE/muninn-proxy.yaml:/etc/muninn/muninn.yaml:ro" \
+        -v /:/hostfs:ro \
+        -p 18080:8080 -p 19273:9273 \
+        "$IMAGE" >/dev/null
+
+    if wait_for 90 bash -c 'curl -sf http://localhost:18080/health/ready'; then
+        pass "starts against the proxy — no socket, no group, no relaxation"
+        if wait_for 40 bash -c \
+            'curl -sf http://localhost:19273/metrics | grep -q "^docker_container_"'; then
+            pass "container metrics arrive through the proxy"
+        else
+            fail "no docker_container_* metrics through the proxy within 40s"
+            docker logs muninn-test 2>&1 | tail -20
+        fi
+    else
+        fail "never became ready against the proxy"
+        docker logs muninn-test 2>&1 | tail -20
+        docker logs muninn-proxy 2>&1 | tail -10
+    fi
+
+    # The half that makes the request-based probe worth having: a proxy that is
+    # up and denying the call must be refused, not read as "no containers". A
+    # plain connect check would pass here.
+    docker rm -f muninn-test muninn-proxy >/dev/null 2>&1
+    docker run -d --name muninn-proxy --network muninn-test-net \
+        -e CONTAINERS=0 -e PING=0 -e POST=0 \
+        -v /var/run/docker.sock:/var/run/docker.sock:ro \
+        "$PROXY_IMAGE" >/dev/null
+
+    out="$(docker run --rm --network muninn-test-net \
+            --read-only --cap-drop=ALL \
+            --tmpfs "/run/muninn:${TMPFS_OPTS}" \
+            -v "$WORK_NATIVE/muninn-proxy.yaml:/etc/muninn/muninn.yaml:ro" \
+            -v /:/hostfs:ro \
+            "$IMAGE" run 2>&1)"
+    code=$?
+    if [ "$code" = "12" ]; then
+        pass "a proxy that denies the call is a startup failure, not silence"
+    else
+        fail "expected exit 12 against a denying proxy, got ${code}: ${out}"
+    fi
+
+    docker rm -f muninn-proxy >/dev/null 2>&1 || true
+    docker network rm muninn-test-net >/dev/null 2>&1 || true
+else
+    info "     skipped: no unix socket, or ${PROXY_IMAGE} could not be pulled"
 fi
 
 cleanup

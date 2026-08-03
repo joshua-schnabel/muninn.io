@@ -1,0 +1,71 @@
+# muninn.io with the Docker module, through a socket proxy.
+#
+# Goes with docker-compose.docker-module.yml. The only line that differs from an
+# ordinary configuration is `endpoint` — everything else about the module is the
+# same whether it talks to a proxy or to the socket directly.
+
+version: 1
+
+agent:
+  interval: 30s
+  flush_interval: 30s
+
+runtime:
+  host_mount_prefix: /hostfs
+
+logging:
+  format: json
+  level: info
+
+health:
+  listen: "0.0.0.0:8080"
+
+modules:
+  cpu:
+    enabled: true
+  memory:
+    enabled: true
+  load:
+    enabled: true
+  disks:
+    enabled: true
+    exclude_filesystems: [tmpfs, devtmpfs, squashfs, overlay]
+    # A Docker host mounts one of these per container layer. Without the
+    # exclusion the disk metrics are mostly noise about images.
+    exclude_mountpoints: ["/var/lib/docker/*"]
+  network:
+    enabled: true
+    # Every running container adds a veth interface on the host, so without this
+    # the interface count tracks the container count and the cardinality grows
+    # with it.
+    exclude_interfaces: [lo, "veth*", "br-*", docker0]
+
+  docker:
+    enabled: true
+
+    # The service name from the compose file, not the socket. muninn never sees
+    # /var/run/docker.sock in this deployment — that is the entire point.
+    #
+    # muninn checks this endpoint answers before it starts. If the proxy is down
+    # or denying the call, the container exits 12 rather than reporting an empty
+    # container list that looks like a quiet host.
+    endpoint: "tcp://docker-socket-proxy:2375"
+
+    # Both empty: report every container. Set container_exclude if a build agent
+    # or a cron container is adding cardinality without telling you anything.
+    container_include: []
+    container_exclude: []
+
+    # Running only. A stopped container disappears rather than reporting zeros,
+    # which is unambiguous. Add `exited` if the event you alert on is a container
+    # that stopped — and read the note in docs/modules.md#docker about what that
+    # costs on a host with short-lived containers.
+    container_states: [running]
+
+    # Also the timeout for the startup reachability probe.
+    timeout: 5s
+
+outputs:
+  prometheus:
+    enabled: true
+    listen: "0.0.0.0:9273"

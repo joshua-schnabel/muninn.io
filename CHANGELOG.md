@@ -12,6 +12,23 @@ The release pipeline reads the version from this file — see
 
 ### Added
 
+- Docker module, completed (WP9). Enabling it with an endpoint that does not
+  answer is now a **startup failure** (exit `12`) rather than an empty metric
+  set: muninn issues `GET /_ping` against the configured endpoint and requires a
+  `200`. A Docker module reporting nothing is indistinguishable from a host
+  running no containers, and a monitoring system must not leave that ambiguous.
+- `modules.docker.container_states` — which container states to collect,
+  defaulting to `[running]`. Add `exited` to keep reporting containers that
+  stopped. Values are validated against Docker's own vocabulary, because
+  Telegraf accepts an unknown state silently and it then matches no container.
+- `docker-compose.docker-module.yml` and `config/muninn.docker-module.yaml` —
+  the socket-proxy deployment documented as the recommendation, now shipped and
+  exercised by `scripts/container-test.sh` (22 checks, up from 15).
+- Startup now runs the runtime preconditions of every enabled module — the step
+  `architecture.md` has documented since WP0 and that `muninn run` never
+  performed. `muninn check-runtime` reported these problems; nothing stopped a
+  start.
+
 - Repository skeleton: ignore rules, LF line-ending policy, MIT licence.
 - Cargo workspace of five crates — `muninn`, `muninn-core`, `muninn-telegraf`,
   `muninn-modules`, `muninn-health` — with module contracts documented and no

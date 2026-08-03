@@ -136,3 +136,66 @@ fn the_minimal_example_stays_minimal() {
          it exists to show the smallest configuration that starts"
     );
 }
+
+/// Every YAML in `config/`, not just the two named above.
+///
+/// Enumerated from the directory rather than listed here, so a file added later
+/// is covered the day it is added. A shipped configuration that does not load is
+/// worse than no example at all: it teaches the wrong schema and fails in the
+/// reader's deployment rather than in CI.
+#[test]
+fn every_shipped_configuration_validates() {
+    let dir = repo_root().join("config");
+    let mut checked = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).expect("config/ should exist") {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "yaml") {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        // Panics with a useful message if the file has drifted.
+        let (_, _) = load_shipped(&name);
+        checked.push(name);
+    }
+
+    assert!(
+        checked.len() >= 3,
+        "expected the shipped examples to be found, got: {checked:?}"
+    );
+}
+
+/// The proxy deployment ships as a pair — a compose file and the configuration
+/// it mounts. If they disagree on the endpoint, following the documentation
+/// produces a container that exits 12, and the reader has no way to know which
+/// of the two files is wrong.
+#[test]
+fn the_docker_module_example_matches_the_compose_file_it_belongs_to() {
+    let yaml = std::fs::read_to_string(repo_root().join("config/muninn.docker-module.yaml"))
+        .expect("the docker-module example should ship");
+    let compose = std::fs::read_to_string(repo_root().join("docker-compose.docker-module.yml"))
+        .expect("the docker-module compose file should ship");
+
+    assert!(
+        yaml.contains("tcp://docker-socket-proxy:2375"),
+        "the example should point at the proxy, not at the socket"
+    );
+    assert!(
+        compose.contains("docker-socket-proxy:"),
+        "and the compose file should define a service by that name"
+    );
+    assert!(
+        !yaml.contains("unix:///var/run/docker.sock"),
+        "the proxy example must not also mount the socket — that would grant \
+         exactly what the proxy exists to avoid"
+    );
+    assert!(
+        compose.contains("PING: 1"),
+        "the proxy must allow /_ping, or muninn's own reachability check fails \
+         against the deployment this file recommends"
+    );
+    assert!(
+        compose.contains("POST: 0"),
+        "POST: 0 is what makes the proxy a boundary rather than a suggestion"
+    );
+}

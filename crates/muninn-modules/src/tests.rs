@@ -287,3 +287,137 @@ fn a_configuration_with_one_module_demands_almost_nothing() {
     assert_eq!(reqs[0].1.host_paths, vec!["proc"]);
     assert!(reqs[0].1.absolute_paths.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Docker
+// ---------------------------------------------------------------------------
+
+/// Every option the module exposes has to reach the generated file. A filter
+/// that silently failed to render would be the worst kind of bug here: the
+/// operator believes they excluded a noisy container and the cardinality it
+/// costs shows up on the bill instead.
+#[test]
+fn the_docker_module_renders_every_option_it_offers() {
+    let cfg = config_with(|c| {
+        c.modules.docker.enabled = true;
+        c.modules.docker.endpoint = "tcp://docker-socket-proxy:2375".into();
+        c.modules.docker.container_include = vec!["web-*".into()];
+        c.modules.docker.container_exclude = vec!["*-build".into()];
+        c.modules.docker.container_states = vec!["running".into(), "exited".into()];
+        c.modules.docker.timeout = muninn_core::duration::ConfigDuration::from_secs(12);
+    });
+    let toml = render_of(&cfg);
+
+    assert!(toml.contains("[[inputs.docker]]"), "{toml}");
+    assert!(
+        toml.contains(r#"endpoint = "tcp://docker-socket-proxy:2375""#),
+        "{toml}"
+    );
+    assert!(toml.contains(r#"timeout = "12s""#), "{toml}");
+    assert!(
+        toml.contains(r#"container_name_include = ["web-*"]"#),
+        "{toml}"
+    );
+    assert!(
+        toml.contains(r#"container_name_exclude = ["*-build"]"#),
+        "{toml}"
+    );
+    assert!(
+        toml.contains(r#"container_state_include = ["running", "exited"]"#),
+        "state selection must reach the file: {toml}"
+    );
+}
+
+/// The default is running only, and that is a decision rather than an accident:
+/// a stopped container reporting zeros is indistinguishable from an idle one.
+#[test]
+fn the_docker_module_collects_running_containers_by_default() {
+    let cfg = config_with(|c| c.modules.docker.enabled = true);
+    assert!(
+        render_of(&cfg).contains(r#"container_state_include = ["running"]"#),
+        "{}",
+        render_of(&cfg)
+    );
+}
+
+/// Empty filters are omitted rather than rendered empty — an empty
+/// `container_name_include` in Telegraf is not "include everything" by accident
+/// but by a rule worth not depending on.
+#[test]
+fn unset_docker_filters_are_omitted() {
+    let cfg = config_with(|c| c.modules.docker.enabled = true);
+    let toml = render_of(&cfg);
+    assert!(!toml.contains("container_name_include"), "{toml}");
+    assert!(!toml.contains("container_name_exclude"), "{toml}");
+}
+
+/// A unix endpoint is two requirements, not one: the socket file has to be
+/// mounted *and* the daemon behind it has to answer. They fail differently and
+/// are fixed differently.
+#[test]
+fn a_unix_docker_endpoint_demands_the_socket_file_and_the_service() {
+    let cfg = config_with(|c| {
+        c.modules.docker.enabled = true;
+        c.modules.docker.endpoint = "unix:///var/run/docker.sock".into();
+    });
+    let reqs = crate::requirements_of_enabled(&cfg);
+    let (_, docker) = reqs.iter().find(|(id, _)| *id == "docker").unwrap();
+
+    assert_eq!(docker.absolute_paths, vec!["/var/run/docker.sock"]);
+    assert_eq!(
+        docker.endpoints,
+        vec![crate::Endpoint {
+            kind: crate::EndpointKind::UnixSocket("/var/run/docker.sock".into()),
+            timeout: std::time::Duration::from_secs(5),
+        }]
+    );
+}
+
+/// The recommended deployment. A proxy is reached over TCP and has no socket
+/// file at all — demanding one would refuse the safest setup, which is the bug
+/// this replaced.
+#[test]
+fn a_proxy_endpoint_demands_no_socket_file() {
+    let cfg = config_with(|c| {
+        c.modules.docker.enabled = true;
+        c.modules.docker.endpoint = "tcp://docker-socket-proxy:2375".into();
+    });
+    let reqs = crate::requirements_of_enabled(&cfg);
+    let (_, docker) = reqs.iter().find(|(id, _)| *id == "docker").unwrap();
+
+    assert!(
+        docker.absolute_paths.is_empty(),
+        "a proxy deployment has no socket to mount: {:?}",
+        docker.absolute_paths
+    );
+    assert_eq!(
+        docker.endpoints[0].kind,
+        crate::EndpointKind::Tcp("docker-socket-proxy:2375".into())
+    );
+}
+
+/// The probe waits as long as the operator said the module may, not a number
+/// invented here — otherwise a deployment the running agent tolerates could be
+/// refused at startup.
+#[test]
+fn the_endpoint_carries_the_configured_timeout() {
+    let cfg = config_with(|c| {
+        c.modules.docker.enabled = true;
+        c.modules.docker.timeout = muninn_core::duration::ConfigDuration::from_secs(30);
+    });
+    let reqs = crate::requirements_of_enabled(&cfg);
+    let (_, docker) = reqs.iter().find(|(id, _)| *id == "docker").unwrap();
+    assert_eq!(
+        docker.endpoints[0].timeout,
+        std::time::Duration::from_secs(30)
+    );
+}
+
+/// A module nobody enabled demands nothing — including no probe, which would
+/// otherwise make a disabled module able to fail a startup.
+#[test]
+fn a_disabled_docker_module_demands_nothing() {
+    let cfg = config_with(|c| c.modules.docker.enabled = false);
+    let reqs = crate::requirements_of_enabled(&cfg);
+    assert!(!reqs.iter().any(|(id, _)| *id == "docker"));
+}

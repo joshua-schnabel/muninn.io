@@ -62,6 +62,17 @@ fn fixture(port: u16, generated: &Path) -> Fixture {
 
 fn fixture_with_health(port: u16, health_port: u16, generated: &Path) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
+    // muninn refuses to start with host modules enabled, no host mount prefix,
+    // and a container around it — that combination makes Telegraf report the
+    // container's CPU and disks as the host's. The Linux suite runs in exactly
+    // such a container and mounts the host at /hostfs (see scripts/test-linux.sh),
+    // so the fixture describes the deployment it is actually running in rather
+    // than one muninn would reject.
+    let host_mount_prefix = if Path::new("/hostfs").is_dir() {
+        "/hostfs"
+    } else {
+        ""
+    };
     let config = dir.path().join("muninn.yaml");
     let mut f = std::fs::File::create(&config).unwrap();
     write!(
@@ -76,7 +87,7 @@ runtime:
   shutdown_grace_period: 10s
   telegraf_start_timeout: 15s
   generated_config_path: "{generated}"
-  host_mount_prefix: ""
+  host_mount_prefix: "{host_mount_prefix}"
 logging:
   format: json
   level: info
