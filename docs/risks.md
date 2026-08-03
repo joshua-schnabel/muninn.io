@@ -47,6 +47,40 @@ to muninn's own code. The two-variant scheme — distroless by default, debian-s
 for the updates module — was set aside for CI simplicity, not because it was
 unworkable.
 
+## R8 — The security subset under-reports on Ubuntu
+
+**Severity: medium · Owner: WP10 · Status: known limit, documented**
+
+`muninn_updates_pending{severity="security"}` classifies an update as security
+when the origin apt prints for the **candidate version** names a `-security`
+suite. That is the rule [ADR-0009](adr/0009-updates-module-approach.md) fixed, and
+on Debian it is accurate.
+
+On Ubuntu it is a lower bound. Ubuntu publishes security updates to
+`<release>-security` *and* copies them into `<release>-updates`; when apt resolves
+the candidate through the latter, the `Inst` line reads `Ubuntu:24.04/noble-updates`
+and muninn does not count it as security. This is measurable rather than
+theoretical: the WP1 spike's Ubuntu 24.04 fixture reported 66 pending / 34
+security, and the same fixture rebuilt against today's archive reports **66
+pending / 0 security** — the packages are the same, the pocket holding the
+candidate has moved. The total is unaffected.
+
+The host's own `apt-get -s dist-upgrade` says exactly the same thing, so muninn is
+not diverging from its host — which is why this is a limit rather than a bug, and
+why every system-test cell still passes.
+
+**Mitigation.** Documented at the metric, in [`modules.md`](modules.md#updates):
+alert on the total, and treat the security series as "at least this many". A
+security count of zero on an Ubuntu host is not evidence that nothing security-
+relevant is pending.
+
+**Fix, if it is worth the cost.** Ubuntu's own `apt-check` classifies by asking
+whether the candidate *version* is available from any security origin, rather than
+reading the one origin apt happens to print — `apt-cache policy` exposes that.
+It is a second apt invocation and a second parser, and it would change the numbers
+the spike measured, so it needs its own ADR amendment and its own ground truth
+rather than a quiet change here.
+
 ## R2 — Two Prometheus endpoints invite scraping the wrong one
 
 **Severity: medium · Owner: WP0/WP7 · Status: mitigated, monitor**

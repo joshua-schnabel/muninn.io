@@ -244,3 +244,25 @@ Open for WP10: whether to keep a shell helper invoked through `inputs.exec`, or
 to shell out to `apt-get` from muninn itself and emit the line protocol from
 Rust. The spike does not decide this — both run the same apt invocation, which is
 the part that had to be proven.
+
+**Decided in WP10: muninn itself**, as `muninn update-check`, with the apt
+arguments above unchanged. `spikes/updates/probe.sh` stays as the specification
+this was written from and as the record of what was measured;
+`scripts/updates-test.sh` runs the shipped image against these same fixtures, so
+a divergence between the two shows up as a failing cell.
+
+Two things the implementation found that this spike could not, because both are
+properties of the deployment rather than of the approach:
+
+- **apt takes temp files outside `Dir::Cache`.** It calls
+  `mkstemp /tmp/clearsigned.message.XXXXXX` while reading signed release files,
+  even with `-s`. The spike's hardened cell had a tmpfs on `/tmp`; muninn's
+  documented deployment does not, and the check failed there with
+  `GetTempFile (30: Read-only file system)` on a host it could read perfectly.
+  `TMPDIR` is now set to the scratch directory for the apt child itself.
+- **The Ubuntu security count moved.** Rebuilt against today's archive, the
+  Ubuntu 24.04 fixture reports 66 pending / **0** security where it reported
+  66/34 here — the packages are the same, but the candidate now resolves through
+  `noble-updates` rather than `noble-security`. The host's own apt says the same,
+  so this is a property of the classification rule rather than a regression. See
+  [R8](../risks.md).

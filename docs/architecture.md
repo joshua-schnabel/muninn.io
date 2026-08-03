@@ -141,6 +141,21 @@ collecting. Anything that stops collection is `Failed`, not `Degraded`. The
 failing module is visible in the logs, in `/status`, and in its own
 `*_check_success` metric, so the degradation is never silent.
 
+**What reaches it today.** The updates module runs its check once immediately
+after readiness — a full apt resolution takes seconds, so holding readiness for it
+would delay an orchestrator over something unrelated to collecting metrics — and a
+failure moves muninn to `Degraded`.
+
+That is deliberately the opposite of the Docker module, which refuses to start at
+all when its endpoint does not answer: Docker's failure mode is *silence* that
+reads as "no containers", while a failed update check says so in the metric. A
+failure that names itself does not justify taking a working agent out of service.
+
+The updates module's *preconditions* are a separate matter and still refuse the
+start with exit 12 (step 5 above). A deployment that cannot support the module —
+no host mount, a host that is not Debian-family — is not a degradation; it is a
+deployment to fix, and every module is treated the same way there.
+
 ### Why there is no restart loop
 
 A dead Telegraf sends muninn to `Failed` and out with exit code 22. muninn does

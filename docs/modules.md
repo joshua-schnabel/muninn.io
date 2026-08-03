@@ -23,7 +23,7 @@ that version's `sample.conf`; WP0's verification suite checks that mechanically.
 | [disk_io](#disk_io) | `inputs.diskio` | off | host `/proc`, `/sys` |
 | [network](#network) | `inputs.net` | off | host `/proc` |
 | [docker](#docker) | `inputs.docker` | off | **Docker socket** |
-| [updates](#updates) | `inputs.exec` | off | see section — experimental |
+| [updates](#updates) | `inputs.exec` | off | host `/var`, `/etc`, `/usr`; Debian or Ubuntu |
 
 Everything in the "host `/proc`" column is satisfied by one `-v /:/hostfs:ro`
 mount plus `runtime.host_mount_prefix`. See [`host-mounts.md`](host-mounts.md).
@@ -487,8 +487,9 @@ visible here.
 
 ## updates
 
-Pending package updates on the host. Off by default; implementation lands in
-WP10.
+Pending package updates on the host. Off by default, because it needs the host
+mount and because most operators want to decide for themselves whether their
+monitoring agent reads their package state.
 
 ```yaml
 modules:
@@ -503,9 +504,32 @@ modules:
 | `interval` | duration | `1h` | Own schedule — package state changes slowly and the check is comparatively expensive |
 | `security_only_metric` | boolean | `true` | Report the security subset alongside the total |
 
-**Renders to** `[[inputs.exec]]` running muninn's update helper with
-`data_format = "influx"`. Telegraf has no package input plugin — all 249 in
-1.39.2 were checked — so this is the only route available.
+**Renders to** `[[inputs.exec]]` with `data_format = "influx"`, running
+
+```toml
+commands = [["/usr/local/bin/muninn", "update-check"]]
+environment = ["HOSTFS=/hostfs", "TMPDIR=/run/muninn"]
+```
+
+Telegraf has no package input plugin — all 249 in 1.39.2 were checked — so
+`exec` is the only route available, and what it executes is muninn itself. There
+is no separate helper binary to keep in step, and the same command is available
+to an operator:
+
+```bash
+docker exec muninn muninn update-check --hostfs /hostfs
+muninn_updates,status=ok,reason=none check_success=1i,check_timestamp_seconds=1754225000i,lists_age_seconds=4210i
+muninn_updates,severity=all pending=41i
+muninn_updates,severity=security pending=3i
+```
+
+Running it by hand is the fastest way to diagnose a count that looks wrong: it
+prints the same line Telegraf parses, and puts the detail behind the `reason` tag
+— the path, or apt's own error — on stderr.
+
+`TMPDIR` points at the runtime directory rather than `/tmp`, because apt writes
+its cache even when it is only simulating, and in the documented deployment the
+root filesystem is read-only with exactly one writable tmpfs.
 
 ### How it reads the host, and why that took a spike
 
@@ -526,10 +550,15 @@ Measured against each host's own answer:
 | debian:12 | 41 / 3 | **41 / 3** |
 | debian:13 | 39 / 2 | **39 / 2** |
 | ubuntu:22.04 | 50 / 40 | **50 / 40** |
-| ubuntu:24.04 | 66 / 34 | **66 / 34** |
+| ubuntu:24.04 | 66 / 0 | **66 / 0** |
 
 Including from a container running a *different* distribution than the host,
 which is the normal case rather than the exotic one.
+
+The Ubuntu 24.04 zero is not an error and not a disagreement: the host's own apt
+says zero too, because the candidate versions now resolve through
+`noble-updates`. [The security subset is a lower bound on Ubuntu](#the-security-subset-is-a-lower-bound-on-ubuntu)
+explains why, and why the total is unaffected.
 
 **Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
 the same mount CPU, memory and disk already need. No extra capabilities, no root,
@@ -543,11 +572,11 @@ measurements, is in [`hardening.md`](hardening.md) and
 ### The invariant
 
 ```text
-muninn_updates_pending{severity="all"}        gauge
-muninn_updates_pending{severity="security"}   gauge
-muninn_updates_check_success                  gauge  0|1
-muninn_updates_check_timestamp_seconds        gauge
-muninn_updates_lists_age_seconds              gauge
+muninn_updates_pending{severity="all"}          gauge   only on success
+muninn_updates_pending{severity="security"}     gauge   only on success, unless switched off
+muninn_updates_check_success{status,reason}     gauge   0|1
+muninn_updates_check_timestamp_seconds{...}     gauge
+muninn_updates_lists_age_seconds{...}           gauge   only on success
 ```
 
 **A failed check emits `check_success=0` and omits the pending counts.** It never
@@ -557,11 +586,94 @@ representation.
 
 This is demonstrated rather than asserted: a missing mount, an empty dpkg status
 and a structurally corrupt one each produce `check_success=0` with a specific
-`reason` tag and no counts. Those are the spike's T8, T9 and T9b cells.
+`reason` tag and no counts — cells S8, S9 and S9b of
+`scripts/updates-test.sh`, which runs the shipped image against real host trees.
 
-A failure here degrades muninn rather than stopping it: the configuration is
-valid and everything else keeps collecting. The failure stays visible in the
-logs, in `/status` and in `check_success`.
+The one alert worth writing from this:
+
+```promql
+muninn_updates_check_success == 0
+```
+
+Not `absent(muninn_updates_pending)`, which also fires while the agent is
+starting.
+
+### The security subset is a lower bound on Ubuntu
+
+An update counts as security when the origin apt prints for the candidate version
+names a `-security` suite — `Debian-Security:12/stable-security`,
+`Ubuntu:22.04/jammy-security`.
+
+Ubuntu publishes security updates to `<release>-security` **and** copies them into
+`<release>-updates`. When apt resolves the candidate through the latter, the line
+reads `Ubuntu:24.04/noble-updates` and muninn does not count it as security. The
+same fixture measured a year apart shows it plainly: Ubuntu 24.04 reported 66
+pending / 34 security during the WP1 spike, and 66 pending / **0** security when
+rebuilt against today's archive. Same packages, different pocket.
+
+The host's own `apt-get -s dist-upgrade` says exactly the same thing, so muninn is
+not diverging from the machine it describes. But it does mean:
+
+- **Alert on the total.** `muninn_updates_pending{severity="all"}` is exact.
+- **Read the security series as "at least this many".** On an Ubuntu host, zero is
+  not evidence that nothing security-relevant is pending.
+
+Tracked as [R8](risks.md), with what a more thorough classification would cost.
+
+### What a `reason` means
+
+`reason` is a closed set of tokens, so it is safe as a label. The detail — the
+path, or apt's own message — is on stderr, which Telegraf logs.
+
+| `reason` | Cause | Fix |
+|---|---|---|
+| `hostfs_not_mounted` | no host mount | `-v /:/hostfs:ro`, and `runtime.host_mount_prefix: /hostfs` |
+| `dpkg_status_unreadable` | `/hostfs/var/lib/dpkg/status` missing or unopenable | mount the whole root, not a subset |
+| `dpkg_status_empty` | the package database is empty | check what is actually mounted at `/hostfs` |
+| `apt_etc_missing`, `apt_lists_missing` | `/etc/apt` or `/var/lib/apt/lists` absent | same |
+| `apt_lists_empty` | no package index — `apt-get update` has never run on the host | run it on the host |
+| `os_release_unreadable` | neither `/etc/os-release` nor `/usr/lib/os-release` can be read — the first is normally a symlink into the second | mount the whole root |
+| `host_not_debian_family` | the host is not Debian or Ubuntu | disable the module |
+| `scratch_unavailable` | nowhere writable for apt's cache | give the container its tmpfs |
+| `apt_failed` | apt refused — usually a host index format the image's apt does not understand | see stderr; report it |
+| `parse_inconsistent` | more security updates than updates in total | a bug; please report it |
+
+### A failed check degrades muninn — it does not stop it
+
+The Docker module refuses the start when its endpoint does not answer. This one
+does the opposite, and the difference is the point: an unreachable Docker
+endpoint produces *silence*, which reads as "no containers", while a failed
+update check produces `check_success=0` with a reason. Nothing is being
+misrepresented, so taking a working agent out of service — and losing CPU,
+memory, disk and network collection with it — would cost far more than it
+protects.
+
+muninn runs the check once at startup, so the answer is in the logs, in `/status`
+and in `muninn_module_check_success{module="updates"}` within seconds instead of
+after the first hourly interval:
+
+```text
+muninn_module_check_success{module="updates"} 0
+```
+
+and `/status` reports `degraded` — ready, serving, one module down.
+
+**Preconditions are the exception, and they are checked earlier.** A host tree
+that is not mounted at all, or a host that is not Debian-family, is not a failed
+check — it is a deployment that cannot support the module, and muninn refuses to
+start with exit `12` naming the module, exactly as it does for every other
+module's requirements. `muninn check-runtime` reports the same thing without
+starting anything. The rule in one line:
+
+| | |
+|---|---|
+| The deployment cannot support the module | exit `12` before anything starts |
+| The deployment is right and the check still failed | `degraded`, `check_success=0`, keep collecting |
+
+The second is the interesting case, and it is why the metric exists: apt refusing,
+an index format the image does not understand, a package database that is present
+but unreadable. Those cannot be known before start, and none of them is a reason
+to stop reporting CPU.
 
 ---
 

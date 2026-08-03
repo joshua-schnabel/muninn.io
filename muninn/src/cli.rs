@@ -80,6 +80,28 @@ pub enum Command {
     /// Check that the host provides what the enabled modules need.
     CheckRuntime,
 
+    /// Report the host's pending package updates as influx line protocol.
+    ///
+    /// This is what the updates module runs through `inputs.exec`. It is a
+    /// documented command rather than a hidden one because an operator
+    /// diagnosing a wrong count needs to be able to run exactly what Telegraf
+    /// runs, and see the reason on stderr.
+    ///
+    /// It always exits 0: a failed check is data (`check_success=0`), not a
+    /// crash. A non-zero exit would make Telegraf log an error and emit nothing,
+    /// which is indistinguishable from the module being switched off.
+    UpdateCheck {
+        /// Where the host filesystem is mounted. Defaults to `$HOSTFS`, then `/`.
+        #[arg(long, env = "HOSTFS")]
+        hostfs: Option<PathBuf>,
+
+        /// Omit the security subset, leaving only the total.
+        ///
+        /// Rendered from `modules.updates.security_only_metric: false`.
+        #[arg(long)]
+        no_security_metric: bool,
+    },
+
     /// Query the local health endpoint. For a container HEALTHCHECK.
     Healthcheck,
 
@@ -145,6 +167,9 @@ mod tests {
             vec!["muninn", "render-config", "--output", "/tmp/x.conf"],
             vec!["muninn", "render-config", "--unsafe-show-secrets"],
             vec!["muninn", "check-runtime"],
+            vec!["muninn", "update-check"],
+            vec!["muninn", "update-check", "--hostfs", "/hostfs"],
+            vec!["muninn", "update-check", "--no-security-metric"],
             vec!["muninn", "healthcheck"],
             vec!["muninn", "version"],
         ] {

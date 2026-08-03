@@ -12,7 +12,7 @@ Breaking any of these requires a major release.
 |---|---|
 | **Config schema** | Every YAML key in [`configuration.md`](configuration.md), including defaults and validation rules. A config that loads today loads on every later 1.x |
 | **Schema version** | `version: 1` keeps working. A future `version: 2` does not remove support for 1 |
-| **CLI** | `run`, `validate`, `render-config`, `check-runtime`, `healthcheck`, `version`, and the global flags |
+| **CLI** | `run`, `validate`, `render-config`, `check-runtime`, `update-check`, `healthcheck`, `version`, and the global flags |
 | **Exit codes** | The values and meanings in [`supervision.md`](supervision.md). A code may gain meaning in a minor release; it never changes meaning |
 | **Health endpoints** | `/health/live` and `/health/ready`, their paths, status codes and readiness semantics |
 | **muninn metrics** | The `muninn_*` metric names, label names and units. New families may appear in a minor release; renaming or removing one is breaking |
@@ -32,9 +32,12 @@ May change in any release:
 - **The Rust crate APIs.** `muninn-core`, `muninn-telegraf`, `muninn-modules` and
   `muninn-health` are internal structure, not a published library.
 - **Log messages, fields and formatting**, in both human and JSON output.
-- **Anything marked experimental**, currently the updates module. It may change
-  shape or be removed entirely without a major release. That is what the marker
-  is for.
+- **Anything marked experimental.** Such a feature may change shape or be removed
+  entirely without a major release — that is what the marker is for. Nothing
+  carries it today: the updates module held it until the WP1 spike decided
+  whether approach A worked at all, and shed it when ADR-0009 was accepted and
+  WP10 shipped the module against real hosts. Its one known limit is a documented
+  lower bound ([R8](risks.md)), not an unsettled design.
 
 ## The metrics Telegraf emits
 
