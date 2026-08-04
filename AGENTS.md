@@ -17,7 +17,8 @@ It ships as one hardened, multi-arch container holding both binaries.
 
 Telegraf is the telemetry engine. muninn never touches a metric.
 
-**Status: feature-complete; nothing is published yet.**
+**Status: feature-complete; pre-release images publish from `dev`, no version
+cut yet.**
 [`docs/roadmap.md`](docs/roadmap.md) carries what is still open and is the one
 place it is tracked — do not restate it here, it goes stale. What already shipped
 is in [`CHANGELOG.md`](CHANGELOG.md). Start with
