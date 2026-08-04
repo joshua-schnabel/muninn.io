@@ -800,7 +800,7 @@ Per container (`muninn_container_image_updates`):
 |---|---|---|
 | `digest_pinned_reference` | the container's image is already `repo@sha256:...` | nothing to fix — there is no tag for a newer image to appear under |
 | `image_id_reference` | `docker ps` shows an image ID under IMAGE, because every tag for the running image has been removed | re-tag the image, or recreate the container from a tagged one |
-| `no_repo_digest` | the image was never pulled from, or pushed to, a registry | expected for a locally built image; nothing to fix |
+| `no_repo_digest` | the daemon recorded no digest at all for the running image | expected for a locally built image on the classic image store, or one from `docker load`; nothing to fix |
 | `no_matching_repo_digest` | the daemon recorded digests, but none for this repository | usually a `docker tag` onto an image pulled under a different name |
 | `image_inspect_failed` | `GET /images/{id}/json` failed | see stderr; the image may have been removed since the container started |
 | `distribution_query_failed` | the daemon could not resolve the tag against the registry | unreachable registry, a tag that no longer exists, authentication the daemon does not have, or a `registry_timeout` too short for the round trip |
@@ -810,6 +810,16 @@ Repository names are normalised before they are compared, so a container
 created as `docker.io/library/nginx` matches the familiar `nginx@sha256:...`
 the daemon records for it. Without that, an entirely ordinary container reports
 `no_matching_repo_digest`.
+
+**A locally built image usually reports `distribution_query_failed`, not
+`no_repo_digest`.** With the containerd image store — the default from Docker
+29 — the daemon records a locally computed digest for an image it built, so
+there *is* a `RepoDigests` entry and the check goes on to ask the registry
+about a repository that was never pushed. Both answers are honest
+(`check_success=0`, no verdict), and muninn cannot tell "this repository exists
+nowhere" from "the registry did not answer" without reading daemon error prose.
+`muninn image-check` prints that prose on stderr, which is how to tell by hand.
+[R9](risks.md).
 
 ### Cost scales with the container count
 

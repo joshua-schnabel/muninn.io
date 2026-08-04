@@ -21,10 +21,25 @@
 //!
 //! # Why this is not a general HTTP client
 //!
-//! Three calls, three response shapes, one connection each. No keep-alive, no
-//! chunked transfer encoding, no streaming endpoints — `Connection: close` is
-//! requested on every request specifically so reading to EOF is always correct
-//! rather than needing a response that says how long it is.
+//! Three calls, three response shapes, one connection each. No keep-alive and
+//! no streaming endpoints — `Connection: close` is requested on every request
+//! specifically so reading to EOF is always correct rather than needing a
+//! response that says how long it is.
+//!
+//! **Chunked transfer encoding is not optional, and this was learned the hard
+//! way.** The first version of this module refused a chunked response by name,
+//! on the reasoning that none of these endpoints streams. They do not stream —
+//! the bodies are kilobytes — but the daemon builds them incrementally and
+//! chunks all three anyway. Measured against Docker 29.3.1 / API 1.54:
+//! `/containers/json`, `/images/{id}/json` and `/distribution/{ref}/json` each
+//! answer `Transfer-Encoding: chunked` with no `Content-Length`, so the module
+//! reported `docker_unreachable` against every real daemon. The unit tests did
+//! not catch it because a hand-written fake response is the shape the author
+//! expected; `scripts/image-updates-test.sh` caught it on its first run.
+//!
+//! `probe.rs` gets away without a decoder because it sends `HTTP/1.0`, which a
+//! server may not answer with chunked encoding at all — and because `/_ping`
+//! has no body worth reading. Neither is true here.
 //!
 //! # What bounds a bad peer
 //!
@@ -360,15 +375,17 @@ fn parse_response(raw: &[u8]) -> Result<Response, String> {
         .and_then(|s| s.parse::<u16>().ok())
         .ok_or_else(|| format!("no status code in '{status_line}'"))?;
 
-    // Every endpoint this client calls returns a small JSON body, never a
-    // stream. A chunked response would be silently mis-parsed as one giant
-    // malformed body below, which is worse than refusing it here by name.
+    // The Docker daemon chunks all three of these. It is not streaming — the
+    // bodies are a few kilobytes — it simply builds them incrementally and does
+    // not know the length when it writes the header. Measured against Docker
+    // 29.3.1 / API 1.54: `/containers/json`, `/images/{id}/json` and
+    // `/distribution/{ref}/json` all answer `Transfer-Encoding: chunked`, with
+    // no `Content-Length`.
     if header(&head, "transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked")) {
-        return Err(
-            "the response used chunked transfer encoding, which this client does not \
-                     support — none of the endpoints it calls should ever stream"
-                .to_string(),
-        );
+        return Ok(Response {
+            status,
+            body: decode_chunked(&body)?,
+        });
     }
 
     if let Some(len) = header(&head, "content-length").and_then(|v| v.parse::<usize>().ok()) {
@@ -376,6 +393,61 @@ fn parse_response(raw: &[u8]) -> Result<Response, String> {
     }
 
     Ok(Response { status, body })
+}
+
+/// Reassemble a chunked body.
+///
+/// `<hex-length>[;extension]CRLF <data> CRLF`, repeated, ended by a zero-length
+/// chunk. Trailers after it are ignored: none of these endpoints sends any, and
+/// nothing here would read one.
+///
+/// Deliberately strict — a length that is not hex, a chunk that runs past the
+/// end of what was read, a missing terminator are all errors rather than a
+/// best-effort partial body. A truncated container list parsed as a short one
+/// is a report that quietly omits containers, which is the failure this module
+/// exists to not have.
+fn decode_chunked(mut rest: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    loop {
+        let line_end = rest
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .ok_or_else(|| "the chunked response ended without a chunk header".to_string())?;
+
+        // A chunk extension (`1a;name=value`) is legal and carries nothing this
+        // client wants; the length is everything before the first `;`.
+        let header_line = &rest[..line_end];
+        let size_field = header_line
+            .split(|&b| b == b';')
+            .next()
+            .unwrap_or(header_line);
+        let size_text = std::str::from_utf8(size_field)
+            .map_err(|_| "a chunk length was not text".to_string())?
+            .trim();
+        let size = usize::from_str_radix(size_text, 16)
+            .map_err(|_| format!("'{size_text}' is not a chunk length"))?;
+
+        rest = &rest[line_end + 2..];
+        if size == 0 {
+            return Ok(out);
+        }
+
+        if out.len().saturating_add(size) as u64 > MAX_RESPONSE_BYTES {
+            return Err(format!(
+                "the chunked response exceeded {MAX_RESPONSE_BYTES} bytes"
+            ));
+        }
+        if rest.len() < size {
+            return Err("the chunked response ended in the middle of a chunk".to_string());
+        }
+        out.extend_from_slice(&rest[..size]);
+        rest = &rest[size..];
+
+        match rest.get(..2) {
+            Some(b"\r\n") => rest = &rest[2..],
+            _ => return Err("a chunk was not terminated by CRLF".to_string()),
+        }
+    }
 }
 
 fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
@@ -634,13 +706,69 @@ mod tests {
         assert_eq!(body_excerpt(&resp.body), "no such image");
     }
 
+    /// The bug the system suite found on its first run: the daemon chunks all
+    /// three of these endpoints, and refusing that made the module report
+    /// `docker_unreachable` against every real Docker daemon.
     #[test]
-    fn a_chunked_response_is_refused_by_name() {
+    fn a_chunked_response_is_reassembled() {
+        // Two chunks, `d` = 13 bytes then `1` = 1, so the body is only correct
+        // if both were reassembled in order.
         let mut f = Fake::new(
-            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\ntest\r\n0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n\
+             d\r\n[{\"Id\":\"abc\"}\r\n1\r\n]\r\n0\r\n\r\n",
         );
-        let e = exchange(&mut f, "/x").unwrap_err();
-        assert!(e.contains("chunked"), "{e}");
+        let resp = exchange(&mut f, "/containers/json").unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, b"[{\"Id\":\"abc\"}]");
+    }
+
+    /// A whole container list arriving as one chunk is the common case, and it
+    /// still has to come back byte-identical.
+    #[test]
+    fn a_single_chunk_body_survives_intact() {
+        let payload = CONTAINER_LIST;
+        let mut f = Fake::new(&format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            payload.len(),
+            payload
+        ));
+        let resp = exchange(&mut f, "/containers/json").unwrap();
+        assert_eq!(parse_container_list(&resp.body).unwrap().len(), 2);
+    }
+
+    /// Chunk extensions are legal and carry nothing this client wants, but a
+    /// decoder that treated `1a;name=value` as a length would fail on a peer
+    /// that is entirely within spec.
+    #[test]
+    fn a_chunk_extension_is_ignored_rather_than_read_as_a_length() {
+        let mut f = Fake::new(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;name=value\r\nhello\r\n0\r\n\r\n",
+        );
+        assert_eq!(exchange(&mut f, "/x").unwrap().body, b"hello");
+    }
+
+    /// Strict on purpose. A container list truncated mid-chunk and parsed as a
+    /// short one is a report that quietly omits containers — the exact failure
+    /// this module exists to not have.
+    #[test]
+    fn a_truncated_chunked_body_is_an_error_not_a_partial_answer() {
+        for broken in [
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nshort",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello",
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nhello\r\n0\r\n\r\n",
+        ] {
+            let mut f = Fake::new(broken);
+            assert!(
+                exchange(&mut f, "/x").is_err(),
+                "should not have decoded: {broken:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_chunked_body_decodes_to_nothing() {
+        let mut f = Fake::new("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n");
+        assert!(exchange(&mut f, "/x").unwrap().body.is_empty());
     }
 
     #[test]

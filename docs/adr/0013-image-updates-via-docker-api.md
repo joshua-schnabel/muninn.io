@@ -86,6 +86,28 @@ Reading to EOF is capped at four megabytes: the socket is root-equivalent so
 this is not a trust boundary, but an unbounded `read_to_end` does not belong in
 a client that already refuses chunked encoding for the same class of reason.
 
+**All three endpoints answer with chunked transfer encoding, and that was
+learned the expensive way.** The first version of this client refused a chunked
+response by name, reasoning that none of these endpoints streams. They do not
+stream — the bodies are kilobytes — but the daemon builds them incrementally
+and does not know the length when it writes the header, so it chunks anyway.
+Measured against Docker 29.3.1 / API 1.54: `/containers/json`,
+`/images/{id}/json` and `/distribution/{ref}/json` each answer
+`Transfer-Encoding: chunked` with no `Content-Length`. The module therefore
+reported `docker_unreachable` against **every real daemon**.
+
+Nothing caught it until `scripts/image-updates-test.sh` was run for the first
+time, and that is the lesson worth keeping: every unit test used a hand-written
+response, and a hand-written response is the shape its author expected. A
+scripted fake agrees with you. `probe.rs` escapes needing a decoder only
+because it sends `HTTP/1.0`, which a server may not answer with chunked
+encoding, and because `/_ping` has no body worth reading — neither holds here.
+
+The client now reassembles chunked bodies, strictly: a length that is not hex,
+a chunk running past what was read, or a missing terminator is an error rather
+than a best-effort partial body. A container list truncated mid-chunk and
+parsed as a short one is a report that quietly omits containers.
+
 **Transport and parsing are separate functions.** Each response shape is parsed
 by a free function over `&[u8]`, and the three calls sit behind a `DockerApi`
 trait. Both exist for testing: without them the only way to reach the verdict
@@ -137,6 +159,19 @@ reports `no_matching_repo_digest` — the invariant holds, but the module says
 through Docker's own normalisation rule: a first component containing `.` or
 `:`, or equal to `localhost`, is a registry host; anything else is Docker Hub,
 where a single-component name lives under `library/`.
+
+**`no_repo_digest` no longer means what it did.** It was written for the
+locally built image — never pulled, never pushed, so `RepoDigests` is empty and
+there is nothing to compare a tag against. With the containerd image store
+(the default from Docker 29) the daemon records a *locally computed* digest for
+a built image, so `RepoDigests` is not empty, the check goes on to ask the
+registry about a repository that was never pushed, and the answer is
+`distribution_query_failed`. The invariant is untouched — `check_success=0`, no
+verdict, either way — but the reason is less specific than it reads, and
+muninn cannot do better without parsing daemon error prose to tell "this
+repository exists nowhere" from "the registry did not answer". The reason is
+kept, because the classic image store and `docker load` still produce it;
+the ambiguity is carried by [R9](../risks.md).
 
 **A digest-pinned reference (`repo@sha256:...`) has no verdict**, and neither
 does an image *ID* where a reference belongs — which is what `docker ps` shows

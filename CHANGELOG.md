@@ -43,8 +43,15 @@ The release pipeline reads the version from this file — see
   and image reference are replaced before they reach influx line protocol —
   request-line injection on one side, a fabricated metric series on the other,
   both from strings muninn did not choose. Found in a security review before
-  this module's first release. `scripts/image-updates-test.sh` runs the whole
-  path against a real daemon, including a deliberately stale container.
+  this module's first release.
+
+  The Docker API client reassembles chunked responses. It first refused them by
+  name, on the reasoning that none of these endpoints streams — the daemon
+  chunks all three anyway, so the module reported `docker_unreachable` against
+  every real daemon. Every unit test passed; `scripts/image-updates-test.sh`,
+  which runs the whole path against a live daemon including a deliberately
+  stale container, found it on its first run. Recorded in `AGENTS.md` §6 so it
+  is not undone.
 - CI/CD, completed (WP12) — `.github/workflows/`, built to huginn.io's shape.
   Twelve jobs: format and lint, tests on stable and beta, `cargo deny`,
   coverage, the Telegraf reference check, the version gate, a per-architecture

@@ -77,30 +77,64 @@ trap cleanup EXIT
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-# The socket's group, so a non-root container can read it. Absent on Docker
-# Desktop's VM socket, where the mount is world-readable and the flag is not
-# needed.
-socket_group() {
-    stat -c %g "$SOCKET" 2>/dev/null || true
+# The group that owns the socket, as a *container* sees it.
+#
+# Not `stat` on the host, which is wrong in both directions: on Docker Desktop
+# the host has no such file at all (the socket lives in the VM), and on Linux
+# the gid a container has to name is the one inside its own user namespace.
+# Asking a throwaway container is the only answer that is right on both.
+#
+# Empty means "could not tell" — the run then goes ahead without the flag and
+# fails with a permission error that says so, which is better than silently
+# skipping the cell.
+SOCKET_GID=""
+detect_socket_group() {
+    docker run --rm -v "${SOCKET}:/var/run/docker.sock:ro" "$OLD_TAG" \
+        stat -c %g /var/run/docker.sock 2>/dev/null | tr -d '\r'
+}
+
+# The `--group-add` a non-root container needs to read a 0660 socket.
+#
+# Group 0 is included rather than skipped: on Docker Desktop the socket is
+# root:root, so 0 is the answer, and skipping it is what made every cell here
+# fail with EACCES the first time this suite was run. This is the same grant
+# docs/modules.md#docker tells an operator to make — the container stays
+# non-root, read-only and capability-free; it gains exactly the group needed to
+# open one socket.
+group_flag() {
+    [ -n "$SOCKET_GID" ] && printf '%s' "--group-add=${SOCKET_GID}"
 }
 
 # `muninn image-check` in the shipped image, hardened, against the real daemon.
 check() {
-    local gid; gid=$(socket_group)
-    local group_flag=()
-    [ -n "$gid" ] && [ "$gid" != "0" ] && group_flag=(--group-add "$gid")
-
+    local flag; flag=$(group_flag)
     docker run --rm \
         --read-only --cap-drop=ALL --security-opt no-new-privileges:true \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
-        "${group_flag[@]}" \
+        ${flag:+"$flag"} \
         -v "${SOCKET}:/var/run/docker.sock:ro" \
         "$IMAGE" image-check --endpoint unix:///var/run/docker.sock "$@" 2>/dev/null
 }
 
-# The line for one container, out of the whole report.
+# The line for one container, out of the whole report. The check line comes
+# first, so this is it rather than the verdict line.
 line_for() { # output  container_name
     echo "$1" | grep "container_name=$2," | head -1
+}
+
+# Whether the verdict line for one container carries a given value.
+#
+# The tag set between the name and the field matters: the line is
+# `...,container_name=X,image=Y update_available=0i`, so a pattern that expects
+# the field straight after the name never matches — which is how the first run
+# of this suite reported I3 and I4 red against a module that was answering
+# correctly.
+verdict_is() { # output  container_name  0|1
+    echo "$1" | grep -q "container_name=$2,[^ ]* update_available=$3i"
+}
+
+has_verdict() { # output  container_name
+    echo "$1" | grep -q "container_name=$2,[^ ]* update_available="
 }
 
 # One field or tag out of an influx line.
@@ -116,9 +150,17 @@ start_container() { # name  image  [extra docker run args...]
 
 # Everything below needs the daemon, and most of it needs Docker Hub. Checked
 # once, loudly, rather than as five identical failures.
+#
+# Reasons go to stderr rather than stdout, and this is deliberately not called
+# in a command substitution: it sets SOCKET_GID, and a subshell would discard
+# it — which is exactly how the first run of this suite got EACCES on every
+# cell that touches the socket.
 preflight() {
-    docker info >/dev/null 2>&1 || { echo "no reachable Docker daemon"; return 1; }
-    docker pull -q "$OLD_TAG" >/dev/null 2>&1 || { echo "cannot pull ${OLD_TAG}"; return 1; }
+    docker info >/dev/null 2>&1 \
+        || { echo "no reachable Docker daemon" >&2; return 1; }
+    docker pull -q "$OLD_TAG" >/dev/null 2>&1 \
+        || { echo "cannot pull ${OLD_TAG}" >&2; return 1; }
+    SOCKET_GID=$(detect_socket_group)
     return 0
 }
 
@@ -157,7 +199,7 @@ I3() { # a container on a pinned tag the registry still serves is up to date
 
     if [ "$(field "$line" check_success)" != 1 ]; then
         fail I3 "the check failed: $line"
-    elif echo "$out" | grep -q "container_name=${PREFIX}-c-current update_available=0"; then
+    elif verdict_is "$out" "${PREFIX}-c-current" 0; then
         pass I3 "a container on ${OLD_TAG} — a tag the registry has not moved — reports 0"
     else
         fail I3 "expected update_available=0, got: $out"
@@ -176,7 +218,7 @@ I4() { # THE cell: a container whose tag has moved reports 1, against a known an
 
     local out
     out=$(check --include "${PREFIX}-c-stale")
-    if echo "$out" | grep -q "container_name=${PREFIX}-c-stale update_available=1"; then
+    if verdict_is "$out" "${PREFIX}-c-stale" 1; then
         pass I4 "a container running a tag that has since moved reports an available update"
     else
         fail I4 "expected update_available=1 for a deliberately stale container, got: $out"
@@ -184,11 +226,27 @@ I4() { # THE cell: a container whose tag has moved reports 1, against a known an
     docker rm -f "${PREFIX}-c-stale" >/dev/null 2>&1
 }
 
-I5() { # a locally built image says why it cannot be judged, never "up to date"
+I5() { # an image that exists only locally is never reported as "up to date"
+    #
+    # The assertion is the invariant, not the reason token, and that is
+    # deliberate: which reason this produces depends on the daemon's image
+    # store. With the classic store a locally built image has no `RepoDigests`
+    # and this reports `no_repo_digest`; with the containerd store (Docker 29
+    # here) the daemon records a locally computed digest, so the check goes on
+    # to ask the registry about a repository that was never pushed and reports
+    # `distribution_query_failed` instead.
+    #
+    # Both are honest — `check_success=0`, no verdict — and muninn has no way
+    # to tell "this repository does not exist anywhere" from "the registry did
+    # not answer" without parsing daemon error prose. So the cell defends the
+    # property that actually matters and R9 carries the ambiguity.
     local d="$WORK/local-image"
     mkdir -p "$d"
     printf 'FROM %s\nRUN true\n' "$OLD_TAG" > "$d/Dockerfile"
-    docker build -q -t "${PREFIX}/local:v1" "$d" >/dev/null 2>&1 \
+    # `native` for the same reason every -v in this file uses it: MSYS path
+    # conversion is off, so a /c/... context path is not one the daemon can
+    # resolve.
+    docker build -q -t "${PREFIX}/local:v1" "$(native "$d")" >/dev/null 2>&1 \
         || { fail I5 "could not build a local image"; return; }
     start_container "${PREFIX}-c-local" "${PREFIX}/local:v1" \
         || { fail I5 "could not start"; return; }
@@ -197,11 +255,13 @@ I5() { # a locally built image says why it cannot be judged, never "up to date"
     out=$(check --include "${PREFIX}-c-local")
     line=$(line_for "$out" "${PREFIX}-c-local")
 
-    if echo "$line" | grep -q 'reason=no_repo_digest' \
-       && ! echo "$out" | grep -q "container_name=${PREFIX}-c-local update_available"; then
-        pass I5 "an image that was never pulled reports no_repo_digest and NO verdict"
+    if [ "$(field "$line" check_success)" = 0 ] \
+       && echo "$line" | grep -qE 'reason=(no_repo_digest|distribution_query_failed)' \
+       && ! has_verdict "$out" "${PREFIX}-c-local"; then
+        pass I5 "an image that only exists locally reports a reason and NO verdict \
+($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*/\1/p'))"
     else
-        fail I5 "expected no_repo_digest without a verdict, got: $out"
+        fail I5 "expected check_success=0 with a reason and no verdict, got: $out"
     fi
     docker rm -f "${PREFIX}-c-local" >/dev/null 2>&1
 }
@@ -312,15 +372,13 @@ outputs:
     listen: "0.0.0.0:9273"
 YAML
 
-    local gid; gid=$(socket_group)
-    local group_flag=()
-    [ -n "$gid" ] && [ "$gid" != "0" ] && group_flag=(--group-add "$gid")
+    local flag; flag=$(group_flag)
 
     docker rm -f "${PREFIX}-agent" >/dev/null 2>&1
     docker run -d --name "${PREFIX}-agent" \
         --read-only --cap-drop=ALL --security-opt no-new-privileges:true \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
-        "${group_flag[@]}" \
+        ${flag:+"$flag"} \
         -v "$(native "$WORK")/muninn-image-updates.yaml:/etc/muninn/muninn.yaml:ro" \
         -v "${SOCKET}:/var/run/docker.sock:ro" \
         -p 18082:8080 -p 19275:9273 \
@@ -387,10 +445,12 @@ echo "image_updates system tests against ${IMAGE}"
 echo "work directory ${WORK}"
 echo
 
-if ! reason=$(preflight); then
-    echo "${YELLOW}every cell needs a working daemon and Docker Hub: ${reason}${NC}" >&2
+if ! preflight; then
+    echo "${YELLOW}every cell needs a working daemon and Docker Hub${NC}" >&2
     exit 2
 fi
+echo "socket group ${SOCKET_GID:-<undetermined>}"
+echo
 
 CELLS=("$@")
 [ ${#CELLS[@]} -eq 0 ] && CELLS=(I1 I2 I3 I4 I5 I6 I7 I8 I9 I10)

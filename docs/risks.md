@@ -79,8 +79,16 @@ handling in muninn at all.
 script the daemon's answers, and `scripts/image-updates-test.sh` exercises the
 real path against Docker Hub — both public. Nothing in the repository records
 what happens when the daemon holds credentials, when they have expired, or when
-the registry answers `401` rather than failing to connect. All three land in
-`distribution_query_failed`, which is honest but undifferentiated.
+the registry answers `401` rather than failing to connect.
+
+All of those land in `distribution_query_failed`, and so does a **fourth** case
+that is not about private registries at all: an image built locally on a daemon
+using the containerd image store. That store records a locally computed digest,
+so `no_repo_digest` — the reason written for exactly this case — no longer
+fires, and the check goes on to ask a registry about a repository that was
+never pushed. Measured, on Docker 29.3.1, by cell I5 of the system suite. So
+one token now covers "unreachable", "unauthorised", "no such repository" and
+"never left this host".
 
 The invariant is not at risk: every one of those cases reports
 `check_success=0` with a reason and no verdict, never "up to date". What is at
@@ -95,9 +103,10 @@ daemon's own message on stderr, including the `401`.
 
 **Fix, if it is worth the cost.** Ground truth first — a local registry with
 authentication in the system suite — and then, if the distinction proves worth
-carrying, splitting `distribution_query_failed` into an unreachable case and an
-unauthorised one. Splitting the token without the evidence would be inventing a
-distinction rather than measuring one.
+carrying, splitting `distribution_query_failed` by cause. The locally built
+case is the cheapest of the four to separate, because the daemon's own error
+distinguishes it; the rest need evidence. Splitting the token without that
+would be inventing a distinction rather than measuring one.
 
 ## Mitigated
 

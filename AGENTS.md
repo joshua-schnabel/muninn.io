@@ -130,7 +130,7 @@ is a slower way to learn that `cargo fmt` was not run.
 
 ---
 
-## 6. Three Telegraf facts that shape the code
+## 6. Four upstream facts that shape the code
 
 Each cost real investigation and each contradicts a plausible assumption. Do not
 undo them.
@@ -153,6 +153,20 @@ Fixtures in `docs/reference/ordering-{correct,broken}.conf`.
 `inputs.system`, so the `load` and `system` modules merge into one instance. Two
 instances would collect every metric twice, and nothing would complain.
 [ADR-0008](docs/adr/0008-system-and-load-merge.md)
+
+**The Docker Engine API chunks every JSON response** — a Docker fact rather than
+a Telegraf one, and the newest of the four. `/containers/json`,
+`/images/{id}/json` and `/distribution/{ref}/json` all answer
+`Transfer-Encoding: chunked` with no `Content-Length` (measured on Docker 29.3.1
+/ API 1.54). They are not streaming endpoints; the daemon simply does not know
+the length when it writes the header. `image_updates` shipped a client that
+refused chunked responses "because none of these endpoints streams" and
+therefore reported `docker_unreachable` against every real daemon —
+`probe.rs` escapes needing a decoder only because it sends `HTTP/1.0` and reads
+no body. **Every unit test passed**: each one hand-wrote a `Content-Length`
+response, and a hand-written fake agrees with whoever wrote it. Only
+`scripts/image-updates-test.sh`, against a live daemon, found it.
+[ADR-0013](docs/adr/0013-image-updates-via-docker-api.md)
 
 ---
 
