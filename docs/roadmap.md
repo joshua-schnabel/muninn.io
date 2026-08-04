@@ -32,6 +32,15 @@ it needs an amendment to
 [ADR-0009](adr/0009-updates-module-approach.md) and its own ground truth.
 [R8](risks.md).
 
+**Measure `image_updates` against an authenticated registry.** The module is
+verified against public images only. A private registry the host can already
+pull from should work through the daemon's own stored credentials with no
+change to muninn, but nothing in the repository records that it does, or what
+an expired credential looks like — all of it lands in
+`distribution_query_failed`. Needs a local authenticated registry in
+`scripts/image-updates-test.sh` before any reason token is split.
+[R9](risks.md), [ADR-0013](adr/0013-image-updates-via-docker-api.md).
+
 **Two suppressed image findings expire 2026-11-03.** `CVE-2026-49980` and
 `GHSA-hrxh-6v49-42gf` sit in Go modules vendored into the Telegraf binary, are
 unreachable from any configuration muninn can generate, and have no upstream fix

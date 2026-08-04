@@ -26,7 +26,10 @@
 pub mod check;
 pub mod docker_api;
 
+use std::time::Duration;
+
 use muninn_core::Config;
+use muninn_core::duration::ConfigDuration;
 
 use crate::inputs::{RANK_IMAGE_UPDATES, parse_docker_endpoint};
 use crate::updates::MUNINN_BINARY;
@@ -34,6 +37,43 @@ use crate::{MonitoringModule, PluginInstance, RenderContext, Requirements};
 
 /// The subcommand that performs the check.
 pub const CHECK_SUBCOMMAND: &str = "image-check";
+
+/// The upper bound on how long one run may take, whatever the interval says.
+///
+/// Five minutes is far more than the check needs on any host it has been run
+/// against, and still short enough that a stuck run does not overlap the next
+/// one at the shortest interval validation allows.
+const MAX_BUDGET: Duration = Duration::from_secs(300);
+
+/// How much longer Telegraf waits than the check's own budget.
+///
+/// Only has to cover process start plus writing the report, because the check
+/// stops working once its budget is spent — it does not need slack for the
+/// work itself.
+const EXEC_TIMEOUT_MARGIN: Duration = Duration::from_secs(15);
+
+/// How long one run may take, derived rather than configured.
+///
+/// Half the interval, capped at [`MAX_BUDGET`]: a check that cannot finish
+/// within half its own schedule is going to overlap itself, and the operator
+/// already stated the schedule. Adding a fourth duration key for this would be
+/// asking them to keep two numbers consistent that only ever have one right
+/// relationship.
+pub fn budget(interval: Duration) -> Duration {
+    (interval / 2).min(MAX_BUDGET)
+}
+
+/// The `inputs.exec` timeout that goes with [`budget`].
+///
+/// Derived from it rather than fixed, because the two failure modes are not
+/// symmetric: a helper that overruns Telegraf's timeout is killed and reports
+/// *nothing*, losing even the verdicts it had already established, while one
+/// that runs out of its own budget still emits every result it has and marks
+/// the rest `budget_exceeded`. So Telegraf's number is always the larger, by
+/// construction rather than by a comment asking someone to keep it that way.
+pub fn exec_timeout(interval: Duration) -> Duration {
+    budget(interval) + EXEC_TIMEOUT_MARGIN
+}
 
 /// Whether a newer image is available, under the same tag, per running
 /// container.
@@ -67,6 +107,8 @@ impl MonitoringModule for ImageUpdates {
     fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
         let m = &ctx.config.modules.image_updates;
 
+        let budget = budget(m.interval.inner());
+
         let mut command = vec![
             MUNINN_BINARY.to_string(),
             CHECK_SUBCOMMAND.to_string(),
@@ -74,6 +116,10 @@ impl MonitoringModule for ImageUpdates {
             m.endpoint.clone(),
             "--timeout-secs".to_string(),
             m.timeout.as_secs().to_string(),
+            "--registry-timeout-secs".to_string(),
+            m.registry_timeout.as_secs().to_string(),
+            "--budget-secs".to_string(),
+            budget.as_secs().to_string(),
         ];
         for pattern in &m.container_include {
             command.push("--include".to_string());
@@ -92,14 +138,15 @@ impl MonitoringModule for ImageUpdates {
                 // once per container, so this is deliberately not tied to
                 // agent.interval. Same reasoning as `updates`.
                 .scalar("interval", m.interval.as_telegraf())
-                // Generous and fixed rather than derived from a container
-                // count muninn cannot know at render time: worst case is one
-                // `modules.image_updates.timeout` per Docker API call, two
-                // calls per container, run sequentially. A host with more
-                // containers than this comfortably covers should narrow
-                // `container_include`/`container_exclude` rather than widen
-                // this — see docs/modules.md#image_updates.
-                .scalar("timeout", "120s")
+                // Always longer than the budget the check was just handed, so
+                // the check runs out of its own time before Telegraf runs out
+                // of patience. That ordering is what turns "too many
+                // containers" from a killed process reporting nothing into a
+                // report where the ones not reached say `budget_exceeded`.
+                .scalar(
+                    "timeout",
+                    ConfigDuration::new(exec_timeout(m.interval.inner())).as_telegraf(),
+                )
                 .scalar("data_format", "influx")
                 // As with `updates`: the check reports its own failure as data
                 // (check_success=0) and exits 0, so a non-zero exit means the
@@ -134,15 +181,62 @@ mod tests {
     }
 
     #[test]
-    fn the_endpoint_and_timeout_reach_the_helper() {
+    fn the_endpoint_and_both_timeouts_reach_the_helper() {
         let cfg = config_with(|c| {
             c.modules.image_updates.enabled = true;
             c.modules.image_updates.endpoint = "tcp://docker-socket-proxy:2375".to_string();
-            c.modules.image_updates.timeout = muninn_core::duration::ConfigDuration::from_secs(9);
+            c.modules.image_updates.timeout = ConfigDuration::from_secs(9);
+            c.modules.image_updates.registry_timeout = ConfigDuration::from_secs(45);
         });
         let out = scalar(&rendered(&cfg), "commands");
         assert!(out.contains("--endpoint") && out.contains("tcp://docker-socket-proxy:2375"));
         assert!(out.contains("--timeout-secs") && out.contains("\"9\""));
+        assert!(out.contains("--registry-timeout-secs") && out.contains("\"45\""));
+    }
+
+    /// The property the whole budget mechanism rests on: Telegraf's patience
+    /// always outlasts the check's own, so the check reports what it found
+    /// rather than being killed holding it.
+    #[test]
+    fn telegraf_always_waits_longer_than_the_check_budgets_for_itself() {
+        for interval_secs in [60, 300, 900, 3600, 86_400] {
+            let interval = Duration::from_secs(interval_secs);
+            assert!(
+                exec_timeout(interval) > budget(interval),
+                "interval {interval_secs}s: exec timeout {:?} must exceed budget {:?}",
+                exec_timeout(interval),
+                budget(interval)
+            );
+        }
+    }
+
+    /// Half the interval, so a run cannot overlap the next one, and never more
+    /// than the cap however long the interval is.
+    #[test]
+    fn the_budget_is_half_the_interval_up_to_the_cap() {
+        assert_eq!(budget(Duration::from_secs(60)), Duration::from_secs(30));
+        assert_eq!(budget(Duration::from_secs(600)), Duration::from_secs(300));
+        assert_eq!(budget(Duration::from_secs(3600)), MAX_BUDGET);
+        assert_eq!(budget(Duration::from_secs(86_400)), MAX_BUDGET);
+    }
+
+    #[test]
+    fn the_rendered_budget_and_exec_timeout_agree_with_the_helpers() {
+        let cfg = config_with(|c| {
+            c.modules.image_updates.enabled = true;
+            c.modules.image_updates.interval = ConfigDuration::from_secs(600);
+        });
+        let instance = rendered(&cfg);
+        assert!(
+            scalar(&instance, "commands").contains("\"300\""),
+            "--budget-secs should be half of a 600s interval: {}",
+            scalar(&instance, "commands")
+        );
+        assert!(
+            scalar(&instance, "timeout").contains("315s"),
+            "{}",
+            scalar(&instance, "timeout")
+        );
     }
 
     #[test]

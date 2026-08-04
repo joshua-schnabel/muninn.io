@@ -543,6 +543,42 @@ fn image_updates_defaults_match_docker_and_updates() {
     assert!(cfg.modules.image_updates.container_exclude.is_empty());
 }
 
+/// The registry call is the one that leaves the host — a TLS handshake, a
+/// token exchange and a manifest fetch — so it does not share the local
+/// socket call's five seconds.
+#[test]
+fn the_registry_lookup_gets_a_longer_default_than_a_local_api_call() {
+    let cfg = ok(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert_eq!(cfg.modules.image_updates.registry_timeout.as_secs(), 30);
+    assert!(
+        cfg.modules.image_updates.registry_timeout > cfg.modules.image_updates.timeout,
+        "the call that reaches a registry must get more patience than one the daemon answers itself"
+    );
+}
+
+#[test]
+fn a_zero_registry_timeout_is_rejected() {
+    rejects(
+        &with("modules:\n  image_updates:\n    enabled: true\n    registry_timeout: 0s\n"),
+        "modules.image_updates.registry_timeout",
+    );
+}
+
+/// Not refused — an operator may have a reason — but the symptom of getting
+/// this backwards (`distribution_query_failed` against a registry that answers
+/// fine by hand) points nowhere near the cause, so it is named here.
+#[test]
+fn a_registry_timeout_shorter_than_the_api_timeout_warns() {
+    let w = warnings_of(&with(
+        "modules:\n  image_updates:\n    enabled: true\n    timeout: 30s\n    \
+         registry_timeout: 5s\n",
+    ));
+    assert!(
+        w.iter().any(|s| s.contains("registry_timeout")),
+        "expected a warning about the inverted timeouts, got: {w:?}"
+    );
+}
+
 #[test]
 fn an_empty_host_mount_prefix_warns_when_host_modules_are_on() {
     let w = warnings_of(&with("runtime:\n  host_mount_prefix: \"\"\n"));

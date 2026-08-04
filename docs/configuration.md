@@ -294,7 +294,7 @@ modules:
 | `network` | off | `include_interfaces`, `exclude_interfaces` | host `/proc` |
 | `docker` | off | `endpoint`, `container_include`, `container_exclude`, `container_states`, `timeout` | Docker socket |
 | `updates` | off | `interval`, `security_only_metric` | host `/hostfs` (same mount as the rest) |
-| `image_updates` | off | `endpoint`, `timeout`, `interval`, `container_include`, `container_exclude` | Docker socket |
+| `image_updates` | off | `endpoint`, `timeout`, `registry_timeout`, `interval`, `container_include`, `container_exclude` | Docker socket |
 
 ### Include and exclude
 
@@ -378,6 +378,23 @@ Telegraf runs. Per-reason causes and fixes are in
 
 Registry lookups are rate-limited, so `interval` defaults to `1h` and, like
 `modules.updates.interval`, is rejected below one minute.
+
+**Two timeouts, because the calls are not alike.** `timeout` (default `5s`)
+bounds a call the daemon answers out of its own state, and the startup probe.
+`registry_timeout` (default `30s`) bounds the one call that leaves the host —
+the daemon does a TLS handshake, a token exchange and a manifest fetch to
+answer it, and holding that to five seconds reports `distribution_query_failed`
+for a registry that was merely slow. Setting `registry_timeout` below `timeout`
+is allowed but warned about; it is almost always a mistake, and its symptom
+points nowhere near its cause.
+
+**`interval` also bounds one run.** The check spends at most half of it before
+reporting the containers it did not reach as `budget_exceeded`, and the
+`inputs.exec` timeout muninn renders is always larger than that. The ordering
+is deliberate: a helper Telegraf kills reports *nothing*, losing the verdicts
+it had already established, while one that runs out of its own budget still
+emits every result it has. Neither number is configurable on its own — see
+[`modules.md`](modules.md#image_updates).
 
 ---
 

@@ -64,6 +64,41 @@ It is a second apt invocation and a second parser, and it would change numbers
 that were measured, so it needs its own ADR amendment and its own ground truth
 rather than a quiet change here.
 
+## R9 — image_updates is verified against public registries only
+
+**Severity: medium · Status: known limit, documented**
+
+The `image_updates` module never speaks to a registry itself: it asks the
+Docker daemon to resolve each container's tag, and the daemon uses whatever
+registry credentials the host is already configured with
+([ADR-0013](adr/0013-image-updates-via-docker-api.md)). That should mean a
+private registry the host can already pull from works with no credential
+handling in muninn at all.
+
+**"Should" is the risk.** That path has not been measured. The unit tests
+script the daemon's answers, and `scripts/image-updates-test.sh` exercises the
+real path against Docker Hub — both public. Nothing in the repository records
+what happens when the daemon holds credentials, when they have expired, or when
+the registry answers `401` rather than failing to connect. All three land in
+`distribution_query_failed`, which is honest but undifferentiated.
+
+The invariant is not at risk: every one of those cases reports
+`check_success=0` with a reason and no verdict, never "up to date". What is at
+risk is usefulness — an operator on a private registry may get a module that
+reports nothing but failures, and a reason token that does not tell them which
+of the three it is.
+
+**Mitigation.** Stated plainly at the metric, in
+[`modules.md`](modules.md#image_updates), and in the ADR's consequences. An
+operator can tell the difference by hand today: `muninn image-check` prints the
+daemon's own message on stderr, including the `401`.
+
+**Fix, if it is worth the cost.** Ground truth first — a local registry with
+authentication in the system suite — and then, if the distinction proves worth
+carrying, splitting `distribution_query_failed` into an unreachable case and an
+unauthorised one. Splitting the token without the evidence would be inventing a
+distinction rather than measuring one.
+
 ## Mitigated
 
 Real failure modes, each closed by a decision that is documented where the

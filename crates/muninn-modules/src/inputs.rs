@@ -20,12 +20,12 @@ use crate::{Endpoint, EndpointKind, MonitoringModule, RenderContext, Requirement
 /// `unix:///var/run/docker.sock` → a socket file.
 /// `tcp://docker-socket-proxy:2375` → an address.
 ///
-/// `pub` rather than `pub(crate)`: both `docker` and `image_updates` use it to
-/// derive their [`Requirements`], and the `muninn` binary's `image-check`
-/// subcommand uses it a third time to turn `--endpoint` back into an
-/// [`Endpoint`] before calling [`crate::image_updates::check::check`] — the
-/// same parsing, not a second implementation of it.
-pub fn parse_docker_endpoint(endpoint: &str, timeout: Duration) -> Option<Endpoint> {
+/// Used by `docker` and `image_updates` to derive their [`Requirements`], and
+/// by [`crate::image_updates::check::check`] to turn an `--endpoint` argument
+/// back into an [`Endpoint`] — the same parsing in all three places, not a
+/// second implementation of it. All three are inside this crate, so the
+/// endpoint grammar stays a crate-internal detail.
+pub(crate) fn parse_docker_endpoint(endpoint: &str, timeout: Duration) -> Option<Endpoint> {
     let kind = if let Some(path) = endpoint.strip_prefix("unix://") {
         (!path.is_empty()).then(|| EndpointKind::UnixSocket(path.to_string()))
     } else if let Some(addr) = endpoint.strip_prefix("tcp://") {

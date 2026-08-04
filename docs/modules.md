@@ -692,6 +692,7 @@ modules:
     enabled: false
     endpoint: "unix:///var/run/docker.sock"
     timeout: 5s
+    registry_timeout: 30s
     interval: 1h
     container_include: []
     container_exclude: []
@@ -700,15 +701,17 @@ modules:
 | Option | Type | Default | Effect |
 |---|---|---|---|
 | `endpoint` | URL | `unix:///var/run/docker.sock` | Same meaning as `modules.docker.endpoint` — see [docker](#docker) |
-| `timeout` | duration | `5s` | Per Docker API call, and for the startup reachability probe |
-| `interval` | duration | `1h` | Own schedule — see below |
+| `timeout` | duration | `5s` | Per Docker API call the daemon answers itself, and for the startup reachability probe |
+| `registry_timeout` | duration | `30s` | For the one call that reaches a registry — see below |
+| `interval` | duration | `1h` | Own schedule, and the run's own budget — see below |
 | `container_include` | list of globs | `[]` | Container names to check (allow-list) |
 | `container_exclude` | list of globs | `[]` | Container names to skip |
 
 **Renders to** `[[inputs.exec]]` with `data_format = "influx"`, running
 
 ```toml
-commands = [["/usr/local/bin/muninn", "image-check", "--endpoint", "unix:///var/run/docker.sock", "--timeout-secs", "5"]]
+commands = [["/usr/local/bin/muninn", "image-check", "--endpoint", "unix:///var/run/docker.sock", "--timeout-secs", "5", "--registry-timeout-secs", "30", "--budget-secs", "300"]]
+timeout = "315s"
 ```
 
 Telegraf has no plugin for this either — see [updates](#updates) for the same
@@ -796,21 +799,37 @@ Per container (`muninn_container_image_updates`):
 | `reason` | Cause | Fix |
 |---|---|---|
 | `digest_pinned_reference` | the container's image is already `repo@sha256:...` | nothing to fix — there is no tag for a newer image to appear under |
+| `image_id_reference` | `docker ps` shows an image ID under IMAGE, because every tag for the running image has been removed | re-tag the image, or recreate the container from a tagged one |
 | `no_repo_digest` | the image was never pulled from, or pushed to, a registry | expected for a locally built image; nothing to fix |
 | `no_matching_repo_digest` | the daemon recorded digests, but none for this repository | usually a `docker tag` onto an image pulled under a different name |
 | `image_inspect_failed` | `GET /images/{id}/json` failed | see stderr; the image may have been removed since the container started |
-| `distribution_query_failed` | the daemon could not resolve the tag against the registry | unreachable registry, a tag that no longer exists, or authentication the daemon does not have |
+| `distribution_query_failed` | the daemon could not resolve the tag against the registry | unreachable registry, a tag that no longer exists, authentication the daemon does not have, or a `registry_timeout` too short for the round trip |
+| `budget_exceeded` | the run ran out of time before reaching this container | narrow `container_include`/`container_exclude`, or raise `interval` — the budget is half of it |
+
+Repository names are normalised before they are compared, so a container
+created as `docker.io/library/nginx` matches the familiar `nginx@sha256:...`
+the daemon records for it. Without that, an entirely ordinary container reports
+`no_matching_repo_digest`.
 
 ### Cost scales with the container count
 
-Each container costs one or two Docker API round trips, run sequentially
-rather than in parallel — the container counts this module is verified
-against are small enough that the added complexity of parallelising them was
-not worth it. The rendered `inputs.exec` `timeout` is a fixed `120s` rather
-than derived from a count muninn cannot know at render time. A host with more
-containers than that comfortably covers in `modules.image_updates.timeout` ×
-2 × container-count should narrow `container_include`/`container_exclude`
-rather than assume the timeout will grow to match.
+Each container costs one or two Docker API round trips, run sequentially rather
+than in parallel — the container counts this module is verified against are
+small enough that the added complexity of parallelising them was not worth it.
+
+**So the run carries a budget: half of `interval`, capped at five minutes.**
+Containers not reached within it report `budget_exceeded` rather than being
+silently absent, and the `inputs.exec` `timeout` muninn renders is always
+larger than the budget it just handed the check. That ordering is the whole
+point: a helper Telegraf kills reports *nothing*, losing the verdicts it had
+already established, while one that runs out of its own budget still emits
+every result it has. With the defaults that is a 300s budget and a 315s
+timeout.
+
+Neither number is a config key. The relationship between them only has one
+right answer, and two keys would be two ways to get it wrong. A host that
+regularly reports `budget_exceeded` should narrow
+`container_include`/`container_exclude`, or raise `interval`.
 
 **Registries rate-limit anonymous callers.** Docker Hub allows 100 anonymous
 pulls per 6 hours per IP, and a manifest lookup counts against it — one reason
@@ -821,8 +840,20 @@ refuses anything under a minute.
 configured to pull from should work through the daemon's own credentials with
 no change to muninn, but that path has not been measured the way
 [the updates module's evidence](updates-evidence.md) measured Debian and
-Ubuntu hosts. See [ADR-0013](adr/0013-image-updates-via-docker-api.md) and
-[`docs/roadmap.md`](roadmap.md).
+Ubuntu hosts. See [ADR-0013](adr/0013-image-updates-via-docker-api.md),
+[R9](risks.md) and [`roadmap.md`](roadmap.md).
+
+### Checking it against a real daemon
+
+`scripts/image-updates-test.sh` is this module's system suite, the counterpart
+to `updates-test.sh`. It runs the shipped image against the host's own Docker
+daemon with containers it creates itself — including one deliberately made
+stale by re-tagging, so `update_available=1` is asserted against a known
+answer rather than against whatever the registry happens to serve.
+
+```bash
+bash scripts/image-updates-test.sh          # against muninn:dev
+```
 
 **Limits.** Running containers only, matching the question this module
 answers — a stopped container's image is not being served by anything.

@@ -204,6 +204,20 @@ pub fn build(ctx: &RenderContext<'_>) -> TelegrafConfig {
     config
 }
 
+/// Seconds since the Unix epoch, for the `check_timestamp_seconds` field both
+/// `inputs.exec` modules emit.
+///
+/// Zero rather than an error on a clock before the epoch: this is a field in a
+/// metric line, and a check that otherwise succeeded should not fail to report
+/// because the host's clock is absurd. A timestamp of zero is obviously wrong
+/// in a way a wrong-but-plausible one would not be.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// The requirements of every enabled module, collected.
 ///
 /// What `muninn check-runtime` walks.

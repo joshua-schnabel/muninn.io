@@ -120,13 +120,32 @@ pub enum Command {
         #[arg(long)]
         endpoint: String,
 
-        /// How long to wait for each individual Docker API call.
+        /// How long to wait for each Docker API call the daemon answers from
+        /// its own state.
         ///
         /// Rendered from `modules.image_updates.timeout`. A plain integer
         /// rather than a duration string: this is one process argument among
         /// several, not a YAML value an operator hand-edits.
         #[arg(long, default_value_t = 5)]
         timeout_secs: u64,
+
+        /// How long to wait for the one call that reaches a registry.
+        ///
+        /// Rendered from `modules.image_updates.registry_timeout`. Longer than
+        /// `--timeout-secs` because the daemon has to do a TLS handshake, a
+        /// token exchange and a manifest fetch to answer it.
+        #[arg(long, default_value_t = 30)]
+        registry_timeout_secs: u64,
+
+        /// How long the whole run may take before the containers not yet
+        /// reached are reported as `budget_exceeded`.
+        ///
+        /// Rendered from `modules.image_updates.interval`, and always shorter
+        /// than the `inputs.exec` timeout Telegraf enforces — a helper that
+        /// runs out of budget still reports what it found, while one Telegraf
+        /// kills reports nothing at all.
+        #[arg(long, default_value_t = 300)]
+        budget_secs: u64,
 
         /// Container name glob to include. May be given more than once; an
         /// empty list means every running container.
@@ -223,6 +242,10 @@ mod tests {
                 "tcp://proxy:2375",
                 "--timeout-secs",
                 "10",
+                "--registry-timeout-secs",
+                "45",
+                "--budget-secs",
+                "120",
                 "--include",
                 "app-*",
                 "--exclude",

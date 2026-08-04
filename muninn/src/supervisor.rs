@@ -251,25 +251,57 @@ async fn check_updates_once(config: &Config, state: &HealthState) {
 /// [`crate::probe::docker`]); what this check can still fail on is a single
 /// container's registry lookup, which does not call for taking every other
 /// module out of service.
+///
+/// **And it is bounded twice.** The check carries its own budget, so a host
+/// with many containers reports the ones it did not reach rather than running
+/// forever — but a single call blocked below the timeout the socket was given
+/// is still possible, and this runs *before* [`supervise`] starts multiplexing
+/// signals. An unbounded wait here is a SIGTERM the container does not answer.
+/// So the wait is capped as well, and a check that overruns it is abandoned:
+/// the blocking thread cannot be cancelled, but muninn stops waiting for it
+/// and goes on to supervise.
 async fn check_image_updates_once(config: &Config, state: &HealthState) {
-    use muninn_modules::image_updates::check;
+    use muninn_modules::image_updates::{budget, check, exec_timeout};
 
     let m = &config.modules.image_updates;
     let endpoint = m.endpoint.clone();
     let timeout = m.timeout.inner();
+    let registry_timeout = m.registry_timeout.inner();
+    let budget = budget(m.interval.inner());
     let include = m.container_include.clone();
     let exclude = m.container_exclude.clone();
 
+    // The same cap Telegraf puts on the same check, for the same reason. If
+    // the check honoured its budget this never fires.
+    let cap = exec_timeout(m.interval.inner());
+
     // On a blocking thread: this makes one or more real network calls per
     // running container, and the reactor is also serving health checks.
-    let report =
-        tokio::task::spawn_blocking(move || check::check(&endpoint, timeout, &include, &exclude))
-            .await;
+    let task = tokio::task::spawn_blocking(move || {
+        check::check(
+            &endpoint,
+            timeout,
+            registry_timeout,
+            budget,
+            &include,
+            &exclude,
+        )
+    });
 
-    let report = match report {
-        Ok(r) => r,
-        Err(e) => {
+    let report = match tokio::time::timeout(cap, task).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             warn!(error = %e, "the image update check did not complete");
+            state.record_module_check("image_updates", false);
+            transition(state, State::Degraded);
+            return;
+        }
+        Err(_) => {
+            warn!(
+                after_seconds = cap.as_secs(),
+                "the image update check did not return in time and was abandoned — muninn \
+                 continues supervising, and Telegraf runs the same check on its own schedule"
+            );
             state.record_module_check("image_updates", false);
             transition(state, State::Degraded);
             return;

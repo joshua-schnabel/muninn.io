@@ -102,10 +102,19 @@ fn dispatch(args: &Cli) -> muninn_core::Result<()> {
         Command::ImageCheck {
             endpoint,
             timeout_secs,
+            registry_timeout_secs,
+            budget_secs,
             include,
             exclude,
         } => {
-            image_check(endpoint, *timeout_secs, include, exclude);
+            image_check(
+                endpoint,
+                *timeout_secs,
+                *registry_timeout_secs,
+                *budget_secs,
+                include,
+                exclude,
+            );
             Ok(())
         }
     }
@@ -377,12 +386,22 @@ fn update_check(hostfs: Option<&std::path::Path>, security_metric: bool) {
 /// code: the line protocol on stdout is the answer, whether that is a verdict
 /// per container or `check_success=0` with a reason, and stderr carries the
 /// detail. See `crates/muninn-modules/src/image_updates/`.
-fn image_check(endpoint: &str, timeout_secs: u64, include: &[String], exclude: &[String]) {
+fn image_check(
+    endpoint: &str,
+    timeout_secs: u64,
+    registry_timeout_secs: u64,
+    budget_secs: u64,
+    include: &[String],
+    exclude: &[String],
+) {
     use muninn_modules::image_updates::check;
+    use std::time::Duration;
 
     let report = check::check(
         endpoint,
-        std::time::Duration::from_secs(timeout_secs),
+        Duration::from_secs(timeout_secs),
+        Duration::from_secs(registry_timeout_secs),
+        Duration::from_secs(budget_secs),
         include,
         exclude,
     );

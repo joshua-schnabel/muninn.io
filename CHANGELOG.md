@@ -24,11 +24,27 @@ The release pipeline reads the version from this file — see
   failed check degrades that one container's series rather than muninn as a
   whole. See [`docs/modules.md#image_updates`](docs/modules.md#image_updates)
   and [ADR-0013](docs/adr/0013-image-updates-via-docker-api.md). Adds
-  `serde_json` as a dependency, in `muninn-modules` only. Every request path
-  the module's Docker API client builds is checked for a control character or
-  a space before it is sent, closing off request-line injection at the one
-  place muninn writes a raw HTTP request from daemon-reported strings —
-  found in a security review before this module's first release.
+  `serde_json` as a dependency, in `muninn-modules` only.
+
+  Repository names are normalised before they are compared, so a container
+  created as `docker.io/library/nginx` is judged rather than dismissed as a
+  different repository; an image ID where a reference belongs gets its own
+  reason (`image_id_reference`) instead of a true answer to a nonsense
+  question. The registry lookup has its own, longer timeout
+  (`registry_timeout`, default `30s`) because it is the one call that leaves
+  the host. The run carries a budget of half its interval: containers not
+  reached report `budget_exceeded` rather than the whole helper being killed by
+  Telegraf holding results it had already found, and the rendered `inputs.exec`
+  timeout is derived from that budget so the ordering holds by construction.
+
+  Two guards close the same class of hole in both directions: every request
+  path the module's Docker API client builds is checked for a control character
+  or a space before it is sent, and control characters in the container name
+  and image reference are replaced before they reach influx line protocol —
+  request-line injection on one side, a fabricated metric series on the other,
+  both from strings muninn did not choose. Found in a security review before
+  this module's first release. `scripts/image-updates-test.sh` runs the whole
+  path against a real daemon, including a deliberately stale container.
 - CI/CD, completed (WP12) — `.github/workflows/`, built to huginn.io's shape.
   Twelve jobs: format and lint, tests on stable and beta, `cargo deny`,
   coverage, the Telegraf reference check, the version gate, a per-architecture

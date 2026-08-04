@@ -356,13 +356,28 @@ pub struct ImageUpdatesModule {
     pub enabled: bool,
     #[serde(default = "default_docker_endpoint")]
     pub endpoint: String,
-    /// Also the timeout for the startup reachability probe and for each
-    /// individual Docker API call the check makes.
+    /// The timeout for the startup reachability probe, and for each Docker API
+    /// call the daemon answers out of its own state.
+    ///
+    /// Not for the registry lookup — see [`Self::registry_timeout`].
     #[serde(default = "default_docker_timeout")]
     pub timeout: ConfigDuration,
+    /// The timeout for the one call that leaves the host.
+    ///
+    /// `GET /distribution/{ref}/json` makes the daemon perform a TLS
+    /// handshake, a token exchange and a manifest fetch against a possibly
+    /// distant registry. Holding that to the same five seconds as a local
+    /// socket call reports `distribution_query_failed` for a registry that was
+    /// merely slow, so it gets its own, longer default.
+    #[serde(default = "default_registry_timeout")]
+    pub registry_timeout: ConfigDuration,
     /// Registry lookups are rate-limited and comparatively expensive, so this
     /// runs on its own schedule rather than at `agent.interval` — the same
     /// reasoning as [`UpdatesModule::interval`].
+    ///
+    /// It also bounds one run: the check spends at most half its own interval
+    /// before reporting the containers it did not reach, so that Telegraf
+    /// never kills it mid-report.
     #[serde(default = "default_updates_interval")]
     pub interval: ConfigDuration,
     #[serde(default)]
@@ -371,12 +386,17 @@ pub struct ImageUpdatesModule {
     pub container_exclude: Vec<String>,
 }
 
+fn default_registry_timeout() -> ConfigDuration {
+    ConfigDuration::from_secs(30)
+}
+
 impl Default for ImageUpdatesModule {
     fn default() -> Self {
         Self {
             enabled: false,
             endpoint: default_docker_endpoint(),
             timeout: default_docker_timeout(),
+            registry_timeout: default_registry_timeout(),
             interval: default_updates_interval(),
             container_include: Vec::new(),
             container_exclude: Vec::new(),

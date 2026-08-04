@@ -53,7 +53,7 @@ untested can ship.
 | `build` | Docker build per architecture into `image.tar` | build failure, Telegraf checksum mismatch |
 | `scan` | Trivy on the artefact | **fixable** CRITICAL/HIGH |
 | `integration` | Load the image; `integration-test.sh` then `container-test.sh` | any assertion |
-| `updates` | Load the image; `updates-test.sh` against real Debian and Ubuntu trees | any assertion |
+| `updates` | Load the image; `updates-test.sh` against real Debian and Ubuntu trees, then `image-updates-test.sh` against the runner's own daemon | any assertion |
 | `push` / `publish` | Push by digest, assemble the manifest, mirror to ghcr, create the tag | — |
 
 `version-gate` **always runs** and decides internally whether to enforce. A

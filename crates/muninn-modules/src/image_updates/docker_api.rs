@@ -24,8 +24,25 @@
 //! Three calls, three response shapes, one connection each. No keep-alive, no
 //! chunked transfer encoding, no streaming endpoints — `Connection: close` is
 //! requested on every request specifically so reading to EOF is always correct
-//! and a hung peer is bounded by the endpoint's timeout rather than by a
-//! response that never says how long it is.
+//! rather than needing a response that says how long it is.
+//!
+//! # What bounds a bad peer
+//!
+//! Two things, and neither is a total deadline: `set_read_timeout` bounds each
+//! individual `read`, not the exchange, so a peer dripping one byte per
+//! interval keeps a connection alive indefinitely; and [`MAX_RESPONSE_BYTES`]
+//! bounds how much of a response is ever held in memory. The total-time bound
+//! is one level up — [`super::check::check`] carries a deadline across all
+//! containers, which is what actually stops a slow daemon from running the
+//! check past the point Telegraf would kill it.
+//!
+//! # Transport and parsing are separate
+//!
+//! Every response shape is parsed by a free function taking `&[u8]`
+//! ([`parse_container_list`] and friends), so the mapping from the daemon's
+//! JSON to this module's types is testable without a daemon, a socket or a
+//! fake stream. [`Client`] is the only part that does I/O, and [`DockerApi`]
+//! is the seam [`super::check`] tests its verdict logic against.
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -42,6 +59,17 @@ use crate::{Endpoint, EndpointKind};
 /// changes: this module only ever asks about running containers.
 const RUNNING_FILTER: &str = "filters=%7B%22status%22%3A%5B%22running%22%5D%7D";
 
+/// The most of a response this client will hold in memory.
+///
+/// Every endpoint it calls returns a small JSON document — a container list, an
+/// image inspect, a manifest descriptor. Four megabytes is far above any of
+/// them and far below a problem. Without it, `read_to_end` on a socket whose
+/// peer is compromised, or simply wrong, is an unbounded allocation; the
+/// Docker socket is root-equivalent so this is not a trust boundary, but an
+/// unbounded read is not something to leave in a client that already refuses
+/// chunked encoding for the same class of reason.
+pub const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
+
 /// One container the daemon reports as running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Container {
@@ -50,7 +78,9 @@ pub struct Container {
     /// chance a container has no name.
     pub name: String,
     /// The reference the container was created with, e.g. `nginx:latest` or
-    /// `ghcr.io/org/app:v2`. Exactly what `docker ps` shows under IMAGE.
+    /// `ghcr.io/org/app:v2`. Exactly what `docker ps` shows under IMAGE —
+    /// which, for a container whose tag has since been removed, is an image
+    /// ID rather than a reference. [`super::check`] detects that case.
     pub image_reference: String,
     /// `sha256:...` — the specific local image this container is running,
     /// which is not necessarily the image its tag currently points to if the
@@ -58,8 +88,103 @@ pub struct Container {
     pub image_id: String,
 }
 
-/// The running containers the daemon at `endpoint` currently reports.
-pub fn list_running_containers(endpoint: &Endpoint) -> Result<Vec<Container>, String> {
+/// The three calls this module makes, behind a trait.
+///
+/// Not an abstraction for its own sake: the verdict logic in [`super::check`]
+/// is the part of this module worth testing hardest, and it is also the part
+/// that would otherwise need a live Docker daemon to reach. With this seam a
+/// unit test can hand it any combination of `RepoDigests` and registry digest
+/// — including the failure combinations a real daemon is hard to talk into
+/// producing — and assert on the verdict.
+pub trait DockerApi {
+    fn list_running_containers(&self) -> Result<Vec<Container>, String>;
+    fn repo_digests(&self, image_id: &str) -> Result<Vec<String>, String>;
+    fn remote_digest(&self, image_reference: &str) -> Result<String, String>;
+}
+
+/// A [`DockerApi`] backed by a real endpoint.
+///
+/// Carries two timeouts because the calls are not alike: `/containers/json`
+/// and `/images/{id}/json` are answered by the daemon out of its own state,
+/// while `/distribution/{ref}/json` makes the daemon perform a TLS handshake,
+/// a token exchange and a manifest fetch against a possibly distant registry.
+/// One timeout for both would have to be either too loose for the local calls
+/// or too tight for the remote one — and too tight there reports
+/// `distribution_query_failed` for a registry that was merely slow, which is
+/// exactly the confident-wrong-ish answer this module exists to avoid.
+pub struct Client {
+    endpoint: Endpoint,
+    registry_timeout: Duration,
+}
+
+impl Client {
+    pub fn new(endpoint: Endpoint, registry_timeout: Duration) -> Self {
+        Client {
+            endpoint,
+            registry_timeout,
+        }
+    }
+
+    /// The same endpoint, with the registry timeout in place of the API one.
+    fn registry_endpoint(&self) -> Endpoint {
+        Endpoint {
+            kind: self.endpoint.kind.clone(),
+            timeout: self.registry_timeout,
+        }
+    }
+}
+
+impl DockerApi for Client {
+    fn list_running_containers(&self) -> Result<Vec<Container>, String> {
+        let path = format!("/containers/json?{RUNNING_FILTER}");
+        let resp = get(&self.endpoint, &path)?;
+        if resp.status != 200 {
+            return Err(format!(
+                "GET /containers/json answered {}: {}",
+                resp.status,
+                body_excerpt(&resp.body)
+            ));
+        }
+        parse_container_list(&resp.body)
+    }
+
+    fn repo_digests(&self, image_id: &str) -> Result<Vec<String>, String> {
+        let path = format!("/images/{image_id}/json");
+        let resp = get(&self.endpoint, &path)?;
+        if resp.status != 200 {
+            return Err(format!(
+                "GET {path} answered {}: {}",
+                resp.status,
+                body_excerpt(&resp.body)
+            ));
+        }
+        parse_repo_digests(&resp.body)
+    }
+
+    fn remote_digest(&self, image_reference: &str) -> Result<String, String> {
+        // Neither `/` nor `:` needs percent-encoding in a path segment (RFC 3986
+        // pchar), and the daemon's own routing for this endpoint expects the
+        // reference exactly as `docker pull` would take it — encoding it would be
+        // asking for a path this route does not match.
+        let path = format!("/distribution/{image_reference}/json");
+        let resp = get(&self.registry_endpoint(), &path)?;
+        if resp.status != 200 {
+            return Err(format!(
+                "GET {path} answered {}: {}",
+                resp.status,
+                body_excerpt(&resp.body)
+            ));
+        }
+        parse_remote_digest(&resp.body)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing — no I/O, so every shape below is unit-testable on its own
+// ---------------------------------------------------------------------------
+
+/// The running containers in a `GET /containers/json` response.
+pub fn parse_container_list(body: &[u8]) -> Result<Vec<Container>, String> {
     #[derive(Deserialize)]
     struct ContainerSummary {
         #[serde(rename = "Id")]
@@ -72,16 +197,7 @@ pub fn list_running_containers(endpoint: &Endpoint) -> Result<Vec<Container>, St
         image_id: String,
     }
 
-    let path = format!("/containers/json?{RUNNING_FILTER}");
-    let resp = get(endpoint, &path)?;
-    if resp.status != 200 {
-        return Err(format!(
-            "GET /containers/json answered {}: {}",
-            resp.status,
-            body_excerpt(&resp.body)
-        ));
-    }
-    let raw: Vec<ContainerSummary> = serde_json::from_slice(&resp.body)
+    let raw: Vec<ContainerSummary> = serde_json::from_slice(body)
         .map_err(|e| format!("could not parse the container list: {e}"))?;
 
     Ok(raw
@@ -91,6 +207,7 @@ pub fn list_running_containers(endpoint: &Endpoint) -> Result<Vec<Container>, St
                 .names
                 .first()
                 .map(|n| n.trim_start_matches('/').to_string())
+                .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| c.id.chars().take(12).collect()),
             image_reference: c.image,
             image_id: c.image_id,
@@ -98,38 +215,27 @@ pub fn list_running_containers(endpoint: &Endpoint) -> Result<Vec<Container>, St
         .collect())
 }
 
-/// The digests the daemon recorded when `image_id` was last pulled from a
-/// registry. Empty for an image that was built locally and never pulled or
-/// pushed — there is nothing to compare against a tag in that case.
-pub fn repo_digests(endpoint: &Endpoint, image_id: &str) -> Result<Vec<String>, String> {
+/// The digests the daemon recorded when the inspected image was last pulled
+/// from, or pushed to, a registry. Empty for an image that was built locally —
+/// there is nothing to compare against a tag in that case.
+pub fn parse_repo_digests(body: &[u8]) -> Result<Vec<String>, String> {
     #[derive(Deserialize)]
     struct ImageInspect {
         #[serde(default, rename = "RepoDigests")]
         repo_digests: Vec<String>,
     }
 
-    let path = format!("/images/{image_id}/json");
-    let resp = get(endpoint, &path)?;
-    if resp.status != 200 {
-        return Err(format!(
-            "GET {path} answered {}: {}",
-            resp.status,
-            body_excerpt(&resp.body)
-        ));
-    }
-    let inspect: ImageInspect = serde_json::from_slice(&resp.body)
+    let inspect: ImageInspect = serde_json::from_slice(body)
         .map_err(|e| format!("could not parse the image inspect: {e}"))?;
     Ok(inspect.repo_digests)
 }
 
-/// The manifest digest the registry currently serves for `image_reference`
-/// (e.g. `nginx:latest`), as resolved by the daemon.
+/// The manifest digest a `GET /distribution/{ref}/json` response carries.
 ///
-/// This is the one call that reaches outside the host: the daemon contacts the
-/// registry to answer it, using whatever registry credentials it is already
-/// configured with. An anonymous, unauthenticated lookup is what happens for a
-/// public image, which is the only case this module is verified against.
-pub fn remote_digest(endpoint: &Endpoint, image_reference: &str) -> Result<String, String> {
+/// For a multi-architecture image this is the digest of the manifest *list*,
+/// which is also what `RepoDigests` records on a `docker pull` — so the two
+/// sides of the comparison are the same kind of digest.
+pub fn parse_remote_digest(body: &[u8]) -> Result<String, String> {
     #[derive(Deserialize)]
     struct DistributionInspect {
         #[serde(rename = "Descriptor")]
@@ -140,20 +246,7 @@ pub fn remote_digest(endpoint: &Endpoint, image_reference: &str) -> Result<Strin
         digest: String,
     }
 
-    // Neither `/` nor `:` needs percent-encoding in a path segment (RFC 3986
-    // pchar), and the daemon's own routing for this endpoint expects the
-    // reference exactly as `docker pull` would take it — encoding it would be
-    // asking for a path this route does not match.
-    let path = format!("/distribution/{image_reference}/json");
-    let resp = get(endpoint, &path)?;
-    if resp.status != 200 {
-        return Err(format!(
-            "GET {path} answered {}: {}",
-            resp.status,
-            body_excerpt(&resp.body)
-        ));
-    }
-    let inspect: DistributionInspect = serde_json::from_slice(&resp.body)
+    let inspect: DistributionInspect = serde_json::from_slice(body)
         .map_err(|e| format!("could not parse the distribution inspect: {e}"))?;
     Ok(inspect.descriptor.digest)
 }
@@ -236,11 +329,18 @@ fn exchange<S: Read + Write>(stream: &mut S, path: &str) -> Result<Response, Str
     // `Connection: close` was just asked for, so the peer closing the stream is
     // the correct end-of-response signal — the same reasoning that makes
     // HTTP/1.0 sufficient for the `/_ping` probe, extended to a request that
-    // also needs the body.
+    // also needs the body. Read one byte past the cap so hitting it is
+    // distinguishable from a response that happens to be exactly that long.
     let mut raw = Vec::new();
-    stream
+    Read::take(&mut *stream, MAX_RESPONSE_BYTES + 1)
         .read_to_end(&mut raw)
         .map_err(|e| format!("reading the response to '{path}' failed: {e}"))?;
+    if raw.len() as u64 > MAX_RESPONSE_BYTES {
+        return Err(format!(
+            "the response to '{path}' exceeded {MAX_RESPONSE_BYTES} bytes — none of the endpoints \
+             this client calls returns anything close to that"
+        ));
+    }
 
     parse_response(&raw)
 }
@@ -333,6 +433,128 @@ mod tests {
         }
     }
 
+    // ── Parsing ─────────────────────────────────────────────────────────────
+
+    /// A trimmed-down but otherwise verbatim `GET /containers/json` response.
+    const CONTAINER_LIST: &str = r#"[
+      {"Id":"9c1f2b3a4d5e6f708192a3b4c5d6e7f8",
+       "Names":["/web"],
+       "Image":"nginx:1.25",
+       "ImageID":"sha256:aaaa",
+       "State":"running"},
+      {"Id":"1a2b3c4d5e6f708192a3b4c5d6e7f809",
+       "Names":["/db","/compose_db_1"],
+       "Image":"postgres:16",
+       "ImageID":"sha256:bbbb",
+       "State":"running"}
+    ]"#;
+
+    #[test]
+    fn the_container_list_maps_names_images_and_ids() {
+        let got = parse_container_list(CONTAINER_LIST.as_bytes()).unwrap();
+        assert_eq!(
+            got,
+            vec![
+                Container {
+                    name: "web".to_string(),
+                    image_reference: "nginx:1.25".to_string(),
+                    image_id: "sha256:aaaa".to_string(),
+                },
+                Container {
+                    name: "db".to_string(),
+                    image_reference: "postgres:16".to_string(),
+                    image_id: "sha256:bbbb".to_string(),
+                },
+            ]
+        );
+    }
+
+    /// The Engine API prepends `/` to every name, and muninn's metric tag must
+    /// not carry it — `container_name="/web"` would not match what an operator
+    /// types into `container_include`.
+    #[test]
+    fn the_leading_slash_the_engine_api_adds_is_stripped() {
+        let got = parse_container_list(
+            br#"[{"Id":"abc","Names":["/web"],"Image":"nginx","ImageID":"sha256:a"}]"#,
+        )
+        .unwrap();
+        assert_eq!(got[0].name, "web");
+    }
+
+    #[test]
+    fn a_container_with_no_name_falls_back_to_a_short_id() {
+        let got = parse_container_list(
+            br#"[{"Id":"9c1f2b3a4d5e6f708192a3b4c5d6e7f8","Names":[],"Image":"nginx","ImageID":"sha256:a"}]"#,
+        )
+        .unwrap();
+        assert_eq!(got[0].name, "9c1f2b3a4d5e");
+    }
+
+    /// `Names` absent entirely, not merely empty — the field is `#[serde(default)]`
+    /// precisely so an older API version cannot make the whole list unparseable.
+    #[test]
+    fn a_missing_names_field_does_not_fail_the_whole_list() {
+        let got = parse_container_list(
+            br#"[{"Id":"abcdefghijklmno","Image":"nginx","ImageID":"sha256:a"}]"#,
+        )
+        .unwrap();
+        assert_eq!(got[0].name, "abcdefghijkl");
+    }
+
+    #[test]
+    fn an_empty_container_list_is_not_an_error() {
+        assert!(parse_container_list(b"[]").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_container_list_that_is_not_json_is_named_as_such() {
+        let e = parse_container_list(b"<html>nope</html>").unwrap_err();
+        assert!(e.contains("container list"), "{e}");
+    }
+
+    #[test]
+    fn repo_digests_are_read_from_the_image_inspect() {
+        let got = parse_repo_digests(
+            br#"{"Id":"sha256:aaaa","RepoTags":["nginx:1.25"],"RepoDigests":["nginx@sha256:dead","nginx@sha256:beef"]}"#,
+        )
+        .unwrap();
+        assert_eq!(got, vec!["nginx@sha256:dead", "nginx@sha256:beef"]);
+    }
+
+    /// A locally built image has no `RepoDigests` at all in some API versions
+    /// and an empty array in others. Both must mean the same thing, and
+    /// neither may be an error — the caller turns emptiness into a reason.
+    #[test]
+    fn an_image_that_was_never_pulled_has_no_repo_digests() {
+        assert!(
+            parse_repo_digests(br#"{"Id":"sha256:aaaa"}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_repo_digests(br#"{"Id":"sha256:aaaa","RepoDigests":[]}"#)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_remote_digest_is_read_from_the_descriptor() {
+        let got = parse_remote_digest(
+            br#"{"Descriptor":{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:cafe","size":1234},"Platforms":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(got, "sha256:cafe");
+    }
+
+    #[test]
+    fn a_distribution_response_without_a_descriptor_is_an_error() {
+        let e = parse_remote_digest(br#"{"Platforms":[]}"#).unwrap_err();
+        assert!(e.contains("distribution inspect"), "{e}");
+    }
+
+    // ── Transport ───────────────────────────────────────────────────────────
+
     #[test]
     fn a_json_body_is_read_in_full() {
         let mut f = Fake::new(
@@ -353,6 +575,17 @@ mod tests {
         let mut f = Fake::new("HTTP/1.1 200 OK\r\n\r\n{\"RepoDigests\":[]}");
         let resp = exchange(&mut f, "/images/x/json").unwrap();
         assert_eq!(resp.body, b"{\"RepoDigests\":[]}");
+    }
+
+    /// `read_to_end` on a socket is an unbounded allocation, and none of the
+    /// endpoints this client calls has any business returning megabytes.
+    #[test]
+    fn a_response_past_the_size_cap_is_refused_rather_than_buffered() {
+        let mut oversized = "HTTP/1.1 200 OK\r\n\r\n".to_string();
+        oversized.push_str(&"a".repeat(MAX_RESPONSE_BYTES as usize + 1));
+        let mut f = Fake::new(&oversized);
+        let e = exchange(&mut f, "/containers/json").unwrap_err();
+        assert!(e.contains("exceeded"), "{e}");
     }
 
     /// `get` is the one choke point every path this module builds passes
@@ -436,5 +669,23 @@ mod tests {
             .replace("%5D", "]")
             .replace("%7D", "}");
         assert_eq!(decoded, r#"{"status":["running"]}"#);
+    }
+
+    /// The registry call is the only one that leaves the host, and it is the
+    /// only one that gets the longer timeout — a 5s default that is right for
+    /// a local socket call is wrong for a TLS handshake plus a token exchange
+    /// plus a manifest fetch.
+    #[test]
+    fn only_the_registry_call_uses_the_registry_timeout() {
+        let client = Client::new(
+            Endpoint {
+                kind: EndpointKind::Tcp("127.0.0.1:1".to_string()),
+                timeout: Duration::from_secs(5),
+            },
+            Duration::from_secs(30),
+        );
+        assert_eq!(client.endpoint.timeout, Duration::from_secs(5));
+        assert_eq!(client.registry_endpoint().timeout, Duration::from_secs(30));
+        assert_eq!(client.registry_endpoint().kind, client.endpoint.kind);
     }
 }

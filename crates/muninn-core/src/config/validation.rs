@@ -256,39 +256,7 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
 
     if m.docker.enabled {
         require_positive(m.docker.timeout, "modules.docker.timeout")?;
-        if m.docker.endpoint.is_empty() {
-            return Err(MuninnError::config(
-                "modules.docker.endpoint must not be empty when the docker module is enabled"
-                    .to_string(),
-            ));
-        }
-        // unix:// and tcp:// are what the plugin accepts. Anything else is a
-        // typo that would surface as a connection error after startup.
-        let rest = m
-            .docker
-            .endpoint
-            .strip_prefix("unix://")
-            .or_else(|| m.docker.endpoint.strip_prefix("tcp://"));
-        match rest {
-            None => {
-                return Err(MuninnError::config(format!(
-                    "modules.docker.endpoint '{}' must start with unix:// or tcp://",
-                    m.docker.endpoint
-                )));
-            }
-            // A bare scheme passes the prefix test and names nothing. Left
-            // unchecked it reaches the runtime layer, which has no address to
-            // probe and so reports no problem — the module would then be
-            // enabled and silently collect nothing.
-            Some("") => {
-                return Err(MuninnError::config(format!(
-                    "modules.docker.endpoint is '{}' with nothing after the scheme. Give a socket \
-                     path (unix:///var/run/docker.sock) or an address (tcp://proxy:2375)",
-                    m.docker.endpoint
-                )));
-            }
-            Some(_) => {}
-        }
+        validate_docker_endpoint(&m.docker.endpoint, "docker", warnings)?;
 
         // Telegraf's own vocabulary. A typo here is not rejected by the plugin —
         // an unknown state simply matches no container, so the module would run
@@ -318,13 +286,6 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
                 )));
             }
         }
-
-        warnings.push(
-            "the docker module is enabled: access to the Docker socket is equivalent to root \
-             on the host, and mounting it read-only does not change that. \
-             Consider a socket proxy — see docs/modules.md#docker"
-                .to_string(),
-        );
     }
 
     if m.updates.enabled {
@@ -343,6 +304,10 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
 
     if m.image_updates.enabled {
         require_positive(m.image_updates.timeout, "modules.image_updates.timeout")?;
+        require_positive(
+            m.image_updates.registry_timeout,
+            "modules.image_updates.registry_timeout",
+        )?;
         require_positive(m.image_updates.interval, "modules.image_updates.interval")?;
         // One registry lookup per running container, and registries rate-limit
         // anonymous callers — Docker Hub allows 100 pulls per 6h per IP, and a
@@ -355,47 +320,73 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
                 m.image_updates.interval
             )));
         }
-
-        if m.image_updates.endpoint.is_empty() {
-            return Err(MuninnError::config(
-                "modules.image_updates.endpoint must not be empty when the image_updates \
-                 module is enabled"
-                    .to_string(),
+        // The one call that leaves the host is the one that needs the most
+        // patience. Inverting them is not wrong enough to refuse, but it is
+        // almost always a mistake, and the symptom — `distribution_query_failed`
+        // against a registry that answers fine by hand — points nowhere near
+        // the cause.
+        if m.image_updates.registry_timeout < m.image_updates.timeout {
+            warnings.push(format!(
+                "modules.image_updates.registry_timeout ({}) is shorter than \
+                 modules.image_updates.timeout ({}): the registry lookup is the call that leaves \
+                 the host and needs the longer timeout, not the shorter one",
+                m.image_updates.registry_timeout, m.image_updates.timeout
             ));
         }
-        // Same two schemes the docker module accepts, and the same reasoning:
-        // anything else is a typo that would otherwise surface as a connection
-        // error after startup rather than here.
-        let rest = m
-            .image_updates
-            .endpoint
-            .strip_prefix("unix://")
-            .or_else(|| m.image_updates.endpoint.strip_prefix("tcp://"));
-        match rest {
-            None => {
-                return Err(MuninnError::config(format!(
-                    "modules.image_updates.endpoint '{}' must start with unix:// or tcp://",
-                    m.image_updates.endpoint
-                )));
-            }
-            Some("") => {
-                return Err(MuninnError::config(format!(
-                    "modules.image_updates.endpoint is '{}' with nothing after the scheme. Give \
-                     a socket path (unix:///var/run/docker.sock) or an address \
-                     (tcp://proxy:2375)",
-                    m.image_updates.endpoint
-                )));
-            }
-            Some(_) => {}
-        }
 
-        warnings.push(
-            "the image_updates module is enabled: access to the Docker socket is equivalent to \
-             root on the host, and mounting it read-only does not change that. Consider a \
-             socket proxy — see docs/modules.md#image_updates"
-                .to_string(),
-        );
+        validate_docker_endpoint(&m.image_updates.endpoint, "image_updates", warnings)?;
     }
+
+    Ok(())
+}
+
+/// The Docker endpoint grammar, and the warning that comes with using one.
+///
+/// Shared because `docker` and `image_updates` reach the same daemon through
+/// the same two schemes and carry the same root-equivalent exposure — two
+/// copies would be two places for the accepted grammar to drift, and the
+/// second copy is how a module ends up accepting an endpoint the other
+/// rejects.
+fn validate_docker_endpoint(
+    endpoint: &str,
+    module: &str,
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    if endpoint.is_empty() {
+        return Err(MuninnError::config(format!(
+            "modules.{module}.endpoint must not be empty when the {module} module is enabled"
+        )));
+    }
+
+    // unix:// and tcp:// are what the plugin accepts. Anything else is a typo
+    // that would surface as a connection error after startup.
+    let rest = endpoint
+        .strip_prefix("unix://")
+        .or_else(|| endpoint.strip_prefix("tcp://"));
+    match rest {
+        None => {
+            return Err(MuninnError::config(format!(
+                "modules.{module}.endpoint '{endpoint}' must start with unix:// or tcp://"
+            )));
+        }
+        // A bare scheme passes the prefix test and names nothing. Left
+        // unchecked it reaches the runtime layer, which has no address to
+        // probe and so reports no problem — the module would then be enabled
+        // and silently collect nothing.
+        Some("") => {
+            return Err(MuninnError::config(format!(
+                "modules.{module}.endpoint is '{endpoint}' with nothing after the scheme. Give a \
+                 socket path (unix:///var/run/docker.sock) or an address (tcp://proxy:2375)"
+            )));
+        }
+        Some(_) => {}
+    }
+
+    warnings.push(format!(
+        "the {module} module is enabled: access to the Docker socket is equivalent to root on the \
+         host, and mounting it read-only does not change that. Consider a socket proxy — see \
+         docs/modules.md#{module}"
+    ));
 
     Ok(())
 }

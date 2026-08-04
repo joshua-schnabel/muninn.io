@@ -294,11 +294,22 @@ modules:
     # Registry lookups are rate-limited (Docker Hub: 100 anonymous pulls per 6h
     # per IP) and run once per container, so this runs on its own schedule
     # rather than at `agent.interval`, and is rejected below one minute.
+    #
+    # It also bounds one run: the check spends at most half of this before
+    # reporting the containers it did not reach as `budget_exceeded`, so
+    # Telegraf never kills it holding results it had already found.
     interval: 1h
 
-    # Give up on a Docker API call after this long. Also how long muninn waits
-    # for the endpoint to answer during the startup check.
+    # Give up on a Docker API call the daemon answers from its own state, and
+    # on the endpoint answering during the startup check.
     timeout: 5s
+
+    # Give up on the ONE call that leaves the host after this long. The daemon
+    # has to do a TLS handshake, a token exchange and a manifest fetch against
+    # the registry to answer it, so it does not share the 5s above — holding it
+    # to that reports `distribution_query_failed` for a registry that was
+    # merely slow.
+    registry_timeout: 30s
 
 # ── Outputs ──────────────────────────────────────────────────────────────────
 # At least one output must be enabled — an agent that collects metrics and sends
