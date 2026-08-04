@@ -6,14 +6,14 @@
 
 **Uniform server monitoring without learning Telegraf's configuration format.**
 
-[![CI](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml/badge.svg)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml)
-[![Security](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml/badge.svg)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml)
-
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-b7410e?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Telegraf 1.39.2](https://img.shields.io/badge/telegraf-1.39.2%20pinned-22adf6?logo=influxdb&logoColor=white)](docs/adr/0011-telegraf-pinning.md)
-![Platforms](https://img.shields.io/badge/platforms-amd64%20%C2%B7%20arm64-4c566a)
-[![Coverage gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A5%2080%25-4c9a2a)](docs/testing.md)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/muninn.io/ci.yml?branch=dev&label=CI&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml)
+[![Security](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/muninn.io/security.yml?branch=dev&label=security&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml)
+[![License](https://img.shields.io/github/license/joshua-schnabel/muninn.io?logo=github&logoColor=white)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/joshua-schnabel/muninn.io?logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/issues)
+[![Last commit](https://img.shields.io/github/last-commit/joshua-schnabel/muninn.io/dev?label=last%20change&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/commits/dev)  
+[![Docker image version](https://img.shields.io/docker/v/jschnabel/muninn?sort=semver&label=image&color=yellow&logo=docker&logoColor=white)](https://hub.docker.com/r/jschnabel/muninn/tags)
+[![Docker image size](https://img.shields.io/docker/image-size/jschnabel/muninn?sort=semver&logo=docker&logoColor=white)](https://hub.docker.com/r/jschnabel/muninn/tags)
+[![Docker pulls](https://img.shields.io/docker/pulls/jschnabel/muninn?logo=docker&logoColor=white)](https://hub.docker.com/r/jschnabel/muninn)
 
 </div>
 
@@ -63,7 +63,7 @@ not need.
 ```yaml
 services:
   muninn:
-    image: ghcr.io/joshua-schnabel/muninn.io:0.1.0
+    image: jschnabel/muninn:0.1.0-dev
     restart: unless-stopped
     stop_grace_period: 30s
     hostname: web-01.example.internal
@@ -102,8 +102,11 @@ Four details in that compose file are easy to get wrong and slow to debug —
 `stop_grace_period`, `hostname`, the tmpfs and the two ports. Each is explained
 in [`docs/host-mounts.md`](docs/host-mounts.md).
 
-No version is published yet; until the first release, build the image with
-`docker build -t muninn:dev .` and use that tag.
+**No release is cut yet.** What the pipeline publishes today is the pre-release
+image built from `dev`: `0.1.0-dev` and the moving `dev` tag, on
+[Docker Hub](https://hub.docker.com/r/jschnabel/muninn/tags) and mirrored
+byte-identically to `ghcr.io/joshua-schnabel/muninn.io`. Pin `0.1.0-dev` rather
+than `dev` if you try it; `0.1.0` appears with the first release.
 
 ## Two metrics endpoints
 

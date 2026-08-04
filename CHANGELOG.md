@@ -190,8 +190,17 @@ The release pipeline reads the version from this file — see
   report. The two-job Prometheus scrape configuration moves to
   `configuration.md`, which is where the endpoints are documented — the two
   pages had been pointing at each other.
+- The README's badge row is the one huginn.io uses, adapted: CI and security
+  status, licence, open issues, last change, and the published image's version,
+  size and pull count. All eight resolve against live data.
 
 ### Fixed
+
+- The README, `AGENTS.md`, the roadmap and this file all said no image was
+  published. Pushes to `dev` have been publishing `0.1.0-dev` and `dev` to
+  `jschnabel/muninn` and to `ghcr.io/joshua-schnabel/muninn.io` since the CI/CD
+  work landed, and the quick start named `ghcr.io/…:0.1.0`, a tag that does not
+  exist. The quick start now pins `0.1.0-dev`.
 
 - `muninn validate --with-telegraf` failed inside the shipped image. It rendered
   its scratch file through `tempfile`, which writes to `/tmp`, and the hardened
@@ -260,9 +269,10 @@ The release pipeline reads the version from this file — see
 Nothing is released yet. Every command works — `run`, `validate`,
 `render-config`, `check-runtime`, `healthcheck`, `update-check` and `version` —
 and the container image builds and passes its tests under the full hardening.
-The pipeline builds, scans, tests and publishes it. What is missing is a cut
-version: `ghcr.io/joshua-schnabel/muninn.io` does not exist yet, so the image
-has to be built locally.
+The pipeline builds, scans, tests and publishes it: pushes to `dev` produce the
+pre-release tags `0.1.0-dev` and `dev` on `jschnabel/muninn`, mirrored
+byte-identically to `ghcr.io/joshua-schnabel/muninn.io`. What is missing is a
+cut version, which is what turns those into `0.1.0`.
 
 Three findings during the design package changed the design away from the
 project brief:

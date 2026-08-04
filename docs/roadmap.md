@@ -11,12 +11,17 @@ container image builds for `linux/amd64` and `linux/arm64` and passes its tests
 under the full hardening, the whole path from YAML to a running Telegraf is
 exercised end to end, and the pipeline builds, scans, tests and publishes it.
 
-**No version has been released yet.** Cutting `0.1.0` means naming it in
+**No version has been released yet.** Pushes to `dev` already publish the
+pre-release tags `0.1.0-dev` and `dev` to `jschnabel/muninn`, mirrored to
+`ghcr.io/joshua-schnabel/muninn.io`. Cutting `0.1.0` means naming it in
 `CHANGELOG.md` and opening a `dev → main` pull request; the version gate reads
-the changelog, and `publish` tags the release from it. Publishing additionally
-needs the two repository settings in
-[`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand), which a
-maintainer has to create by hand.
+the changelog, and `publish` tags the release from it.
+
+One thing is still wrong there: the `publish` job's staging-tag cleanup gets
+`HTTP 403` from Docker Hub, so `staging-linux-amd64` and `staging-linux-arm64`
+survive every run. The `DOCKERHUB_TOKEN` needs the **Delete** scope, which
+[`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) already
+specifies.
 
 ## Next
 
