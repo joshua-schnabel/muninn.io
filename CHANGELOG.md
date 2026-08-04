@@ -24,7 +24,11 @@ The release pipeline reads the version from this file — see
   failed check degrades that one container's series rather than muninn as a
   whole. See [`docs/modules.md#image_updates`](docs/modules.md#image_updates)
   and [ADR-0013](docs/adr/0013-image-updates-via-docker-api.md). Adds
-  `serde_json` as a dependency, in `muninn-modules` only.
+  `serde_json` as a dependency, in `muninn-modules` only. Every request path
+  the module's Docker API client builds is checked for a control character or
+  a space before it is sent, closing off request-line injection at the one
+  place muninn writes a raw HTTP request from daemon-reported strings —
+  found in a security review before this module's first release.
 - CI/CD, completed (WP12) — `.github/workflows/`, built to huginn.io's shape.
   Twelve jobs: format and lint, tests on stable and beta, `cargo deny`,
   coverage, the Telegraf reference check, the version gate, a per-architecture

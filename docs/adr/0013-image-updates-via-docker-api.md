@@ -83,6 +83,21 @@ force the same thing for a response with no body at all. A general HTTP client
 crate was not needed for three fixed calls, and not adding one keeps this
 module's only new dependency the one that parses what the three calls return.
 
+**Every request path is checked for a control character or a space before it
+is sent.** Two of the three calls build their path from strings the daemon
+reported — an image reference, an image ID — and this is the one place in
+muninn that writes a raw request line (`GET {path} HTTP/1.1\r\n...`) from
+values it did not choose itself. Docker's own reference grammar cannot produce
+`\r`, `\n` or a space in either field, so this guard should never fire against
+a real daemon — but the guard does not rely on that holding. It is one check
+at the single choke point every call passes through
+(`docker_api::get`), catching request-line injection before it can reach
+whatever is listening on the other end of the socket, rather than resting on
+an upstream guarantee this module has no way to verify. Found during a
+security review after the module shipped; a security review before shipping
+code that hand-builds HTTP requests from external strings is the better
+order, and the next one gets written that way.
+
 **The comparison is `RepoDigests` against `Descriptor.digest`, keyed by
 `ImageID`, not by the tag string.** Looking the image up by its currently
 running `ImageID` — rather than re-resolving the tag through `/images/{name}`

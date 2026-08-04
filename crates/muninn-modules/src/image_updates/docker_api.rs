@@ -168,7 +168,25 @@ struct Response {
     body: Vec<u8>,
 }
 
+/// The one choke point every request in this module passes through, which is
+/// exactly where a request line built from daemon-reported strings — an image
+/// reference, an image ID — has to be checked before it is sent.
+///
+/// A real Docker daemon never returns a reference containing a control
+/// character; `distribution/reference`'s own grammar forbids it. This does not
+/// rely on that holding: a control character here would land in the request
+/// line this module writes by hand (`GET {path} HTTP/1.1\r\n...`), and `\r` or
+/// `\n` there is a request-line/header injection into whatever is listening on
+/// the other end of the socket — the daemon itself, or, in the recommended
+/// deployment, a socket proxy. Refusing it here costs one check and removes
+/// the assumption entirely rather than resting on an upstream guarantee this
+/// module has no way to verify.
 fn get(endpoint: &Endpoint, path: &str) -> Result<Response, String> {
+    if path.chars().any(|c| c.is_control() || c == ' ') {
+        return Err(format!(
+            "refusing to send a request whose path contains a control character or space: {path:?}"
+        ));
+    }
     match &endpoint.kind {
         EndpointKind::UnixSocket(socket_path) => unix(socket_path, path, endpoint.timeout),
         EndpointKind::Tcp(addr) => tcp(addr, path, endpoint.timeout),
@@ -335,6 +353,42 @@ mod tests {
         let mut f = Fake::new("HTTP/1.1 200 OK\r\n\r\n{\"RepoDigests\":[]}");
         let resp = exchange(&mut f, "/images/x/json").unwrap();
         assert_eq!(resp.body, b"{\"RepoDigests\":[]}");
+    }
+
+    /// `get` is the one choke point every path this module builds passes
+    /// through, so the check belongs there rather than at each call site —
+    /// and it must run *before* any I/O, which this proves by pointing the
+    /// endpoint at a port nothing listens on: the error names the control
+    /// character, not a connection failure.
+    #[test]
+    fn a_control_character_in_the_path_is_refused_before_any_request_is_sent() {
+        let endpoint = Endpoint {
+            kind: EndpointKind::Tcp("127.0.0.1:0".to_string()),
+            timeout: Duration::from_millis(50),
+        };
+        for path in ["/images/x\r\nGET /secret HTTP/1.1/json", "/images/x y/json"] {
+            let e = get(&endpoint, path).unwrap_err();
+            assert!(
+                e.contains("control character") || e.contains("space"),
+                "{path:?}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_ordinary_path_is_not_affected_by_the_guard() {
+        let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+        drop(held);
+        let endpoint = Endpoint {
+            kind: EndpointKind::Tcp(addr.to_string()),
+            timeout: Duration::from_millis(50),
+        };
+        let e = get(&endpoint, "/distribution/nginx:latest/json").unwrap_err();
+        assert!(
+            e.contains("cannot connect"),
+            "an ordinary path should reach the connection attempt: {e}"
+        );
     }
 
     #[test]
