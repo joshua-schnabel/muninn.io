@@ -220,6 +220,14 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
         &m.docker.container_exclude,
         "modules.docker.container_exclude",
     )?;
+    reject_blank_patterns(
+        &m.image_updates.container_include,
+        "modules.image_updates.container_include",
+    )?;
+    reject_blank_patterns(
+        &m.image_updates.container_exclude,
+        "modules.image_updates.container_exclude",
+    )?;
 
     // An include list is an allow-list: anything not matching stops being
     // collected. Combined with an exclude list that is a contradiction worth
@@ -331,6 +339,62 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
                 m.updates.interval
             )));
         }
+    }
+
+    if m.image_updates.enabled {
+        require_positive(m.image_updates.timeout, "modules.image_updates.timeout")?;
+        require_positive(m.image_updates.interval, "modules.image_updates.interval")?;
+        // One registry lookup per running container, and registries rate-limit
+        // anonymous callers — Docker Hub allows 100 pulls per 6h per IP, and a
+        // manifest check counts against it. A tight interval on a host with more
+        // than a handful of containers would trip that quickly.
+        if m.image_updates.interval.as_secs() < 60 {
+            return Err(MuninnError::config(format!(
+                "modules.image_updates.interval is {} — registry lookups are rate-limited and \
+                 run once per container; use 1m or more (1h is the default and is usually right)",
+                m.image_updates.interval
+            )));
+        }
+
+        if m.image_updates.endpoint.is_empty() {
+            return Err(MuninnError::config(
+                "modules.image_updates.endpoint must not be empty when the image_updates \
+                 module is enabled"
+                    .to_string(),
+            ));
+        }
+        // Same two schemes the docker module accepts, and the same reasoning:
+        // anything else is a typo that would otherwise surface as a connection
+        // error after startup rather than here.
+        let rest = m
+            .image_updates
+            .endpoint
+            .strip_prefix("unix://")
+            .or_else(|| m.image_updates.endpoint.strip_prefix("tcp://"));
+        match rest {
+            None => {
+                return Err(MuninnError::config(format!(
+                    "modules.image_updates.endpoint '{}' must start with unix:// or tcp://",
+                    m.image_updates.endpoint
+                )));
+            }
+            Some("") => {
+                return Err(MuninnError::config(format!(
+                    "modules.image_updates.endpoint is '{}' with nothing after the scheme. Give \
+                     a socket path (unix:///var/run/docker.sock) or an address \
+                     (tcp://proxy:2375)",
+                    m.image_updates.endpoint
+                )));
+            }
+            Some(_) => {}
+        }
+
+        warnings.push(
+            "the image_updates module is enabled: access to the Docker socket is equivalent to \
+             root on the host, and mounting it read-only does not change that. Consider a \
+             socket proxy — see docs/modules.md#image_updates"
+                .to_string(),
+        );
     }
 
     Ok(())

@@ -29,6 +29,7 @@ use muninn_telegraf::{PluginInstance, TelegrafConfig};
 use std::time::Duration;
 
 pub mod agent;
+pub mod image_updates;
 pub mod inputs;
 pub mod outputs;
 pub mod updates;
@@ -174,6 +175,7 @@ pub fn all_modules() -> Vec<Box<dyn MonitoringModule>> {
         Box::new(inputs::Network),
         Box::new(inputs::Docker),
         Box::new(updates::Updates),
+        Box::new(image_updates::ImageUpdates),
     ]
 }
 

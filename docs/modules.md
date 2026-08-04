@@ -25,6 +25,7 @@ mechanically on every pipeline run.
 | [network](#network) | `inputs.net` | off | host `/proc` |
 | [docker](#docker) | `inputs.docker` | off | **Docker socket** |
 | [updates](#updates) | `inputs.exec` | off | host `/var`, `/etc`, `/usr`; Debian or Ubuntu |
+| [image_updates](#image_updates) | `inputs.exec` | off | **Docker socket** |
 
 Everything in the "host `/proc`" column is satisfied by one `-v /:/hostfs:ro`
 mount plus `runtime.host_mount_prefix`. See [`host-mounts.md`](host-mounts.md).
@@ -675,6 +676,158 @@ The second is the interesting case, and it is why the metric exists: apt refusin
 an index format the image does not understand, a package database that is present
 but unreadable. Those cannot be known before start, and none of them is a reason
 to stop reporting CPU.
+
+---
+
+## image_updates
+
+Whether a newer image is available, under the tag it is running, for each
+running container. Off by default, for the same reason `docker` is: it needs
+the Docker socket, which is root-equivalent access to the host, and most
+operators want to decide that for themselves.
+
+```yaml
+modules:
+  image_updates:
+    enabled: false
+    endpoint: "unix:///var/run/docker.sock"
+    timeout: 5s
+    interval: 1h
+    container_include: []
+    container_exclude: []
+```
+
+| Option | Type | Default | Effect |
+|---|---|---|---|
+| `endpoint` | URL | `unix:///var/run/docker.sock` | Same meaning as `modules.docker.endpoint` — see [docker](#docker) |
+| `timeout` | duration | `5s` | Per Docker API call, and for the startup reachability probe |
+| `interval` | duration | `1h` | Own schedule — see below |
+| `container_include` | list of globs | `[]` | Container names to check (allow-list) |
+| `container_exclude` | list of globs | `[]` | Container names to skip |
+
+**Renders to** `[[inputs.exec]]` with `data_format = "influx"`, running
+
+```toml
+commands = [["/usr/local/bin/muninn", "image-check", "--endpoint", "unix:///var/run/docker.sock", "--timeout-secs", "5"]]
+```
+
+Telegraf has no plugin for this either — see [updates](#updates) for the same
+fact about package updates — so `exec` runs muninn again, the same pattern:
+
+```bash
+docker exec muninn muninn image-check --endpoint unix:///var/run/docker.sock
+muninn_image_updates,status=ok,reason=none check_success=1i,check_timestamp_seconds=1754225000i,containers_checked=3i
+muninn_container_image_updates,container_name=web,image=nginx:latest,status=ok,reason=none check_success=1i,check_timestamp_seconds=1754225000i
+muninn_container_image_updates,container_name=web,image=nginx:latest update_available=0i
+```
+
+### Why the daemon answers, not muninn
+
+Every registry speaks HTTPS, and muninn has never been a TLS client — see the
+note next to `openssl` in `deny.toml`. Rather than adding a TLS stack for one
+module, this module asks the *Docker daemon* to resolve the tag against the
+registry (`GET /distribution/{name}/json`), the same way `docker pull` would,
+without pulling. The daemon does the TLS handshake, in its own process, with
+whatever registry credentials the host is already configured with. muninn stays
+a plaintext HTTP client talking to the same socket, or the same proxy, the
+`docker` module already reaches. The full reasoning, including what was
+rejected, is [ADR-0013](adr/0013-image-updates-via-docker-api.md).
+
+**This is the one place muninn is a Docker client for more than a reachability
+check.** Three read-only calls per check — list containers, inspect one image,
+resolve one tag — nothing else. The security posture is unchanged from
+[docker](#docker): the same socket, the same root-equivalent exposure, the same
+recommendation to use a proxy, whose allowlist grows by two endpoints:
+
+```yaml
+services:
+  docker-socket-proxy:
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1          # /images/*/json
+      DISTRIBUTION: 1    # /distribution/*/json
+      PING: 1
+      POST: 0
+```
+
+### The invariant
+
+```text
+muninn_image_updates_check_success{status,reason}          gauge  0|1
+muninn_image_updates_check_timestamp_seconds{...}          gauge
+muninn_image_updates_containers_checked{...}               gauge  only on success
+muninn_container_image_updates_check_success{
+  container_name,image,status,reason}                      gauge  0|1
+muninn_container_image_updates_check_timestamp_seconds{...} gauge
+muninn_container_image_updates_update_available{
+  container_name,image}                                    gauge  0|1, only on success
+```
+
+**A failed check emits `check_success=0` and omits the verdict.** It never
+reports `update_available` for a container it could not judge — the same rule
+[updates](#updates) stands on, applied per container instead of once per host.
+A container whose image was built locally, whose registry is unreachable, or
+whose reference is already pinned to a digest does not report "up to date"; it
+reports why it could not say, and that does not affect any other container's
+verdict.
+
+Two alerts worth writing from this:
+
+```promql
+muninn_image_updates_check_success == 0
+muninn_container_image_updates_update_available == 1
+```
+
+Not `absent(muninn_container_image_updates_update_available{container_name="x"})`
+for "container x has no verdict" — that is also true while the container is
+starting, or is not enabled to be checked at all.
+
+### What a `reason` means
+
+The daemon-level check (`muninn_image_updates`):
+
+| `reason` | Cause | Fix |
+|---|---|---|
+| `invalid_endpoint` | `--endpoint` was not `unix://...` or `tcp://...` | only reachable running `image-check` by hand; the rendered form is always valid |
+| `docker_unreachable` | the daemon (or proxy) at `endpoint` did not answer | same fixes as an unreachable [docker](#docker) endpoint |
+
+Per container (`muninn_container_image_updates`):
+
+| `reason` | Cause | Fix |
+|---|---|---|
+| `digest_pinned_reference` | the container's image is already `repo@sha256:...` | nothing to fix — there is no tag for a newer image to appear under |
+| `no_repo_digest` | the image was never pulled from, or pushed to, a registry | expected for a locally built image; nothing to fix |
+| `no_matching_repo_digest` | the daemon recorded digests, but none for this repository | usually a `docker tag` onto an image pulled under a different name |
+| `image_inspect_failed` | `GET /images/{id}/json` failed | see stderr; the image may have been removed since the container started |
+| `distribution_query_failed` | the daemon could not resolve the tag against the registry | unreachable registry, a tag that no longer exists, or authentication the daemon does not have |
+
+### Cost scales with the container count
+
+Each container costs one or two Docker API round trips, run sequentially
+rather than in parallel — the container counts this module is verified
+against are small enough that the added complexity of parallelising them was
+not worth it. The rendered `inputs.exec` `timeout` is a fixed `120s` rather
+than derived from a count muninn cannot know at render time. A host with more
+containers than that comfortably covers in `modules.image_updates.timeout` ×
+2 × container-count should narrow `container_include`/`container_exclude`
+rather than assume the timeout will grow to match.
+
+**Registries rate-limit anonymous callers.** Docker Hub allows 100 anonymous
+pulls per 6 hours per IP, and a manifest lookup counts against it — one reason
+`interval` defaults to `1h`, like [updates](#updates), and why validation
+refuses anything under a minute.
+
+**Only public images are verified.** A private registry the *host* is already
+configured to pull from should work through the daemon's own credentials with
+no change to muninn, but that path has not been measured the way
+[the updates module's evidence](updates-evidence.md) measured Debian and
+Ubuntu hosts. See [ADR-0013](adr/0013-image-updates-via-docker-api.md) and
+[`docs/roadmap.md`](roadmap.md).
+
+**Limits.** Running containers only, matching the question this module
+answers — a stopped container's image is not being served by anything.
+Multi-architecture manifest lists are compared whole, which is what the
+daemon itself compares on a `docker pull`.
 
 ---
 

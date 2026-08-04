@@ -12,6 +12,19 @@ The release pipeline reads the version from this file — see
 
 ### Added
 
+- **The `image_updates` module** — per running container, whether a newer
+  image is available under the tag it is running. Off by default; needs the
+  same Docker socket as `docker` and shares its startup reachability check.
+  Rather than adding a TLS stack to speak to registries directly, it asks the
+  Docker daemon to resolve each container's tag against the registry
+  (`GET /distribution/{name}/json`) — the same resolution `docker pull`
+  performs, without pulling — and compares the digest against what the daemon
+  recorded when the running image was pulled. `muninn image-check` runs the
+  same check `inputs.exec` does, for diagnosis by hand. Like `updates`, a
+  failed check degrades that one container's series rather than muninn as a
+  whole. See [`docs/modules.md#image_updates`](docs/modules.md#image_updates)
+  and [ADR-0013](docs/adr/0013-image-updates-via-docker-api.md). Adds
+  `serde_json` as a dependency, in `muninn-modules` only.
 - CI/CD, completed (WP12) — `.github/workflows/`, built to huginn.io's shape.
   Twelve jobs: format and lint, tests on stable and beta, `cargo deny`,
   coverage, the Telegraf reference check, the version gate, a per-architecture

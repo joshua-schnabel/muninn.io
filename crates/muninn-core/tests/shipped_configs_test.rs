@@ -110,6 +110,7 @@ fn the_annotated_example_covers_every_module_and_output() {
         "network:",
         "docker:",
         "updates:",
+        "image_updates:",
         "influxdb:",
         "prometheus:",
     ] {

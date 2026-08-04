@@ -353,6 +353,10 @@ fn a_blank_pattern_in_any_list_is_rejected_with_its_index() {
             "modules:\n  disk_io:\n    enabled: true\n    exclude_devices: [\"\"]\n",
             "modules.disk_io.exclude_devices[0]",
         ),
+        (
+            "modules:\n  image_updates:\n    enabled: true\n    container_include: [\"\"]\n",
+            "modules.image_updates.container_include[0]",
+        ),
     ];
     for (block, key) in cases {
         rejects(&with(block), key);
@@ -464,6 +468,79 @@ fn updates_interval_below_a_minute_is_rejected() {
         "modules.updates.interval",
     );
     assert!(msg.contains("1m or more"), "got: {msg}");
+}
+
+#[test]
+fn image_updates_interval_below_a_minute_is_rejected() {
+    let msg = rejects(
+        &with("modules:\n  image_updates:\n    enabled: true\n    interval: 30s\n"),
+        "modules.image_updates.interval",
+    );
+    assert!(msg.contains("1m or more"), "got: {msg}");
+}
+
+#[test]
+fn image_updates_endpoint_must_have_a_known_scheme() {
+    rejects(
+        &with(
+            "modules:\n  image_updates:\n    enabled: true\n    \
+             endpoint: \"/var/run/docker.sock\"\n",
+        ),
+        "modules.image_updates.endpoint",
+    );
+}
+
+#[test]
+fn image_updates_endpoint_must_not_be_empty_when_enabled() {
+    rejects(
+        &with("modules:\n  image_updates:\n    enabled: true\n    endpoint: \"\"\n"),
+        "modules.image_updates.endpoint",
+    );
+}
+
+/// The same failure mode docker's endpoint check exists for: a bare scheme
+/// passes a `starts_with` test and names nothing to probe.
+#[test]
+fn an_image_updates_endpoint_that_is_only_a_scheme_is_rejected() {
+    for endpoint in ["unix://", "tcp://"] {
+        let msg = rejects(
+            &with(&format!(
+                "modules:
+  image_updates:
+    enabled: true
+    endpoint: \"{endpoint}\"
+"
+            )),
+            "modules.image_updates.endpoint",
+        );
+        assert!(
+            msg.contains("docker.sock") || msg.contains("proxy"),
+            "should show what a complete endpoint looks like: {msg}"
+        );
+    }
+}
+
+/// Same exposure as the docker module — same socket, same warning.
+#[test]
+fn enabling_image_updates_warns_about_the_socket() {
+    let w = warnings_of(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert!(
+        w.iter().any(|s| s.contains("root")),
+        "expected a socket warning, got: {w:?}"
+    );
+}
+
+#[test]
+fn image_updates_defaults_match_docker_and_updates() {
+    let cfg = ok(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert_eq!(
+        cfg.modules.image_updates.endpoint,
+        "unix:///var/run/docker.sock"
+    );
+    assert_eq!(cfg.modules.image_updates.timeout.as_secs(), 5);
+    assert_eq!(cfg.modules.image_updates.interval.as_secs(), 3600);
+    assert!(cfg.modules.image_updates.container_include.is_empty());
+    assert!(cfg.modules.image_updates.container_exclude.is_empty());
 }
 
 #[test]

@@ -163,6 +163,12 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
         check_updates_once(&config, &state).await;
     }
 
+    // Same reasoning, and the same reason it runs after `updates`: this one
+    // makes a network call per container, so it is the slower of the two.
+    if config.modules.image_updates.enabled {
+        check_image_updates_once(&config, &state).await;
+    }
+
     supervise(&mut telegraf, &state, &config, &mut signals).await
 }
 
@@ -225,6 +231,76 @@ async fn check_updates_once(config: &Config, state: &HealthState) {
                 detail = report.detail.as_deref().unwrap_or(""),
                 "the updates check could not read the host's package state — muninn continues \
                  without it, and the metric reports the failure rather than a count"
+            );
+            transition(state, State::Degraded);
+        }
+    }
+}
+
+/// Run the image_updates check once at startup, and record what it found.
+///
+/// Telegraf runs this same check on `modules.image_updates.interval` — hourly
+/// by default — for the reason [`check_updates_once`] already states: an hour
+/// is a long time to wait to discover a deployment cannot reach the Docker
+/// daemon, or a registry, at all.
+///
+/// **A failure degrades muninn; it does not stop it** — the same rule as
+/// `updates`, and for the same reason. The daemon itself has already been
+/// proven reachable by the runtime preconditions this module declares (the
+/// same `GET /_ping` the docker module's endpoint gets, via
+/// [`crate::probe::docker`]); what this check can still fail on is a single
+/// container's registry lookup, which does not call for taking every other
+/// module out of service.
+async fn check_image_updates_once(config: &Config, state: &HealthState) {
+    use muninn_modules::image_updates::check;
+
+    let m = &config.modules.image_updates;
+    let endpoint = m.endpoint.clone();
+    let timeout = m.timeout.inner();
+    let include = m.container_include.clone();
+    let exclude = m.container_exclude.clone();
+
+    // On a blocking thread: this makes one or more real network calls per
+    // running container, and the reactor is also serving health checks.
+    let report =
+        tokio::task::spawn_blocking(move || check::check(&endpoint, timeout, &include, &exclude))
+            .await;
+
+    let report = match report {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "the image update check did not complete");
+            state.record_module_check("image_updates", false);
+            transition(state, State::Degraded);
+            return;
+        }
+    };
+
+    state.record_module_check("image_updates", report.daemon_succeeded());
+
+    match report.daemon_outcome {
+        Ok(count) => {
+            let updates_available = report
+                .containers
+                .iter()
+                .filter(|c| matches!(c.outcome, Ok(true)))
+                .count();
+            let failed = report
+                .containers
+                .iter()
+                .filter(|c| c.outcome.is_err())
+                .count();
+            info!(
+                containers_checked = count,
+                updates_available, failed, "image update check"
+            );
+        }
+        Err(reason) => {
+            warn!(
+                reason = reason.as_str(),
+                detail = report.detail.as_deref().unwrap_or(""),
+                "the image update check could not reach the Docker daemon — muninn continues \
+                 without it, and the metric reports the failure rather than a verdict"
             );
             transition(state, State::Degraded);
         }

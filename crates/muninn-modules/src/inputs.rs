@@ -19,7 +19,13 @@ use crate::{Endpoint, EndpointKind, MonitoringModule, RenderContext, Requirement
 ///
 /// `unix:///var/run/docker.sock` → a socket file.
 /// `tcp://docker-socket-proxy:2375` → an address.
-pub(crate) fn parse_docker_endpoint(endpoint: &str, timeout: Duration) -> Option<Endpoint> {
+///
+/// `pub` rather than `pub(crate)`: both `docker` and `image_updates` use it to
+/// derive their [`Requirements`], and the `muninn` binary's `image-check`
+/// subcommand uses it a third time to turn `--endpoint` back into an
+/// [`Endpoint`] before calling [`crate::image_updates::check::check`] — the
+/// same parsing, not a second implementation of it.
+pub fn parse_docker_endpoint(endpoint: &str, timeout: Duration) -> Option<Endpoint> {
     let kind = if let Some(path) = endpoint.strip_prefix("unix://") {
         (!path.is_empty()).then(|| EndpointKind::UnixSocket(path.to_string()))
     } else if let Some(addr) = endpoint.strip_prefix("tcp://") {
@@ -42,6 +48,9 @@ const RANK_DOCKER: u16 = 90;
 /// The updates module renders from [`crate::updates`], but its rank belongs with
 /// the others so the uniqueness test below can see all ten at once.
 pub(crate) const RANK_UPDATES: u16 = 100;
+/// The image_updates module renders from [`crate::image_updates`]; same reason
+/// as `RANK_UPDATES` for keeping the constant here rather than there.
+pub(crate) const RANK_IMAGE_UPDATES: u16 = 110;
 
 // ---------------------------------------------------------------------------
 
@@ -332,6 +341,7 @@ mod tests {
             RANK_NET,
             RANK_DOCKER,
             RANK_UPDATES,
+            RANK_IMAGE_UPDATES,
         ];
         let mut sorted = ranks.to_vec();
         sorted.sort_unstable();
@@ -373,12 +383,15 @@ mod tests {
     /// The Docker socket must not be declared as a host path: it is a separate,
     /// deliberate grant, and folding it into the mount prefix would make it look
     /// like part of the ordinary host mount.
+    ///
+    /// `image_updates` needs the same socket as `docker`, for the same reason —
+    /// both talk to the Docker Engine API rather than reading `/proc`.
     #[test]
-    fn only_docker_requires_an_absolute_path() {
+    fn only_docker_and_image_updates_require_an_absolute_path() {
         let cfg = crate::tests::config_with(|_| {});
         for module in crate::all_modules() {
             let req = module.requirements(&cfg);
-            if module.id() == "docker" {
+            if module.id() == "docker" || module.id() == "image_updates" {
                 assert_eq!(req.absolute_paths, vec!["/var/run/docker.sock".to_string()]);
                 assert!(req.host_paths.is_empty());
             } else {

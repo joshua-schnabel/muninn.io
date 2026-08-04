@@ -80,6 +80,7 @@ less trusted than the host.
 | network | host `/proc` | The container's `eth0` only |
 | docker | **Docker socket** — separate, see below | — |
 | updates | host `/var`, `/etc` **and** `/usr` | `check_success=0` with a reason — never a count |
+| image_updates | **Docker socket** — separate, see below | — |
 
 All of these are satisfied by the single `/:/hostfs:ro` mount — and the updates
 row is the clearest argument for mounting the root rather than a hand-picked list:
@@ -98,14 +99,16 @@ the first.
 
 ## The Docker socket is separate
 
-The Docker module needs the Docker Engine API, not a filesystem path. It is not
-covered by the host mount and it is not off-by-default by accident: socket access
-is equivalent to root on the host, and `:ro` does not change that — it makes the
-socket *file* read-only, not the API.
+The docker and image_updates modules need the Docker Engine API, not a
+filesystem path. Neither is covered by the host mount, and neither is
+off-by-default by accident: socket access is equivalent to root on the host,
+and `:ro` does not change that — it makes the socket *file* read-only, not the
+API.
 
-A socket proxy is the recommended deployment. See
-[`modules.md`](modules.md#docker) for a working configuration and
-[ADR-0010](adr/0010-docker-socket.md) for the reasoning.
+A socket proxy is the recommended deployment for both. See
+[`modules.md`](modules.md#docker) and [`modules.md`](modules.md#image_updates)
+for working configurations, and [ADR-0010](adr/0010-docker-socket.md) and
+[ADR-0013](adr/0013-image-updates-via-docker-api.md) for the reasoning.
 
 ## Compose example
 

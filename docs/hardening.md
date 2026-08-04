@@ -162,18 +162,21 @@ write to it can start a container with the host filesystem mounted and
 read-only; it does not restrict the API calls made through it. The `:ro` in every
 example — including muninn's — is defence in depth, not a permission boundary.
 
-Therefore:
+Therefore, for both modules that use the socket — `docker` and
+`image_updates`:
 
-- the Docker module is **off by default**;
+- **off by default**;
 - muninn issues **only read calls** — no start, stop, exec or create;
 - a **socket proxy is the recommended deployment**, restricting the API to
-  `/containers/json`, `/containers/*/stats`, `/info` and `/version`. Working
-  configuration in [`modules.md#docker`](modules.md#docker).
+  `/containers/json`, `/containers/*/stats`, `/images/*/json`,
+  `/distribution/*/json`, `/info` and `/version`. Working configurations in
+  [`modules.md#docker`](modules.md#docker) and
+  [`modules.md#image_updates`](modules.md#image_updates).
 
 Group membership matters as much as the mount: a container in the `docker` group
 has the same access as one running as root with the socket mounted.
 
-[ADR-0010](adr/0010-docker-socket.md)
+[ADR-0010](adr/0010-docker-socket.md), [ADR-0013](adr/0013-image-updates-via-docker-api.md)
 
 ## Network exposure
 

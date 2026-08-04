@@ -102,6 +102,46 @@ pub enum Command {
         no_security_metric: bool,
     },
 
+    /// Report, per running container, whether a newer image is available
+    /// under the tag it is running, as influx line protocol.
+    ///
+    /// This is what the image_updates module runs through `inputs.exec`, and
+    /// like `update-check` it is documented rather than hidden: an operator
+    /// diagnosing a wrong verdict can run exactly what Telegraf runs and see
+    /// the reason on stderr.
+    ///
+    /// Always exits 0: a failed check is data (`check_success=0`), not a
+    /// crash. See `crates/muninn-modules/src/image_updates/`.
+    ImageCheck {
+        /// The Docker Engine API endpoint: `unix:///var/run/docker.sock` or
+        /// `tcp://host:port`.
+        ///
+        /// Rendered from `modules.image_updates.endpoint`.
+        #[arg(long)]
+        endpoint: String,
+
+        /// How long to wait for each individual Docker API call.
+        ///
+        /// Rendered from `modules.image_updates.timeout`. A plain integer
+        /// rather than a duration string: this is one process argument among
+        /// several, not a YAML value an operator hand-edits.
+        #[arg(long, default_value_t = 5)]
+        timeout_secs: u64,
+
+        /// Container name glob to include. May be given more than once; an
+        /// empty list means every running container.
+        ///
+        /// Rendered from `modules.image_updates.container_include`.
+        #[arg(long)]
+        include: Vec<String>,
+
+        /// Container name glob to exclude. May be given more than once.
+        ///
+        /// Rendered from `modules.image_updates.container_exclude`.
+        #[arg(long)]
+        exclude: Vec<String>,
+    },
+
     /// Query the local health endpoint. For a container HEALTHCHECK.
     Healthcheck,
 
@@ -170,6 +210,24 @@ mod tests {
             vec!["muninn", "update-check"],
             vec!["muninn", "update-check", "--hostfs", "/hostfs"],
             vec!["muninn", "update-check", "--no-security-metric"],
+            vec![
+                "muninn",
+                "image-check",
+                "--endpoint",
+                "unix:///var/run/docker.sock",
+            ],
+            vec![
+                "muninn",
+                "image-check",
+                "--endpoint",
+                "tcp://proxy:2375",
+                "--timeout-secs",
+                "10",
+                "--include",
+                "app-*",
+                "--exclude",
+                "build-*",
+            ],
             vec!["muninn", "healthcheck"],
             vec!["muninn", "version"],
         ] {

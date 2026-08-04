@@ -70,6 +70,12 @@ serde_yaml_ng = "0.10"
 # hand-built strings so escaping lives in one audited place — every path,
 # glob and URL that reaches the output goes through one tested encoder.
 toml = "1"
+# Parsing the Docker Engine API's JSON responses for the image_updates module —
+# the only place muninn itself is an HTTP client rather than a renderer for
+# Telegraf. Already in the tree transitively through serde; this adds a name to
+# Cargo.toml and no TLS, no crypto, nothing cargo-deny's licence gate has not
+# already seen.
+serde_json = "1"
 # Parses "30s" / "5m" / "1h" into std Duration. The alternative — a hand-rolled
 # parser — is a surprising amount of edge cases (overflow, mixed units, signs)
 # for a solved problem.

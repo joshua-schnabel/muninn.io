@@ -265,6 +265,41 @@ modules:
     # exact either way, so alert on that. See docs/risks.md (R8).
     security_only_metric: true
 
+  # Whether a newer image is available, under the tag it is running, for each
+  # running container.
+  #
+  # Needs the same Docker socket as `docker`, above, and shares its security
+  # posture and startup reachability check — same STARTUP FAILURE (exit 12) if
+  # `endpoint` does not answer. See docs/adr/0010-docker-socket.md.
+  #
+  # It never speaks HTTPS to a registry itself: it asks the Docker daemon to
+  # resolve each container's tag against the registry
+  # (GET /distribution/{name}/json), the same resolution `docker pull`
+  # performs, without pulling. That keeps muninn's own HTTP surface plaintext
+  # — see docs/adr/0013-image-updates-via-docker-api.md.
+  #
+  # Like `updates`, a failed check DEGRADES rather than stops muninn: a
+  # container whose image cannot be judged (built locally, unreachable
+  # registry, already pinned to a digest) reports check_success=0 with a
+  # reason on that container's own series, and every other container's
+  # verdict is unaffected.
+  image_updates:
+    enabled: false
+    endpoint: "unix:///var/run/docker.sock"
+    # Container names to include (globs allowed). Empty means all of them.
+    container_include: []
+    # Container names to drop (globs allowed).
+    container_exclude: []
+
+    # Registry lookups are rate-limited (Docker Hub: 100 anonymous pulls per 6h
+    # per IP) and run once per container, so this runs on its own schedule
+    # rather than at `agent.interval`, and is rejected below one minute.
+    interval: 1h
+
+    # Give up on a Docker API call after this long. Also how long muninn waits
+    # for the endpoint to answer during the startup check.
+    timeout: 5s
+
 # ── Outputs ──────────────────────────────────────────────────────────────────
 # At least one output must be enabled — an agent that collects metrics and sends
 # them nowhere is a misconfiguration, so muninn refuses to start. Both may be

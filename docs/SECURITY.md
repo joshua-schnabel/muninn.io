@@ -25,7 +25,7 @@ muninn's security-relevant surface, in rough order of severity:
 | **Secret handling** | Tokens and passwords are read from files, resolved into the generated config, and must never appear in logs, errors, `/status` or `render-config` output |
 | **The generated config** | Holds resolved secrets in plaintext on a tmpfs |
 | **The host mount** | Read access to the entire host filesystem |
-| **The Docker socket** | Root-equivalent when the Docker module is enabled |
+| **The Docker socket** | Root-equivalent when the `docker` or `image_updates` module is enabled |
 | **Network endpoints** | Health and metrics listeners, unauthenticated by default |
 | **Supply chain** | The pinned Telegraf binary and every Rust dependency |
 | **Container posture** | Non-root, read-only, capabilities dropped |

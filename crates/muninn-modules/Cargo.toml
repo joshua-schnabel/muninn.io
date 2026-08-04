@@ -13,6 +13,10 @@ repository.workspace = true
 muninn-core = { workspace = true }
 muninn-telegraf = { workspace = true }
 tracing = { workspace = true }
+# Parses the Docker Engine API's JSON responses for the image_updates check —
+# see the note in the workspace Cargo.toml.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
