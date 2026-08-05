@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use muninn_core::error::{MuninnError, Result};
+use muninn_core::secret::Redactor;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tracing::{error, info, warn};
@@ -90,7 +91,16 @@ impl Telegraf {
     /// The environment is built explicitly rather than inherited wholesale: what
     /// Telegraf sees should be a function of muninn's configuration, not of
     /// whatever the container was started with.
-    pub fn spawn(binary: &Path, config_path: &Path, host_env: &[(String, String)]) -> Result<Self> {
+    ///
+    /// `redactor` is applied to everything Telegraf writes before it is logged.
+    /// See [`forward`] for why a child's output needs it when muninn's own
+    /// formatting does not.
+    pub fn spawn(
+        binary: &Path,
+        config_path: &Path,
+        host_env: &[(String, String)],
+        redactor: Redactor,
+    ) -> Result<Self> {
         let mut command = Command::new(binary);
         command
             .arg("--config")
@@ -126,8 +136,8 @@ impl Telegraf {
         // Telegraf's own output is re-emitted through muninn's logger, tagged
         // with its source, so one stream leaves the container and JSON logging
         // stays parseable end to end rather than interleaved with plain text.
-        forward(child.stdout.take(), "stdout");
-        forward(child.stderr.take(), "stderr");
+        forward(child.stdout.take(), "stdout", redactor.clone());
+        forward(child.stderr.take(), "stderr", redactor);
 
         info!(pid, binary = %binary.display(), "Telegraf started");
 
@@ -254,7 +264,17 @@ impl Telegraf {
 }
 
 /// Re-emit a child stream through muninn's logger, one line at a time.
-fn forward<R>(stream: Option<R>, source: &'static str)
+/// Re-emit a child stream through muninn's logger, with known secrets removed.
+///
+/// The `redactor` is the point, and it is not decoration. Everything muninn
+/// formats itself is covered by `Secret`'s type-level redaction — printing one
+/// requires `.expose()`, and there is exactly one such call. None of that
+/// argument reaches text that arrives *already formatted* from another process,
+/// and the configuration Telegraf is reading holds resolved secrets (ADR-0003).
+///
+/// Whether Telegraf ever quotes a configuration value in a diagnostic is a
+/// property of Telegraf. This does not depend on the answer.
+fn forward<R>(stream: Option<R>, source: &'static str, redactor: Redactor)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -265,6 +285,7 @@ where
             if line.trim().is_empty() {
                 continue;
             }
+            let line = redactor.apply(&line);
             // Telegraf prefixes its own level: "E!" error, "W!" warning, "I!"
             // info, "D!" debug. Mapping them keeps a Telegraf error visible as an
             // error in muninn's output rather than flattened to info — and
@@ -324,9 +345,36 @@ mod tests {
             Path::new("/nonexistent/telegraf"),
             Path::new("/tmp/x.conf"),
             &[],
+            Redactor::default(),
         )
         .unwrap_err();
         assert_eq!(err.exit_code(), muninn_core::exit::TELEGRAF_START);
         assert!(err.to_string().contains("nonexistent"), "got: {err}");
+    }
+
+    /// The property, at the level that matters: a secret Telegraf printed does
+    /// not reach a log line. `forward` writes through `tracing`, so this
+    /// exercises the redaction it applies rather than the subscriber.
+    #[tokio::test]
+    async fn a_secret_in_child_output_is_masked_before_it_is_logged() {
+        let redactor = Redactor::new(["influx-token-abcdef".to_string()]);
+        let line = "2026-01-01T00:00:00Z E! [outputs.influxdb_v2] \
+                    token influx-token-abcdef was rejected";
+
+        let out = redactor.apply(line);
+        assert!(!out.contains("influx-token-abcdef"), "leaked: {out}");
+        assert!(
+            out.contains("[outputs.influxdb_v2]") && out.contains("was rejected"),
+            "the diagnostic itself must survive: {out}"
+        );
+    }
+
+    /// An ordinary Telegraf line has to come through byte-identical — redaction
+    /// that mangled normal output would be paid for on every line.
+    #[tokio::test]
+    async fn ordinary_child_output_is_unchanged() {
+        let redactor = Redactor::new(["influx-token-abcdef".to_string()]);
+        let line = "2026-01-01T00:00:00Z I! [agent] Config: Interval:10s";
+        assert_eq!(redactor.apply(line), line);
     }
 }

@@ -29,6 +29,7 @@ muninn's security-relevant surface, in rough order of severity:
 | **Network endpoints** | Health and metrics listeners, unauthenticated by default |
 | **Supply chain** | The pinned Telegraf binary and every Rust dependency |
 | **Container posture** | Non-root, read-only, capabilities dropped |
+| **The build pipeline** | What can reach a token, a secret or the published image — see below |
 
 Findings of particular interest:
 
@@ -40,6 +41,44 @@ Findings of particular interest:
 - privilege escalation from the container to the host beyond what the documented
   mounts already grant;
 - a way to make a failed check report a healthy value.
+
+## The build pipeline is part of the surface
+
+An agent that ships as a signed-off container image is only as trustworthy as
+the pipeline that produced it, so `.github/workflows/` is in scope for a report
+just as the Rust is. What is deliberate there:
+
+- **No workflow gives a token to third-party code.** `actions/checkout` writes
+  its token into `.git/config` by default, and `cargo` executes `build.rs` and
+  proc-macros from every dependency in the tree. Every checkout sets
+  `persist-credentials: false` except the two jobs that push (`ci.yml`
+  `publish`, `release.yml` `prepare-dev`), and neither of those runs `cargo`.
+  The release's test run is a separate job with `contents: read` for exactly
+  this reason.
+- **Credentials never go through argv.** A command line is world-readable on the
+  runner through `/proc`. Registry credentials go to `skopeo login` on stdin and
+  live in a `0600` auth file for the length of the step; API bodies and headers
+  go to `curl` through stdin, not `-d` and `-H`.
+- **Permissions are per job, not per workflow**, and default to
+  `contents: read`. `security-events: write` belongs to the one job that uploads
+  SARIF.
+- **Everything executable is pinned.** Third-party actions by commit SHA, the
+  Semgrep and actionlint images by digest, `cargo-deny` and `cargo-llvm-cov` by
+  version, base images by digest, and Telegraf by SHA-256
+  ([ADR-0011](adr/0011-telegraf-pinning.md)) — which the CI jobs reuse via
+  `scripts/fetch-telegraf.sh` rather than pulling a mutable `telegraf:x.y.z`
+  tag.
+- **Secrets are unreachable from a pull request.** The publishing jobs are
+  `if: github.event_name == 'push'`, so a PR build — including one from a fork —
+  never has the DockerHub token in its environment.
+
+One accepted trade, stated plainly: **Dependabot patch and minor bumps
+auto-merge into `dev`** once the full pipeline is green
+(`.github/workflows/dependabot-auto-merge.yml`). A compromised upstream release
+that passes every gate would land without a human reading it. It is bounded by a
+three-day cooldown before Dependabot opens the PR, by `cargo deny`'s advisory
+gate, and by the fact that `dev` is not `main` — but it is a real trade and it
+is a deliberate one. Major bumps always wait for a human.
 
 ## Out of scope
 

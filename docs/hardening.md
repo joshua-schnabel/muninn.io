@@ -131,6 +131,18 @@ consistent with the self-contained-container goal.
   when the file exists at the umask's mode and already contains the token. Two
   writers sharing a rule only by convention is how the second one came to write
   `0644` without anyone noticing, until an end-to-end test asserted on the mode.
+- **Telegraf's own output is scrubbed before muninn logs it.** muninn re-emits
+  the child's stdout and stderr through its own logger, and the configuration
+  Telegraf is reading holds resolved secrets. The type-level redaction above
+  covers everything muninn formats — it cannot reach text another process
+  formatted. So every known secret value is replaced with `***` in those lines
+  first. Whether Telegraf ever quotes a configuration value in a diagnostic is a
+  property of Telegraf; this does not depend on the answer.
+
+  It matches literal values, so a secret Telegraf reformatted — URL-encoded,
+  truncated — would pass through. That is why it is defence in depth and why the
+  load-bearing control is still that the generated config lives on a tmpfs and
+  is never mounted out.
 
 ## The host mount
 

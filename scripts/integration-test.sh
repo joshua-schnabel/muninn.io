@@ -219,6 +219,28 @@ else
     fail "I8c" "muninn_telegraf_running never reached Prometheus"
 fi
 
+# ── No secret reaches the logs ───────────────────────────────────────────────
+# A regression guard, and labelled as one rather than oversold: Telegraf does
+# not normally quote a configuration value in a diagnostic, so this cell would
+# have passed before muninn began scrubbing its child's output. It cannot be
+# made to fail on demand — which is exactly why the scrubbing exists, because
+# "Telegraf does not normally do that" is an assumption about software this
+# project does not control (docs/hardening.md#secrets).
+#
+# What it does catch is the day that assumption stops holding, or the day the
+# redactor stops being wired into the supervisor. The container's whole log —
+# muninn's own lines and Telegraf's forwarded ones together — must never
+# contain the throwaway token this run generated.
+info "I8d  the token never appears in the container logs"
+
+logs="$(compose logs --no-color muninn 2>&1)"
+if grep -qF "$MUNINN_INFLUX_TOKEN" <<<"$logs"; then
+    fail "I8d" "the InfluxDB token appeared in the container logs"
+    grep -nF "$MUNINN_INFLUX_TOKEN" <<<"$logs" | head -3
+else
+    pass "I8d" "muninn's and Telegraf's output are both free of the token"
+fi
+
 # ── The write path ───────────────────────────────────────────────────────────
 info "I9–I11  InfluxDB receives the writes and can be queried"
 

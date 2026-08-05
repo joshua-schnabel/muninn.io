@@ -60,10 +60,40 @@ untested can ship.
 skipped job in `needs:` skips its dependents, so it must not be conditional at
 the job level — it is a deliberate no-op pass on non-release events.
 
-`test` and `coverage` extract Telegraf from the pinned image and set
+`test` and `coverage` fetch Telegraf with `scripts/fetch-telegraf.sh` and set
 `MUNINN_TELEGRAF_BIN`. Without it the tests that need a real Telegraf skip
 loudly, and CI would report a green suite that never started a child process —
 which is the class of bug `muninn/tests/` exists for.
+
+That script exists rather than a `docker create telegraf:x.y.z`, which is what
+these jobs used to do. A tag is mutable, and nothing here would notice it move —
+Dependabot does not read a `docker create` reference
+(dependabot-core#5819, the same limitation `security.yml` records for its
+Semgrep image). Rather than add a second pin to keep current by hand, the script
+reads the version *and* the per-architecture SHA-256 out of the `Dockerfile` and
+verifies the download against them. There is one pin, it is the one
+[ADR-0011](adr/0011-telegraf-pinning.md) already describes, and bumping Telegraf
+stays the three-line Dockerfile change that ADR specifies.
+
+## What can reach a credential
+
+The pipeline's own hardening is summarised in
+[`SECURITY.md`](SECURITY.md#the-build-pipeline-is-part-of-the-surface). Two
+shapes are worth knowing when editing a workflow here:
+
+**No job runs `cargo` with a write token.** `actions/checkout` persists its
+token into `.git/config`, and `cargo` executes build scripts from every
+dependency. Every checkout therefore sets `persist-credentials: false` except
+`ci.yml`'s `publish` and `release.yml`'s `prepare-dev`, which push and run no
+third-party code. `release.yml` is split into `test-report` (`contents: read`,
+runs `cargo`, uploads an artefact) and `github-release` (`contents: write`,
+downloads it) for exactly this reason — if you add a `cargo` step, it belongs in
+the first job.
+
+**Credentials go through stdin or a file, never argv.** `/proc/<pid>/cmdline` is
+readable by every process on the runner. `skopeo login --password-stdin` with
+`REGISTRY_AUTH_FILE` replaces `--dest-creds`, and `curl --data @-` / `-K -`
+replaces `-d` and `-H` where a token is involved.
 
 `scan` blocks on **fixable** CRITICAL/HIGH only. The runtime base is
 `debian:12-slim` rather than distroless because the updates module needs real

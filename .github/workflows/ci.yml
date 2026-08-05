@@ -60,7 +60,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # `persist-credentials: false` is on every checkout in this repository
+      # except the two that push — ci.yml `publish` and release.yml
+      # `prepare-dev`, both marked where they are.
+      #
+      # The default writes the job's token into `.git/config`, where anything
+      # running afterwards can read it. What runs afterwards here is `cargo`,
+      # which compiles and executes `build.rs` and proc-macros from every
+      # dependency in the tree. A token that is not on disk is one a compromised
+      # crate cannot take. Steps that genuinely need the API get `GH_TOKEN` in
+      # `env:` on that step alone, which the checkout never sees.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Pinned to the action's v1 SHA, which makes `toolchain` a required input —
       # the channel itself stays floating, only the action code is frozen.
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -88,6 +100,8 @@ jobs:
     continue-on-error: ${{ matrix.rust == 'beta' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ matrix.rust }}
@@ -95,14 +109,19 @@ jobs:
 
       # The unix-only tests — signals, permissions, reaping — are the ones that
       # matter most here and are silently absent on the maintainer's Windows
-      # machine. Telegraf is taken from the pinned image so they see the version
-      # the artefact ships, which is what scripts/test-linux.sh does locally.
-      - name: Extract the pinned Telegraf binary
-        run: |
-          cid="$(docker create "telegraf:${TELEGRAF_VERSION}")"
-          docker cp "$cid:/usr/bin/telegraf" "${{ runner.temp }}/telegraf"
-          docker rm "$cid" >/dev/null
-          chmod +x "${{ runner.temp }}/telegraf"
+      # machine. They need the Telegraf the artefact ships, which is what
+      # scripts/test-linux.sh gives them locally.
+      #
+      # From the checksum-pinned tarball the Dockerfile already names, not from
+      # the `telegraf:x.y.z` image tag. A tag is mutable: whoever can move it
+      # decides which binary the unix-only tests run against, and Dependabot
+      # does not watch a `docker create` reference (dependabot-core#5819 — the
+      # same limitation security.yml records for its Semgrep image). The script
+      # reads the version and the per-arch SHA-256 out of the Dockerfile, so
+      # there is one pin to maintain and it is the one ADR-0011 already
+      # describes.
+      - name: Fetch the pinned Telegraf binary
+        run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
 
       - name: cargo test
         env:
@@ -119,14 +138,24 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      # Deliberately uncached and unpinned: a security tool should keep picking
-      # up new advisory classes.
+      # Uncached on purpose, but pinned. The freshness that matters comes from
+      # the *advisory database*, which cargo-deny fetches at run time — not from
+      # the tool binary. Pinning the version therefore costs nothing in coverage
+      # and removes an unpinned `cargo install` that compiles and runs a third
+      # party's build scripts on every CI run. Exactly the reasoning
+      # security.yml applies to its Semgrep image: pinned by digest, still
+      # scanning with current rules.
+      #
+      # Dependabot's `cargo` ecosystem does not see this line — it reads
+      # Cargo.toml, and cargo-deny is not a dependency. Bump it by hand.
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
       - name: cargo deny check
         run: cargo deny check
 
@@ -138,6 +167,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
@@ -155,12 +186,16 @@ jobs:
         if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked
 
-      - name: Extract the pinned Telegraf binary
-        run: |
-          cid="$(docker create "telegraf:${TELEGRAF_VERSION}")"
-          docker cp "$cid:/usr/bin/telegraf" "${{ runner.temp }}/telegraf"
-          docker rm "$cid" >/dev/null
-          chmod +x "${{ runner.temp }}/telegraf"
+      # From the checksum-pinned tarball the Dockerfile already names, not from
+      # the `telegraf:x.y.z` image tag. A tag is mutable: whoever can move it
+      # decides which binary the unix-only tests run against, and Dependabot
+      # does not watch a `docker create` reference (dependabot-core#5819 — the
+      # same limitation security.yml records for its Semgrep image). The script
+      # reads the version and the per-arch SHA-256 out of the Dockerfile, so
+      # there is one pin to maintain and it is the one ADR-0011 already
+      # describes.
+      - name: Fetch the pinned Telegraf binary
+        run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
 
       - name: Run coverage
         env:
@@ -194,6 +229,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install PyYAML
         run: pip install --quiet pyyaml
@@ -236,6 +273,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0   # need the tag history to find the last release
       - name: Validate SemVer and successor
         env:
@@ -296,6 +334,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -355,6 +395,8 @@ jobs:
       # Needed for .trivyignore.yaml, which the blocking scan reads. The full
       # scan below deliberately does not use it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -446,6 +488,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -502,6 +546,8 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Sanitise platform name
         env:
@@ -565,9 +611,14 @@ jobs:
       - name: Push scanned image and record its digest
         env:
           REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
-          CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
           DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
           DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          # skopeo writes and reads its credentials here instead of taking them
+          # on the command line. `--dest-creds user:token` puts the token in
+          # /proc/<pid>/cmdline, readable by every other process on the runner
+          # for as long as the copy runs; an auth file is 0600 and confined to
+          # this step's temp directory.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
           # Through env, never through an expression inside the shell: workflow
           # expressions are substituted into the script TEXT before bash sees
@@ -578,11 +629,14 @@ jobs:
             echo "::error::DOCKERHUB_USERNAME (repository variable) and DOCKERHUB_TOKEN (repository secret) are not set — see docs/ci-cd.md"
             exit 1
           fi
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN | skopeo login --username "$DHUSER" --password-stdin docker.io
+
           mkdir -p "${{ runner.temp }}/digests"
           # Staging tag is only a push target; the user-facing multi-arch tag is
           # created by the `publish` job from the digest recorded here, and the
           # staging tags are deleted again once the manifest exists.
-          skopeo copy --dest-creds "$CREDS" \
+          skopeo copy \
             "docker-archive:${{ runner.temp }}/image.tar" \
             "docker://${REPO}:staging-${PLATFORM_PAIR}" \
             --digestfile "${{ runner.temp }}/digest.txt"
@@ -613,6 +667,10 @@ jobs:
       contents: write
       packages: write
     steps:
+      # The one checkout in this file that keeps its credentials: the last step
+      # runs `git push origin "$TAG"`. Nothing between here and there executes
+      # third-party code — no cargo, no build — so the token stays inside a job
+      # that only runs skopeo, jq and git.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # needed to read git history for version tagging
@@ -728,16 +786,24 @@ jobs:
       - name: Mirror image to ghcr.io
         env:
           DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
-          DH_CREDS: ${{ vars.DOCKERHUB_USERNAME }}:${{ secrets.DOCKERHUB_TOKEN }}
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           GHCR_REPO: ghcr.io/${{ github.repository_owner }}/muninn.io
-          GHCR_CREDS: ${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same reason as the push job: credentials through a 0600 auth file
+          # rather than through argv, where every process on the runner can read
+          # them out of /proc for the length of the copy.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
         run: |
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN   | skopeo login --username "$DHUSER"   --password-stdin docker.io
+          printenv GHCR_TOKEN | skopeo login --username "$GHCR_USER" --password-stdin ghcr.io
+
           echo "$DOCKER_METADATA_OUTPUT_JSON" | jq -r '.tags[]' | while read -r ref; do
             tag="${ref##*:}"
             echo "Mirroring ${DH_REPO}:${tag} -> ${GHCR_REPO}:${tag}"
             skopeo copy --all \
-              --src-creds "$DH_CREDS" \
-              --dest-creds "$GHCR_CREDS" \
               "docker://${DH_REPO}:${tag}" \
               "docker://${GHCR_REPO}:${tag}"
           done
@@ -753,17 +819,23 @@ jobs:
           DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
           TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          jwt="$(curl -s -H 'Content-Type: application/json' \
-            -d "{\"username\":\"${DHUSER}\",\"password\":\"${TOKEN}\"}" \
-            https://hub.docker.com/v2/users/login/ | jq -r .token)"
+          # Body through stdin, built by jq rather than by string interpolation:
+          # `-d "{...$TOKEN...}"` would put the token in /proc/<pid>/cmdline, and
+          # would also break on any character JSON needs escaped. `--data @-`
+          # keeps it in a pipe.
+          jwt="$(jq -n --arg u "$DHUSER" --arg p "$TOKEN" '{username:$u, password:$p}' \
+            | curl -s -H 'Content-Type: application/json' --data @- \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)"
           if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
             echo "Could not obtain a DockerHub token; leaving staging tags in place"
             exit 0
           fi
+          # The session token goes through a curl config on stdin for the same
+          # reason as the password above — `-H "Authorization: ..."` is argv.
           for tag in staging-linux-amd64 staging-linux-arm64; do
-            code="$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
-              -H "Authorization: JWT ${jwt}" \
-              "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
+            code="$(printf 'header = "Authorization: JWT %s"\n' "$jwt" \
+              | curl -s -K - -o /dev/null -w '%{http_code}' -X DELETE \
+                "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
             echo "delete ${tag}: HTTP ${code}"
           done
 
