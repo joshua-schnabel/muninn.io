@@ -1127,6 +1127,58 @@ fn debug_formatting_the_resolved_config_leaks_no_secret() {
     );
 }
 
+/// The guard `Config::redactor` says it relies on, because the compiler will
+/// not catch a credential someone forgets to add there.
+///
+/// Every secret this configuration can hold is set, to a distinct value, and
+/// each one has to disappear from a line that quotes it. A new credential added
+/// to `Outputs` without a line in `redactor()` fails here rather than shipping
+/// as silent half-coverage.
+#[test]
+fn every_resolved_secret_is_redactable() {
+    let token = token_file("influx-token-aaaaaa");
+    let password = token_file("prometheus-pw-bbbbbb");
+    let cfg = Config::from_v1(ok(&with(&format!(
+        r#"outputs:
+  influxdb:
+    enabled: true
+    url: "https://influx.example:8086"
+    organization: infra
+    bucket: servers
+    token_file: "{}"
+  prometheus:
+    enabled: true
+    basic_auth:
+      username: scraper
+      password_file: "{}"
+"#,
+        path_of(&token),
+        path_of(&password)
+    ))))
+    .unwrap();
+
+    let redactor = cfg.redactor();
+    assert!(!redactor.is_empty());
+
+    for secret in ["influx-token-aaaaaa", "prometheus-pw-bbbbbb"] {
+        let line = format!("E! [outputs] rejected credential {secret} at startup");
+        let out = redactor.apply(&line);
+        assert!(
+            !out.contains(secret),
+            "{secret} survived redaction — is it missing from Config::redactor()? got: {out}"
+        );
+    }
+}
+
+/// A configuration with no credentials must produce a redactor that does
+/// nothing, rather than one that matches the empty string everywhere.
+#[test]
+fn a_config_without_secrets_redacts_nothing() {
+    let cfg = Config::from_v1(ok(MINIMAL)).unwrap();
+    assert!(cfg.redactor().is_empty());
+    assert_eq!(cfg.redactor().apply("plain line"), "plain line");
+}
+
 #[test]
 fn addresses_are_parsed_once_during_normalisation() {
     let cfg = Config::from_v1(ok(MINIMAL)).unwrap();

@@ -14,7 +14,13 @@
 # setup), so it churns whenever any of them changes. The checksum names exactly
 # the artefact that ships. It also keeps the build independent of Docker Hub
 # rate limits.
-FROM debian:12-slim AS telegraf
+#
+# Every `FROM` in this file carries its digest as well as its tag. The tag stays
+# for readability; the digest is what is actually resolved, so a repointed tag
+# cannot change the image without a visible diff. Dependabot's `docker`
+# ecosystem updates the pair together (see .github/dependabot.yml), so this
+# costs no manual upkeep — the same weekly PR as before, with the digest in it.
+FROM debian:12-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS telegraf
 
 ARG TELEGRAF_VERSION=1.39.2
 ARG TELEGRAF_SHA256_AMD64=3ecf733bec389b8a0e1072f134ce379d79efe0d3caf984c164bd4cfc515a86d6
@@ -46,7 +52,7 @@ RUN set -eux; \
 # Pinned to the MSRV in Cargo.toml. CI runs floating stable, so a dependency
 # that raises the MSRV leaves CI green while *this* fails — which is the point:
 # the image is the real gate.
-FROM rust:1.88-slim AS builder
+FROM rust:1.88-slim@sha256:38bc5a86d998772d4aec2348656ed21438d20fcdce2795b56ca434cf21430d89 AS builder
 
 WORKDIR /build
 
@@ -87,7 +93,7 @@ RUN set -eux; \
 # docs/adr/0009-updates-module-approach.md for the reasoning.
 #
 # Which makes the hardening below load-bearing rather than decoration.
-FROM debian:12-slim
+FROM debian:12-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 
 # ca-certificates only: Telegraf needs a trust store to reach InfluxDB over
 # HTTPS, and without it every write fails with a certificate error that looks

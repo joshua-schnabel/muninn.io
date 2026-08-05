@@ -25,18 +25,91 @@ on:
     tags: ["v*.*.*"]
 
 jobs:
-  # ── Create the GitHub Release from the CHANGELOG section ───────────────────
-  github-release:
-    name: GitHub Release
+  # ── Re-run the suite on the released commit, with no write access ──────────
+  # Its own job for one reason: `cargo` compiles and *executes* `build.rs` and
+  # proc-macros from every dependency in the tree, and the report it produces is
+  # attached to a release by a job that can write to the repository. Running
+  # both in one job would put a `contents: write` token in the same process
+  # space as third-party build code. Here the token is read-only, and the only
+  # thing that crosses into `github-release` is two artefact files.
+  #
+  # CI already gated these tests, so a failure here means the tag points at
+  # something CI never saw — fail loudly rather than release silently.
+  # Toolchain/cache steps mirror ci.yml's coverage job (same pins).
+  test-report:
+    name: Test report
     runs-on: ubuntu-latest
-    timeout-minutes: 25   # includes a full test run for the report
+    timeout-minutes: 25
     permissions:
-      contents: write   # gh release create + asset upload
-    env:
-      TELEGRAF_VERSION: "1.39.2"
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Cache cargo-llvm-cov
+        id: cache-llvm-cov
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-${{ runner.os }}-0.8.7
+      - name: Install cargo-llvm-cov
+        if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      # Without this the unix-only tests skip loudly and the report would
+      # understate what was actually verified for the release.
+      #
+      # From the checksum-pinned tarball the Dockerfile already names, not from
+      # the `telegraf:x.y.z` image tag. A tag is mutable: whoever can move it
+      # decides which binary the unix-only tests run against, and Dependabot
+      # does not watch a `docker create` reference (dependabot-core#5819 — the
+      # same limitation security.yml records for its Semgrep image). The script
+      # reads the version and the per-arch SHA-256 out of the Dockerfile, so
+      # there is one pin to maintain and it is the one ADR-0011 already
+      # describes.
+      - name: Fetch the pinned Telegraf binary
+        run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
+
+      - name: Run tests with coverage on the tagged commit
+        env:
+          MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
+        run: cargo llvm-cov --workspace --locked 2>&1 | tee test-output.txt
+
+      - name: Build the test report
+        env:
+          COMMIT: ${{ github.sha }}
+        run: VERSION="${GITHUB_REF_NAME#v}" bash scripts/test-report.sh test-output.txt
+
+      - name: Upload the report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-report
+          path: |
+            test-report.md
+            test-summary.md
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── Create the GitHub Release from the CHANGELOG section ───────────────────
+  # Runs no third-party code: git, awk, jq, gh and skopeo only. That is what
+  # makes `contents: write` acceptable here.
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: test-report
+    timeout-minutes: 15
+    permissions:
+      contents: write   # gh release create + asset upload
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
           fetch-depth: 0   # needed to prove the tag is on main
 
       # Nothing protects `refs/tags/v*` server-side, so a hand-pushed tag would
@@ -57,43 +130,22 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # ── Test report: re-run the full suite on the exact released commit ─────
-      # CI already gated these tests, so a failure here means the tag points at
-      # something CI never saw — fail loudly rather than release silently.
-      # Toolchain/cache steps mirror ci.yml's coverage job (same pins).
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Cache cargo-llvm-cov
-        id: cache-llvm-cov
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/cargo-llvm-cov
-          key: cargo-llvm-cov-${{ runner.os }}-0.8.7
-      - name: Install cargo-llvm-cov
-        if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
-        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
-
-      # Without this the unix-only tests skip loudly and the report would
-      # understate what was actually verified for the release.
-      - name: Extract the pinned Telegraf binary
+      # The Telegraf version the release notes quote. Read from the Dockerfile
+      # rather than repeated here: it is the authority everywhere else in this
+      # repository, and a second copy is a second thing to keep in step.
+      - name: Telegraf version from the Dockerfile
         run: |
-          cid="$(docker create "telegraf:${TELEGRAF_VERSION}")"
-          docker cp "$cid:/usr/bin/telegraf" "${{ runner.temp }}/telegraf"
-          docker rm "$cid" >/dev/null
-          chmod +x "${{ runner.temp }}/telegraf"
+          v="$(sed -n 's/^[[:space:]]*ARG[[:space:]]\+TELEGRAF_VERSION=\([^[:space:]]*\).*/\1/p' Dockerfile | head -1)"
+          if [ -z "$v" ]; then
+            echo "::error::could not read TELEGRAF_VERSION from the Dockerfile"
+            exit 1
+          fi
+          echo "TELEGRAF_VERSION=$v" >> "$GITHUB_ENV"
 
-      - name: Run tests with coverage on the tagged commit
-        env:
-          MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
-        run: cargo llvm-cov --workspace --locked 2>&1 | tee test-output.txt
-
-      - name: Build the test report
-        env:
-          COMMIT: ${{ github.sha }}
-        run: VERSION="${GITHUB_REF_NAME#v}" bash scripts/test-report.sh test-output.txt
+      - name: Download the test report
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: test-report
 
       - name: Create GitHub Release
         env:

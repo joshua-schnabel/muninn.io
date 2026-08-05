@@ -10,6 +10,47 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+### Security
+
+Findings from a full audit of the repository and the pipeline. No exploitable
+vulnerability was found; these close assumptions about things this repository
+does not control, which is the class it closes everywhere else.
+
+- **No CI job runs `cargo` with a write token any more.**
+  `actions/checkout` persists its token into `.git/config`, and `cargo`
+  compiles and executes `build.rs` and proc-macros from every dependency in the
+  tree — so a compromised crate could read a token that a job never needed on
+  disk. Every checkout now sets `persist-credentials: false` except the two that
+  push, and `release.yml` is split: `test-report` runs the suite with
+  `contents: read` and uploads the report; `github-release` downloads it and
+  runs no third-party code.
+- **Credentials no longer pass through argv**, where `/proc/<pid>/cmdline` makes
+  them readable to every process on the runner. `skopeo login --password-stdin`
+  with a `0600` `REGISTRY_AUTH_FILE` replaces `--dest-creds`; `curl --data @-`
+  and `-K -` replace `-d` and `-H` for the DockerHub session token.
+- **`security-events: write` is scoped to the job that uploads SARIF**, instead
+  of being granted workflow-wide to ShellCheck and actionlint as well.
+- **`cargo-deny` is pinned** (`--version 0.20.2`). It was deliberately unpinned
+  for freshness — but the freshness comes from the advisory database, fetched at
+  run time, not from the tool binary. Pinning costs no coverage and removes an
+  unpinned `cargo install` from every run.
+- **Base images are pinned by digest** as well as by tag. Dependabot updates the
+  pair together, so this costs no manual upkeep — the same weekly PR as before,
+  with the digest in it.
+- **CI takes Telegraf from the checksum-pinned tarball, not a mutable image
+  tag.** New `scripts/fetch-telegraf.sh` reads the version and the per-arch
+  SHA-256 out of the `Dockerfile` and verifies the download, so there is one pin
+  — the one [ADR-0011](docs/adr/0011-telegraf-pinning.md) already describes —
+  rather than a second one to keep current by hand.
+- **Telegraf's output is scrubbed of known secrets before muninn logs it.**
+  muninn re-emits the child's stdout and stderr through its own logger, and the
+  configuration Telegraf reads holds resolved secrets. `Secret`'s redaction is a
+  property of the type and so cannot reach text another process formatted; a new
+  `Redactor`, built from the resolved configuration, closes that. Whether
+  Telegraf ever quotes a config value in a diagnostic is a property of Telegraf
+  — this no longer depends on the answer. See
+  [`docs/hardening.md`](docs/hardening.md#secrets).
+
 ### Added
 
 - **The `image_updates` module** — per running container, whether a newer

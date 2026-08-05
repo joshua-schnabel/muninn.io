@@ -24,7 +24,7 @@ use crate::config::model::{
 };
 use crate::duration::ConfigDuration;
 use crate::error::Result;
-use crate::secret::Secret;
+use crate::secret::{Redactor, Secret};
 
 /// A validated, resolved configuration.
 #[derive(Debug, Clone)]
@@ -173,6 +173,37 @@ impl Config {
                 prometheus,
             },
         })
+    }
+
+    /// A [`Redactor`] holding every secret this configuration resolved.
+    ///
+    /// Built here rather than at the call site because this module is the one
+    /// place that knows where secrets live — the same reason `from_v1` above is
+    /// the only place they are read.
+    ///
+    /// **A third credential must be added here by hand.** The compiler will not
+    /// say so: adding a field to [`Outputs`] leaves this compiling and silently
+    /// less complete, which is the worst shape a redactor can take, because it
+    /// still reads as coverage. `every_resolved_secret_is_redactable` in the
+    /// tests below is what actually holds the line — it walks a configuration
+    /// with every credential set and fails if one survives.
+    ///
+    /// Used to scrub Telegraf's own output before muninn re-emits it — see
+    /// `muninn_telegraf::process::forward`.
+    pub fn redactor(&self) -> Redactor {
+        let mut values = Vec::new();
+        if let Some(influx) = &self.outputs.influxdb {
+            values.push(influx.token.expose().to_string());
+        }
+        if let Some(auth) = self
+            .outputs
+            .prometheus
+            .as_ref()
+            .and_then(|p| p.basic_auth.as_ref())
+        {
+            values.push(auth.password.expose().to_string());
+        }
+        Redactor::new(values)
     }
 }
 

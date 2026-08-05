@@ -96,6 +96,94 @@ impl fmt::Display for Secret {
     }
 }
 
+/// The mask [`Redactor`] substitutes. The same one [`Secret`] renders, so a
+/// redacted log line reads like every other place a secret is suppressed.
+pub const MASK: &str = "***";
+
+/// Values shorter than this are not redacted.
+///
+/// A short secret would match constantly — `abc` inside `abcdefg`, a two-letter
+/// value inside almost any word — and a log line shot through with `***` is
+/// less readable *and* less safe, because nobody reads it. Any credential worth
+/// protecting is longer than this; a shorter one is a configuration mistake the
+/// operator should hear about rather than a value to defend.
+const MIN_REDACTABLE_LEN: usize = 8;
+
+/// Removes known secret values from text muninn did not write.
+///
+/// # Why this exists at all
+///
+/// [`Secret`]'s redaction is a property of the *type*: to print one you have to
+/// call [`Secret::expose`], and there is exactly one such call. That argument
+/// covers everything muninn formats itself — and covers nothing at all in text
+/// that arrives already formatted from somewhere else.
+///
+/// Telegraf's stdout and stderr are exactly that. muninn re-emits them through
+/// its own logger, and the configuration Telegraf is reading holds **resolved
+/// secrets** ([ADR-0003](../../../docs/adr/0003-ephemeral-generated-config.md)).
+/// Whether a Telegraf diagnostic ever quotes a configuration value is a
+/// property of Telegraf, not of muninn — an assumption about software this
+/// project does not control, at the point where logs leave the container. This
+/// closes it instead of resting on it, the same way the `image_updates` Docker
+/// client refuses a control character it has been told cannot arrive.
+///
+/// # What it does not do
+///
+/// It matches literal values. A secret that Telegraf reformats — URL-encoded,
+/// truncated, base64'd — passes through. That is a real limit and the reason
+/// this is defence in depth rather than a guarantee: the load-bearing control
+/// is still that the generated configuration lives on a tmpfs and is never
+/// mounted out.
+#[derive(Clone, Default)]
+pub struct Redactor {
+    /// Longest first, so an overlapping pair cannot leave a fragment of the
+    /// longer value behind after the shorter one has been replaced.
+    values: Vec<String>,
+}
+
+impl Redactor {
+    /// Build from every secret that reached the generated configuration.
+    pub fn new(secrets: impl IntoIterator<Item = String>) -> Self {
+        let mut values: Vec<String> = secrets
+            .into_iter()
+            .filter(|s| s.len() >= MIN_REDACTABLE_LEN)
+            .collect();
+        values.sort_by_key(|b| std::cmp::Reverse(b.len()));
+        values.dedup();
+        Redactor { values }
+    }
+
+    /// Whether this redactor would change anything. Lets a caller skip the
+    /// work — and the allocation — when nothing is configured.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// `line` with every known secret replaced by [`MASK`].
+    ///
+    /// Returns the input unchanged, without allocating, when there is nothing
+    /// to do — which is the overwhelmingly common case for a log line.
+    pub fn apply<'a>(&self, line: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.values.is_empty() || !self.values.iter().any(|v| line.contains(v.as_str())) {
+            return std::borrow::Cow::Borrowed(line);
+        }
+        let mut out = line.to_string();
+        for value in &self.values {
+            if out.contains(value.as_str()) {
+                out = out.replace(value.as_str(), MASK);
+            }
+        }
+        std::borrow::Cow::Owned(out)
+    }
+}
+
+/// Never render the values it holds — the whole point of the type.
+impl fmt::Debug for Redactor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Redactor({} values)", self.values.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +330,80 @@ mod tests {
         assert!(!err.to_string().contains("hunter2"));
         // And the path, which is safe and necessary, is present.
         assert!(err.to_string().contains(&f.path().display().to_string()));
+    }
+
+    // ── Redactor ────────────────────────────────────────────────────────────
+
+    fn redactor(values: &[&str]) -> Redactor {
+        Redactor::new(values.iter().map(|s| s.to_string()))
+    }
+
+    /// The case this exists for: a line muninn did not write, quoting a value
+    /// muninn resolved.
+    #[test]
+    fn a_secret_quoted_by_a_child_process_is_masked() {
+        let r = redactor(&["s3cret-token-value"]);
+        let out = r.apply("E! [outputs.influxdb_v2] token s3cret-token-value rejected");
+        assert!(!out.contains("s3cret-token-value"), "leaked: {out}");
+        assert_eq!(out, "E! [outputs.influxdb_v2] token *** rejected");
+    }
+
+    #[test]
+    fn a_line_without_a_secret_is_returned_untouched() {
+        let r = redactor(&["s3cret-token-value"]);
+        let line = "I! [agent] Config: Interval:10s, Quiet:false";
+        assert_eq!(r.apply(line), line);
+        // Borrowed, not rebuilt: the common case must not allocate.
+        assert!(matches!(r.apply(line), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn every_occurrence_on_a_line_is_masked() {
+        let r = redactor(&["longenoughsecret"]);
+        let out = r.apply("longenoughsecret and again longenoughsecret");
+        assert_eq!(out, "*** and again ***");
+    }
+
+    #[test]
+    fn several_secrets_are_all_masked() {
+        let r = redactor(&["influx-token-aaa", "prometheus-pass-bbb"]);
+        let out = r.apply("influx-token-aaa / prometheus-pass-bbb");
+        assert_eq!(out, "*** / ***");
+    }
+
+    /// Longest first: replacing the short one first would leave the tail of the
+    /// long one — `...-extended` — sitting in the log.
+    #[test]
+    fn an_overlapping_pair_cannot_leave_a_fragment_behind() {
+        let r = redactor(&["secret-value-x", "secret-value-x-extended"]);
+        let out = r.apply("token secret-value-x-extended here");
+        assert!(!out.contains("extended"), "left a fragment: {out}");
+        assert_eq!(out, "token *** here");
+    }
+
+    /// A short value would match inside ordinary words and turn every log line
+    /// into noise — which is less safe, because an unreadable log is unread.
+    #[test]
+    fn values_too_short_to_match_safely_are_ignored() {
+        let r = redactor(&["abc"]);
+        assert!(r.is_empty());
+        assert_eq!(r.apply("abcdef"), "abcdef");
+    }
+
+    #[test]
+    fn an_empty_redactor_changes_nothing() {
+        let r = Redactor::default();
+        assert!(r.is_empty());
+        assert_eq!(r.apply("anything at all"), "anything at all");
+    }
+
+    /// The redactor holds the values it is meant to hide; formatting it must
+    /// not undo that.
+    #[test]
+    fn debug_does_not_render_the_values_it_holds() {
+        let r = redactor(&["s3cret-token-value"]);
+        let out = format!("{r:?}");
+        assert!(!out.contains("s3cret-token-value"), "leaked: {out}");
+        assert_eq!(out, "Redactor(1 values)");
     }
 }

@@ -144,7 +144,11 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
 
     transition(&state, State::StartingTelegraf);
     let host_env = config.runtime.host_env();
-    let mut telegraf = Telegraf::spawn(&binary, config_path, &host_env)?;
+    // Everything Telegraf prints goes through muninn's logger, and the config it
+    // is about to read holds resolved secrets — so the child's output is scrubbed
+    // of them first. `Secret`'s type-level redaction cannot reach text another
+    // process formatted.
+    let mut telegraf = Telegraf::spawn(&binary, config_path, &host_env, config.redactor())?;
 
     // Readiness only after Telegraf is confirmed running. `config check`
     // initialises without starting, so up to this point nothing has proved the
