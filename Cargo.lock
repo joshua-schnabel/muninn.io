@@ -534,6 +534,8 @@ dependencies = [
  "insta",
  "muninn-core",
  "muninn-telegraf",
+ "serde",
+ "serde_json",
  "tempfile",
  "tracing",
 ]

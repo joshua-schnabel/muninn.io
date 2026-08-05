@@ -339,6 +339,71 @@ impl Default for UpdatesModule {
     }
 }
 
+/// Whether a newer image is available, under the same tag, for each running
+/// container.
+///
+/// Telegraf has no plugin for this either, so like [`UpdatesModule`] it runs
+/// through `inputs.exec` and muninn does the work itself — here by asking the
+/// Docker daemon to resolve the tag against the registry
+/// (`GET /distribution/{name}/json`), rather than muninn talking TLS to a
+/// registry directly. See ADR-0013.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageUpdatesModule {
+    /// Off by default: it needs the same Docker socket access as `docker`,
+    /// which is root-equivalent on the host. See ADR-0010.
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_docker_endpoint")]
+    pub endpoint: String,
+    /// The timeout for the startup reachability probe, and for each Docker API
+    /// call the daemon answers out of its own state.
+    ///
+    /// Not for the registry lookup — see [`Self::registry_timeout`].
+    #[serde(default = "default_docker_timeout")]
+    pub timeout: ConfigDuration,
+    /// The timeout for the one call that leaves the host.
+    ///
+    /// `GET /distribution/{ref}/json` makes the daemon perform a TLS
+    /// handshake, a token exchange and a manifest fetch against a possibly
+    /// distant registry. Holding that to the same five seconds as a local
+    /// socket call reports `distribution_query_failed` for a registry that was
+    /// merely slow, so it gets its own, longer default.
+    #[serde(default = "default_registry_timeout")]
+    pub registry_timeout: ConfigDuration,
+    /// Registry lookups are rate-limited and comparatively expensive, so this
+    /// runs on its own schedule rather than at `agent.interval` — the same
+    /// reasoning as [`UpdatesModule::interval`].
+    ///
+    /// It also bounds one run: the check spends at most half its own interval
+    /// before reporting the containers it did not reach, so that Telegraf
+    /// never kills it mid-report.
+    #[serde(default = "default_updates_interval")]
+    pub interval: ConfigDuration,
+    #[serde(default)]
+    pub container_include: Vec<String>,
+    #[serde(default)]
+    pub container_exclude: Vec<String>,
+}
+
+fn default_registry_timeout() -> ConfigDuration {
+    ConfigDuration::from_secs(30)
+}
+
+impl Default for ImageUpdatesModule {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            endpoint: default_docker_endpoint(),
+            timeout: default_docker_timeout(),
+            registry_timeout: default_registry_timeout(),
+            interval: default_updates_interval(),
+            container_include: Vec::new(),
+            container_exclude: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModulesConfig {
@@ -364,6 +429,8 @@ pub struct ModulesConfig {
     pub docker: DockerModule,
     #[serde(default)]
     pub updates: UpdatesModule,
+    #[serde(default)]
+    pub image_updates: ImageUpdatesModule,
 }
 
 impl ModulesConfig {
@@ -384,6 +451,7 @@ impl ModulesConfig {
             ("network", self.network.enabled),
             ("docker", self.docker.enabled),
             ("updates", self.updates.enabled),
+            ("image_updates", self.image_updates.enabled),
         ];
         flags
             .into_iter()

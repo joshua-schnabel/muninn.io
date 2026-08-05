@@ -29,7 +29,9 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
+
+use crate::unix_now as now;
 
 /// The influx measurement every line carries.
 pub const MEASUREMENT: &str = "muninn_updates";
@@ -585,13 +587,6 @@ fn lists_age(lists: &Path, now: u64) -> Option<i64> {
     // Clamped at zero: a host clock ahead of the container's would otherwise
     // report a negative age, which reads as a bug rather than as clock skew.
     Some((now.saturating_sub(newest)) as i64)
-}
-
-fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 fn first_line(s: &str) -> String {

@@ -520,6 +520,15 @@ jobs:
       - name: Updates system tests
         run: bash scripts/updates-test.sh muninn:dev
 
+      # The image_updates counterpart, in the same job rather than its own: it
+      # needs the same loaded image and the runner's own Docker daemon, and it
+      # is minutes rather than the tens the updates fixtures cost. Every cell
+      # resolves a tag against Docker Hub, so it is subject to the same
+      # anonymous rate limit the module documents — one run per job, well
+      # inside 100 per 6 hours.
+      - name: Image updates system tests
+        run: bash scripts/image-updates-test.sh muninn:dev
+
   # ── Push the scanned+tested bytes by digest (push events only) ────────────
   # Skopeo copies straight from the artifact tarball — the exact bytes that
   # scan, integration and updates validated. Skipped on pull_request, so the

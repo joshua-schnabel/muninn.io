@@ -353,6 +353,10 @@ fn a_blank_pattern_in_any_list_is_rejected_with_its_index() {
             "modules:\n  disk_io:\n    enabled: true\n    exclude_devices: [\"\"]\n",
             "modules.disk_io.exclude_devices[0]",
         ),
+        (
+            "modules:\n  image_updates:\n    enabled: true\n    container_include: [\"\"]\n",
+            "modules.image_updates.container_include[0]",
+        ),
     ];
     for (block, key) in cases {
         rejects(&with(block), key);
@@ -464,6 +468,115 @@ fn updates_interval_below_a_minute_is_rejected() {
         "modules.updates.interval",
     );
     assert!(msg.contains("1m or more"), "got: {msg}");
+}
+
+#[test]
+fn image_updates_interval_below_a_minute_is_rejected() {
+    let msg = rejects(
+        &with("modules:\n  image_updates:\n    enabled: true\n    interval: 30s\n"),
+        "modules.image_updates.interval",
+    );
+    assert!(msg.contains("1m or more"), "got: {msg}");
+}
+
+#[test]
+fn image_updates_endpoint_must_have_a_known_scheme() {
+    rejects(
+        &with(
+            "modules:\n  image_updates:\n    enabled: true\n    \
+             endpoint: \"/var/run/docker.sock\"\n",
+        ),
+        "modules.image_updates.endpoint",
+    );
+}
+
+#[test]
+fn image_updates_endpoint_must_not_be_empty_when_enabled() {
+    rejects(
+        &with("modules:\n  image_updates:\n    enabled: true\n    endpoint: \"\"\n"),
+        "modules.image_updates.endpoint",
+    );
+}
+
+/// The same failure mode docker's endpoint check exists for: a bare scheme
+/// passes a `starts_with` test and names nothing to probe.
+#[test]
+fn an_image_updates_endpoint_that_is_only_a_scheme_is_rejected() {
+    for endpoint in ["unix://", "tcp://"] {
+        let msg = rejects(
+            &with(&format!(
+                "modules:
+  image_updates:
+    enabled: true
+    endpoint: \"{endpoint}\"
+"
+            )),
+            "modules.image_updates.endpoint",
+        );
+        assert!(
+            msg.contains("docker.sock") || msg.contains("proxy"),
+            "should show what a complete endpoint looks like: {msg}"
+        );
+    }
+}
+
+/// Same exposure as the docker module — same socket, same warning.
+#[test]
+fn enabling_image_updates_warns_about_the_socket() {
+    let w = warnings_of(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert!(
+        w.iter().any(|s| s.contains("root")),
+        "expected a socket warning, got: {w:?}"
+    );
+}
+
+#[test]
+fn image_updates_defaults_match_docker_and_updates() {
+    let cfg = ok(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert_eq!(
+        cfg.modules.image_updates.endpoint,
+        "unix:///var/run/docker.sock"
+    );
+    assert_eq!(cfg.modules.image_updates.timeout.as_secs(), 5);
+    assert_eq!(cfg.modules.image_updates.interval.as_secs(), 3600);
+    assert!(cfg.modules.image_updates.container_include.is_empty());
+    assert!(cfg.modules.image_updates.container_exclude.is_empty());
+}
+
+/// The registry call is the one that leaves the host — a TLS handshake, a
+/// token exchange and a manifest fetch — so it does not share the local
+/// socket call's five seconds.
+#[test]
+fn the_registry_lookup_gets_a_longer_default_than_a_local_api_call() {
+    let cfg = ok(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert_eq!(cfg.modules.image_updates.registry_timeout.as_secs(), 30);
+    assert!(
+        cfg.modules.image_updates.registry_timeout > cfg.modules.image_updates.timeout,
+        "the call that reaches a registry must get more patience than one the daemon answers itself"
+    );
+}
+
+#[test]
+fn a_zero_registry_timeout_is_rejected() {
+    rejects(
+        &with("modules:\n  image_updates:\n    enabled: true\n    registry_timeout: 0s\n"),
+        "modules.image_updates.registry_timeout",
+    );
+}
+
+/// Not refused — an operator may have a reason — but the symptom of getting
+/// this backwards (`distribution_query_failed` against a registry that answers
+/// fine by hand) points nowhere near the cause, so it is named here.
+#[test]
+fn a_registry_timeout_shorter_than_the_api_timeout_warns() {
+    let w = warnings_of(&with(
+        "modules:\n  image_updates:\n    enabled: true\n    timeout: 30s\n    \
+         registry_timeout: 5s\n",
+    ));
+    assert!(
+        w.iter().any(|s| s.contains("registry_timeout")),
+        "expected a warning about the inverted timeouts, got: {w:?}"
+    );
 }
 
 #[test]

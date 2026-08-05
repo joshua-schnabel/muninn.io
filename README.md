@@ -127,7 +127,7 @@ Telegraf's endpoint is gone. A two-job scrape configuration is in
 
 | | |
 |---|---|
-| **Modules** | `cpu` · `memory` · `load` · `system` · `swap` · `processes` · `disks` · `disk_io` · `network` · `docker` · `updates` |
+| **Modules** | `cpu` · `memory` · `load` · `system` · `swap` · `processes` · `disks` · `disk_io` · `network` · `docker` · `updates` · `image_updates` |
 | **Outputs** | InfluxDB v2 · Prometheus — separately or together, at least one required |
 | **Config** | One YAML file. Unknown keys are errors, not warnings |
 | **Secrets** | File paths only, redacted by type — never inline, never from the environment |

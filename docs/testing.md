@@ -30,7 +30,7 @@ its native failure mode.
 | Unit | `#[cfg(test)]` inside source modules | < 1 s |
 | Snapshot | `#[cfg(test)]` with `insta` | < 1 s |
 | Integration / E2E | `muninn/tests/*.rs` | seconds |
-| System | `scripts/integration-test.sh` + compose | minutes, CI |
+| System | `scripts/*-test.sh` + compose | minutes, CI |
 
 ## The platform gap, and why it is not optional
 
@@ -217,6 +217,8 @@ Against the image, which has to be built first (`docker build -t muninn:dev .`):
 bash scripts/container-test.sh          # the artefact, in the documented posture
 bash scripts/updates-test.sh            # the updates module against real host trees
 bash scripts/updates-test.sh S8 S9      # selected cells
+bash scripts/image-updates-test.sh      # the image_updates module against a real daemon
+bash scripts/image-updates-test.sh I4   # selected cells
 ```
 
 `updates-test.sh` is the system-test level the brief asks for in §18.6, and it is
@@ -226,6 +228,23 @@ compare against. It compares the shipped image's answers against the same ground
 truth recorded in [`updates-evidence.md`](updates-evidence.md) — if the
 implementation ever drifts from what was proven, a cell goes red rather than a
 number going quietly wrong.
+
+`image-updates-test.sh` exists for the same reason, one level further out. The
+`image_updates` unit tests reach the verdict logic through a scripted
+`DockerApi`, which is what makes every failure branch testable at all — but a
+scripted daemon agrees with whatever the code expects of it. This suite runs
+`muninn image-check` from the shipped image against the real Engine API, on
+containers it creates itself.
+
+The cell that carries the most weight is **I4**, and the trick is worth knowing
+because it removes the usual reason a test like this is flaky. Rather than wait
+for a registry to publish something, it re-tags a pinned old image as
+`alpine:latest` locally: the daemon then reports a container running
+`alpine:latest` whose recorded digest is the old one, and what the registry
+serves for that tag is certainly something else. A known-stale container, built
+on demand, with nothing to wait for and no push. **I7** is its mirror — a
+container created as `docker.io/library/alpine:3.19`, which must be judged
+rather than dismissed as a different repository.
 
 ## Quick reference
 

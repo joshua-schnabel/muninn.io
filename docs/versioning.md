@@ -12,7 +12,7 @@ Breaking any of these requires a major release.
 |---|---|
 | **Config schema** | Every YAML key in [`configuration.md`](configuration.md), including defaults and validation rules. A config that loads today loads on every later 1.x |
 | **Schema version** | `version: 1` keeps working. A future `version: 2` does not remove support for 1 |
-| **CLI** | `run`, `validate`, `render-config`, `check-runtime`, `update-check`, `healthcheck`, `version`, and the global flags |
+| **CLI** | `run`, `validate`, `render-config`, `check-runtime`, `update-check`, `image-check`, `healthcheck`, `version`, and the global flags |
 | **Exit codes** | The values and meanings in [`supervision.md`](supervision.md). A code may gain meaning in a minor release; it never changes meaning |
 | **Health endpoints** | `/health/live` and `/health/ready`, their paths, status codes and readiness semantics |
 | **muninn metrics** | The `muninn_*` metric names, label names and units. New families may appear in a minor release; renaming or removing one is breaking |

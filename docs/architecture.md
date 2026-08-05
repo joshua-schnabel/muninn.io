@@ -216,3 +216,4 @@ is the whole model, and it is why the generated config can be ephemeral.
 | [0010](adr/0010-docker-socket.md) | The Docker socket security model |
 | [0011](adr/0011-telegraf-pinning.md) | Pinning Telegraf by tarball and checksum |
 | [0012](adr/0012-self-metrics-on-health-server.md) | muninn's own metrics live on the health server |
+| [0013](adr/0013-image-updates-via-docker-api.md) | Detecting image updates via the Docker Engine API, not a registry client |

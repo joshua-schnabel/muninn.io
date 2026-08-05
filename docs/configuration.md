@@ -294,6 +294,7 @@ modules:
 | `network` | off | `include_interfaces`, `exclude_interfaces` | host `/proc` |
 | `docker` | off | `endpoint`, `container_include`, `container_exclude`, `container_states`, `timeout` | Docker socket |
 | `updates` | off | `interval`, `security_only_metric` | host `/hostfs` (same mount as the rest) |
+| `image_updates` | off | `endpoint`, `timeout`, `registry_timeout`, `interval`, `container_include`, `container_exclude` | Docker socket |
 
 ### Include and exclude
 
@@ -353,6 +354,47 @@ Access to the Docker socket is equivalent to root on the host, and mounting it
 `:ro` does not change that — it protects the socket file, not the API. See
 [ADR-0010](adr/0010-docker-socket.md) and [`modules.md`](modules.md#docker) for a
 socket-proxy configuration.
+
+### `modules.image_updates`
+
+Off by default, for the same security reason as `modules.docker` — it needs the
+same Docker socket, and shares its startup reachability check (exit `12` if
+`endpoint` does not answer `GET /_ping`).
+
+For each running container, matched against `container_include`/
+`container_exclude`, this asks the Docker daemon to resolve the container's
+image reference against its registry (`GET /distribution/{name}/json`) and
+compares the digest it gets back to the one the daemon recorded when the
+running image was pulled. muninn never speaks HTTPS to a registry itself — the
+daemon does, with whatever credentials the host already has. See
+[ADR-0013](adr/0013-image-updates-via-docker-api.md).
+
+Like `modules.updates`, a failed check degrades rather than stops muninn: a
+container whose image cannot be judged reports `check_success=0` with a reason
+on its own series, and every other container's verdict is unaffected.
+`muninn image-check --endpoint unix:///var/run/docker.sock` runs exactly what
+Telegraf runs. Per-reason causes and fixes are in
+[`modules.md`](modules.md#image_updates).
+
+Registry lookups are rate-limited, so `interval` defaults to `1h` and, like
+`modules.updates.interval`, is rejected below one minute.
+
+**Two timeouts, because the calls are not alike.** `timeout` (default `5s`)
+bounds a call the daemon answers out of its own state, and the startup probe.
+`registry_timeout` (default `30s`) bounds the one call that leaves the host —
+the daemon does a TLS handshake, a token exchange and a manifest fetch to
+answer it, and holding that to five seconds reports `distribution_query_failed`
+for a registry that was merely slow. Setting `registry_timeout` below `timeout`
+is allowed but warned about; it is almost always a mistake, and its symptom
+points nowhere near its cause.
+
+**`interval` also bounds one run.** The check spends at most half of it before
+reporting the containers it did not reach as `budget_exceeded`, and the
+`inputs.exec` timeout muninn renders is always larger than that. The ordering
+is deliberate: a helper Telegraf kills reports *nothing*, losing the verdicts
+it had already established, while one that runs out of its own budget still
+emits every result it has. Neither number is configurable on its own — see
+[`modules.md`](modules.md#image_updates).
 
 ---
 

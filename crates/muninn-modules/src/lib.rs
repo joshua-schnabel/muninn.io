@@ -29,6 +29,7 @@ use muninn_telegraf::{PluginInstance, TelegrafConfig};
 use std::time::Duration;
 
 pub mod agent;
+pub mod image_updates;
 pub mod inputs;
 pub mod outputs;
 pub mod updates;
@@ -174,6 +175,7 @@ pub fn all_modules() -> Vec<Box<dyn MonitoringModule>> {
         Box::new(inputs::Network),
         Box::new(inputs::Docker),
         Box::new(updates::Updates),
+        Box::new(image_updates::ImageUpdates),
     ]
 }
 
@@ -200,6 +202,20 @@ pub fn build(ctx: &RenderContext<'_>) -> TelegrafConfig {
     }
 
     config
+}
+
+/// Seconds since the Unix epoch, for the `check_timestamp_seconds` field both
+/// `inputs.exec` modules emit.
+///
+/// Zero rather than an error on a clock before the epoch: this is a field in a
+/// metric line, and a check that otherwise succeeded should not fail to report
+/// because the host's clock is absurd. A timestamp of zero is obviously wrong
+/// in a way a wrong-but-plausible one would not be.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// The requirements of every enabled module, collected.

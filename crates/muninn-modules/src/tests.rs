@@ -95,6 +95,7 @@ fn every_module_can_be_enabled() {
             "network" => c.modules.network.enabled = true,
             "docker" => c.modules.docker.enabled = true,
             "updates" => c.modules.updates.enabled = true,
+            "image_updates" => c.modules.image_updates.enabled = true,
             other => panic!("module '{other}' has no way to be enabled from the configuration"),
         });
         assert!(

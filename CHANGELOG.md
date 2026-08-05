@@ -12,6 +12,46 @@ The release pipeline reads the version from this file — see
 
 ### Added
 
+- **The `image_updates` module** — per running container, whether a newer
+  image is available under the tag it is running. Off by default; needs the
+  same Docker socket as `docker` and shares its startup reachability check.
+  Rather than adding a TLS stack to speak to registries directly, it asks the
+  Docker daemon to resolve each container's tag against the registry
+  (`GET /distribution/{name}/json`) — the same resolution `docker pull`
+  performs, without pulling — and compares the digest against what the daemon
+  recorded when the running image was pulled. `muninn image-check` runs the
+  same check `inputs.exec` does, for diagnosis by hand. Like `updates`, a
+  failed check degrades that one container's series rather than muninn as a
+  whole. See [`docs/modules.md#image_updates`](docs/modules.md#image_updates)
+  and [ADR-0013](docs/adr/0013-image-updates-via-docker-api.md). Adds
+  `serde_json` as a dependency, in `muninn-modules` only.
+
+  Repository names are normalised before they are compared, so a container
+  created as `docker.io/library/nginx` is judged rather than dismissed as a
+  different repository; an image ID where a reference belongs gets its own
+  reason (`image_id_reference`) instead of a true answer to a nonsense
+  question. The registry lookup has its own, longer timeout
+  (`registry_timeout`, default `30s`) because it is the one call that leaves
+  the host. The run carries a budget of half its interval: containers not
+  reached report `budget_exceeded` rather than the whole helper being killed by
+  Telegraf holding results it had already found, and the rendered `inputs.exec`
+  timeout is derived from that budget so the ordering holds by construction.
+
+  Two guards close the same class of hole in both directions: every request
+  path the module's Docker API client builds is checked for a control character
+  or a space before it is sent, and control characters in the container name
+  and image reference are replaced before they reach influx line protocol —
+  request-line injection on one side, a fabricated metric series on the other,
+  both from strings muninn did not choose. Found in a security review before
+  this module's first release.
+
+  The Docker API client reassembles chunked responses. It first refused them by
+  name, on the reasoning that none of these endpoints streams — the daemon
+  chunks all three anyway, so the module reported `docker_unreachable` against
+  every real daemon. Every unit test passed; `scripts/image-updates-test.sh`,
+  which runs the whole path against a live daemon including a deliberately
+  stale container, found it on its first run. Recorded in `AGENTS.md` §6 so it
+  is not undone.
 - CI/CD, completed (WP12) — `.github/workflows/`, built to huginn.io's shape.
   Twelve jobs: format and lint, tests on stable and beta, `cargo deny`,
   coverage, the Telegraf reference check, the version gate, a per-architecture
