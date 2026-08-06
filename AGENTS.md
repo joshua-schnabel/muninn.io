@@ -278,7 +278,10 @@ explicitly and flagged in the PR.
 | Vulnerability reporting | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Contributor workflow | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |
+| Symptom → cause → fix | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 | CI/CD and repository setup | [`docs/ci-cd.md`](docs/ci-cd.md) |
+| Every workflow explained | [`docs/workflows.md`](docs/workflows.md) |
+| Release runbook | [`docs/releasing.md`](docs/releasing.md) |
 | Open risks | [`docs/risks.md`](docs/risks.md) |
 | Architecture decisions | [`docs/adr/`](docs/adr/) |
 | Why the updates module works | [`docs/updates-evidence.md`](docs/updates-evidence.md) |

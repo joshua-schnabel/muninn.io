@@ -155,3 +155,9 @@ deployment rather than of the approach:
   `noble-updates` rather than `noble-security`. The host's own apt says the same,
   so this is a property of the classification rule rather than a regression. See
   [R8](risks.md).
+
+## Related
+
+- [`modules.md`](modules.md#updates) — the module and its metrics
+- [ADR-0009](adr/0009-updates-module-approach.md) — the rule these measurements fixed
+- [`risks.md`](risks.md) — R8, the limit this evidence bounds

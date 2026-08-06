@@ -72,3 +72,9 @@ the design package through to the release pipeline. The record is the git
 history and [`CHANGELOG.md`](../CHANGELOG.md); the decisions that outlived the
 process are in [`adr/`](adr/), and the measurements behind the updates module are
 in [`updates-evidence.md`](updates-evidence.md).
+
+## Related
+
+- [`risks.md`](risks.md) — the open risks these items come from
+- [`releasing.md`](releasing.md) — how the next version gets cut
+- [`versioning.md`](versioning.md) — what a version number promises

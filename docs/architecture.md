@@ -217,3 +217,10 @@ is the whole model, and it is why the generated config can be ephemeral.
 | [0011](adr/0011-telegraf-pinning.md) | Pinning Telegraf by tarball and checksum |
 | [0012](adr/0012-self-metrics-on-health-server.md) | muninn's own metrics live on the health server |
 | [0013](adr/0013-image-updates-via-docker-api.md) | Detecting image updates via the Docker Engine API, not a registry client |
+
+## Related
+
+- [`supervision.md`](supervision.md) — signals, exit codes, diagnosis
+- [`telegraf-rendering.md`](telegraf-rendering.md) — how the TOML is produced
+- [`ci-cd.md`](ci-cd.md) — how this is built, scanned and published
+- [`risks.md`](risks.md) — what is known to be weak

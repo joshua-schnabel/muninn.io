@@ -8,6 +8,7 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/muninn.io/ci.yml?branch=dev&label=CI&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml)
 [![Security](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/muninn.io/security.yml?branch=dev&label=security&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/security.yml)
+[![Coverage](https://img.shields.io/github/actions/workflow/status/joshua-schnabel/muninn.io/ci.yml?branch=dev&label=coverage%20%E2%89%A5%2080%25&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/joshua-schnabel/muninn.io?logo=github&logoColor=white)](LICENSE)
 [![Issues](https://img.shields.io/github/issues/joshua-schnabel/muninn.io?logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/issues)
 [![Last commit](https://img.shields.io/github/last-commit/joshua-schnabel/muninn.io/dev?label=last%20change&logo=github&logoColor=white)](https://github.com/joshua-schnabel/muninn.io/commits/dev)  
@@ -215,18 +216,22 @@ agent, read [`AGENTS.md`](AGENTS.md) first.
 | [Rendering](docs/telegraf-rendering.md) | How the Telegraf config is produced |
 | [Hardening](docs/hardening.md) | Container security posture |
 | [Testing](docs/testing.md) | Test pyramid, coverage, the no-sleep rule |
+| [Troubleshooting](docs/troubleshooting.md) | Symptom, cause, fix |
 | [CI/CD](docs/ci-cd.md) | Pipeline, release path, repository setup |
+| [Workflows](docs/workflows.md) | Every workflow: triggers, jobs, gotchas |
+| [Releasing](docs/releasing.md) | Cutting a release, one-click or by hand |
 | [Versioning](docs/versioning.md) | SemVer policy and the stable surface |
 | [Roadmap](docs/roadmap.md) | What is still open |
 | [Risks](docs/risks.md) | Open risks and questions |
-| [Decisions](docs/adr/) | Twelve ADRs |
+| [Decisions](docs/adr/) | Thirteen ADRs |
 
 ## Related
 
 [huginn.io](https://github.com/joshua-schnabel/huginn.io) — the sibling project,
-an uptime and latency monitor by the same maintainer. muninn inherits its
-conventions.
+an uptime and latency monitor by the same maintainer. muninn was built on its
+conventions, and the two are kept aligned deliberately: same README shape, same
+doc map, same pipeline, same rules for AI agents.
 
-## Licence
+## License
 
 MIT. See [LICENSE](LICENSE).
