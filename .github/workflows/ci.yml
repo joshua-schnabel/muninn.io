@@ -671,9 +671,23 @@ jobs:
       # runs `git push origin "$TAG"`. Nothing between here and there executes
       # third-party code — no cargo, no build — so the token stays inside a job
       # that only runs skopeo, jq and git.
+      #
+      # RELEASE_PAT rather than the built-in token, because of what has to happen
+      # after the push: GitHub does not start a workflow from an event that
+      # GITHUB_TOKEN created — the recursion guard — so a tag pushed with it
+      # fires nothing and release.yml (`on: push: tags`) never runs. That is
+      # exactly what v0.1.0 hit: the image, the ghcr mirror and the tag all
+      # shipped, and the GitHub Release, the SBOM, the test report and the
+      # housekeeping PR did not. It is the same secret prepare-dev already needs,
+      # for the same underlying reason.
+      #
+      # The fallback keeps the pipeline working without the secret: the tag is
+      # still created, and release.yml is then driven by hand through its
+      # workflow_dispatch entry point.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # needed to read git history for version tagging
+          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
       # `refs/tags/v*` is not covered by the branch ruleset, and the version gate
       # is a no-op on a tag push — so without this a hand-pushed tag on any
