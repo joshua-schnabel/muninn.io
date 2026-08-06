@@ -19,6 +19,8 @@ byte-identical. A pipeline that rebuilds between scanning and publishing has not
 scanned what it published.
 
 ```
+release-dispatch.yml (optional entry point) → release PR into main
+                                      ▼
 check ─┬ test (stable + beta canary) ─┐
        ├ supply-chain ────────────────┤
        ├ coverage (needs test) ───────┤
@@ -160,7 +162,30 @@ and the host architecture is irrelevant. Integration tests need matching hardwar
 ## Releasing
 
 The version comes from `CHANGELOG.md`. **Never hand-push a `v*` tag** — the
-pipeline creates it after every gate has passed.
+pipeline creates it after every gate has passed. There are two ways to start a
+release and they converge immediately: both end at a PR into `main`, and
+everything after that merge is identical.
+
+**One-click (`release-dispatch.yml`).** Actions → **Release (dispatch)** → *Run
+workflow*, pick `patch` / `minor` / `major`. It computes the next version from
+the higher of the last `v*` tag and the topmost released changelog version,
+stamps `## [Unreleased]` as `## [X.Y.Z] - <today>`, fixes the links, bumps
+`Cargo.toml`, and opens an auto-merging PR into `main`. It refuses to run if
+`## [Unreleased]` is empty — a version documenting nothing is worse than no
+release, because the changelog is what tells an operator whether to upgrade — or
+if the computed tag already exists. Owner-only.
+
+Two things about the button itself, both of which look like bugs and are not:
+
+- **It is only listed once the workflow file is on the default branch.** That is
+  how `workflow_dispatch` works. A release workflow that lives only on `dev` has
+  no button anywhere.
+- **Without `RELEASE_PAT` the PR does not trigger CI**, so its required checks
+  never run and auto-merge waits forever. The workflow says so in a warning
+  annotation; merge that PR by hand, or add the secret.
+
+**By hand.** The same three steps, done manually — which is also what you fall
+back to if the dispatch cannot open its PR:
 
 1. On `dev`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`.
 2. Open a PR `dev → main`. The version gate blocks the merge unless the version is
@@ -221,7 +246,7 @@ hand. The setting is off by default on new repositories.
 | Name | Needed for | Consequence if absent |
 |---|---|---|
 | `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
-| `RELEASE_PAT` | the post-release housekeeping PR | the PR is still opened with `GITHUB_TOKEN`, but CI does not trigger on it and auto-merge hangs — merge it by hand |
+| `RELEASE_PAT` | the release-dispatch PR and the post-release housekeeping PR | both PRs are still opened with `GITHUB_TOKEN`, but CI does not trigger on them and auto-merge hangs — merge them by hand |
 
 `GITHUB_TOKEN` is built in and needs no setup. It carries the ghcr mirror
 (`packages: write`), the git tag (`contents: write`) and the SARIF uploads

@@ -98,6 +98,18 @@ does not control, which is the class it closes everywhere else.
   coverage, the Telegraf reference check, the version gate, a per-architecture
   image build, Trivy, the system suites, and the push and publish path. Plus
   Semgrep, the release workflow, Dependabot and the branch automation.
+- **A one-click release** — `release-dispatch.yml`, taken from huginn.io. Pick
+  `patch`, `minor` or `major`; it computes the version from the last release,
+  stamps the changelog and `Cargo.toml`, and opens the release PR into `main`.
+  Owner-only, and it refuses an empty `## [Unreleased]`: a version that
+  documents nothing is worse than no release, because the changelog is what
+  tells an operator whether to upgrade. It is an entry point, not a second
+  release path — it produces the same PR the manual flow does, and every gate
+  still runs on it. Three things differ from huginn.io's copy, each because a
+  rule here requires it: the changelog version is read through the validating
+  `scripts/changelog-version.sh` rather than a bare `grep`, the `Cargo.toml`
+  edit is scoped to `[workspace.package]`, and the merge is a squash because
+  that is the only method this repository enables.
 - **The image is built once per architecture into an artefact, and every later
   job consumes that same artefact.** The bytes that are scanned, tested and
   published are byte-identical. A pipeline that rebuilds between scanning and
