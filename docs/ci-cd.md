@@ -257,10 +257,18 @@ checklist.
 - require branches to be up to date before merging;
 - disallow force pushes and deletion.
 
-The image jobs (`build`, `scan`, `integration`, `updates`) are deliberately not
-required checks: they take tens of minutes, and requiring them would make every
-documentation typo wait for two container builds. They still run on every PR and
-still gate `publish`, so nothing unscanned ships either way.
+The ruleset as configured also requires `Trivy scan linux/amd64` and
+`Trivy scan linux/arm64`, and both depend on `build`. That is worth knowing
+before you open a documentation-only PR: it will wait for two container builds
+and an image scan, and a *newly published* advisory against something vendored
+into the Telegraf binary will block it even though the branch does not touch the
+image. `build`, `integration` and `updates` are not required and gate `publish`
+instead, so nothing unscanned ships either way.
+
+Whether the Trivy scans should stay required is a real trade and not a settled
+one: required means an unrelated PR can be blocked by an advisory published that
+morning; not required means a fixable CRITICAL reaches `dev` and is caught one
+step later, at `publish`.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
