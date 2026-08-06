@@ -210,6 +210,32 @@ jobs:
           path: lcov.info
           retention-days: 7
 
+      # The number, where the run that produced it already is. Deliberately not
+      # a third-party coverage service: the percentage is something this
+      # pipeline computes, and shipping every line of the source tree to an
+      # external host to have it computed again buys a badge and costs a
+      # dependency with repository access. The README badge reports this job's
+      # verdict instead — green means the gate above held.
+      #
+      # Read from lcov.info rather than parsed out of cargo's output: LF/LH are
+      # a stable file format, and a summary table is not.
+      - name: Coverage summary
+        if: always()
+        run: |
+          if [ ! -s lcov.info ]; then
+            echo "::warning::no lcov.info was produced; the summary is empty"
+            exit 0
+          fi
+          awk -F: '
+            /^LF:/ { found += $2 }
+            /^LH:/ { hit   += $2 }
+            END {
+              if (found == 0) { print "No coverage data."; exit }
+              printf "## Coverage\n\n**%.2f %%** of %d workspace lines (gate: at least 80 %%)\n",
+                     hit * 100 / found, found
+            }
+          ' lcov.info >> "$GITHUB_STEP_SUMMARY"
+
   # ── Gate 5: the target format is still real Telegraf ──────────────────────
   # muninn's own addition, from the WP0 findings. Three things drift silently
   # and none of them is visible to a Rust test:

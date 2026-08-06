@@ -2,9 +2,11 @@
 # ── Build ────────────────────────────────────────────────────────────────────
 # cargo b                   fast debug build
 # cargo br                  release build (optimised, --locked as CI uses it)
-# cargo b-timings           build with timing profile (opens an HTML report)
+# cargo b-verbose           build with the full compiler output
+# cargo b-timings           build with a timing profile (opens an HTML report)
 b            = "build"
 br           = "build --release --locked"
+b-verbose    = "build --workspace --message-format=human -v"
 b-timings    = "build --workspace --timings"
 
 # ── Run ──────────────────────────────────────────────────────────────────────
@@ -40,10 +42,13 @@ snap-review  = "insta review"
 # Requires: cargo install cargo-llvm-cov
 #
 # cargo cov                 terminal summary
-# cargo cov-html            detailed HTML report, opens in the browser
+# cargo cov-html            detailed HTML report -> target/llvm-cov/html/
+# cargo cov-open            the HTML report, straight into the browser
+# cargo cov-lcov            LCOV file for external tools
 # cargo cov-ci              the gate CI enforces (>= 80 % workspace lines)
 cov          = "llvm-cov --workspace --all-features"
 cov-html     = "llvm-cov --workspace --all-features --html --open --output-dir target/llvm-cov/html"
+cov-open     = "llvm-cov --workspace --all-features --open"
 cov-lcov     = "llvm-cov --workspace --all-features --lcov --output-path target/llvm-cov/lcov.info"
 cov-ci       = "llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 80"
 
@@ -60,6 +65,12 @@ fmt-check    = "fmt --all -- --check"
 #
 # cargo audit-all           advisories, licences, bans and sources in one pass
 audit-all    = "deny check"
+
+# ── Dependency management ────────────────────────────────────────────────────
+# Requires: cargo install cargo-outdated
+#
+# cargo outdated            list dependencies with newer releases available
+outdated     = "outdated --workspace"
 
 # ── Docs ─────────────────────────────────────────────────────────────────────
 doc          = "doc --workspace --no-deps --open"
