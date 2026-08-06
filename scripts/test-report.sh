@@ -34,6 +34,20 @@ inp, report_path, summary_path = os.environ["INPUT"], os.environ["REPORT"], os.e
 version = os.environ.get("VERSION", "")
 commit = os.environ.get("COMMIT", "")
 
+# Cargo colours its status lines — `Running`, `Compiling`, `Finished` — and does
+# so even when its output is piped into a file, which is how this script is fed.
+# The escape sequences sit *before* the word, so every anchored pattern below
+# would miss. That is not hypothetical: it is what happened on v0.1.0, the first
+# time release.yml ever ran. `Running` never matched, so no suite was ever
+# opened, so every `test result:` line was skipped as belonging to nothing, and
+# the run failed with "no test result lines found" against a log that plainly
+# contained ten of them.
+#
+# Stripping here rather than asking the caller for CARGO_TERM_COLOR=never: the
+# input is a captured log, and a parser that only works on logs captured a
+# particular way is a parser that breaks on the next caller.
+ansi_re = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
 # One suite = one `Running .../deps/<name>-<hash>` (or `Doc-tests <crate>`)
 # section of cargo's output, closed by its `test result:` line.
 suite_re = re.compile(r"^\s*Running\s+(?:unittests\s+)?(\S+)\s+\(.*?([A-Za-z0-9_]+)-[0-9a-f]+(?:\.exe)?\)\s*$")
@@ -51,7 +65,7 @@ in_coverage = False
 total_line_cov = ""
 
 for raw in open(inp, encoding="utf-8", errors="replace"):
-    line = raw.rstrip("\n")
+    line = ansi_re.sub("", raw.rstrip("\n"))
 
     if line.startswith("Filename"):
         in_coverage = True

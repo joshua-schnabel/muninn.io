@@ -26,6 +26,14 @@ version: 2
 #     it out changes no behaviour today; it makes the value explicit, reviewable
 #     and raisable in one place.
 #
+# `target-branch: dev` on every ecosystem, because Dependabot otherwise targets
+# the *default* branch — `main` — and that breaks the branching model in both
+# directions. A bump merged straight into `main` is a change `dev` never saw, so
+# the next `dev → main` release PR silently reverts it; and it reaches `main`
+# without the review path everything else goes through. Not hypothetical: a
+# codeql-action bump landed on `main` right after v0.1.0, and the 0.1.1 release
+# PR would have downgraded it back.
+#
 # Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml leaves
 # alone (see its branches-ignore).
 #
@@ -44,6 +52,7 @@ updates:
   # ── Rust crates (workspace root Cargo.toml / Cargo.lock) ──────────────────
   - package-ecosystem: cargo
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     commit-message:
@@ -62,6 +71,7 @@ updates:
   # ── GitHub Actions pinned in .github/workflows ────────────────────────────
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     commit-message:
@@ -79,6 +89,7 @@ updates:
   # what notices it.
   - package-ecosystem: docker
     directory: "/"
+    target-branch: dev
     schedule:
       interval: weekly
     commit-message:

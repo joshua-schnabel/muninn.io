@@ -19,6 +19,8 @@ byte-identical. A pipeline that rebuilds between scanning and publishing has not
 scanned what it published.
 
 ```
+release-dispatch.yml (optional entry point) → release PR into main
+                                      ▼
 check ─┬ test (stable + beta canary) ─┐
        ├ supply-chain ────────────────┤
        ├ coverage (needs test) ───────┤
@@ -35,6 +37,7 @@ check ─┬ test (stable + beta canary) ─┐
             publish → multi-arch manifest, ghcr mirror, tag
                                       ▼
             release.yml → GitHub Release + housekeeping PR into dev
+                          (needs RELEASE_PAT on the tag push, or it never starts)
 ```
 
 `publish` needs `scan`, `integration` **and** `updates`, so nothing unscanned or
@@ -160,7 +163,30 @@ and the host architecture is irrelevant. Integration tests need matching hardwar
 ## Releasing
 
 The version comes from `CHANGELOG.md`. **Never hand-push a `v*` tag** — the
-pipeline creates it after every gate has passed.
+pipeline creates it after every gate has passed. There are two ways to start a
+release and they converge immediately: both end at a PR into `main`, and
+everything after that merge is identical.
+
+**One-click (`release-dispatch.yml`).** Actions → **Release (dispatch)** → *Run
+workflow*, pick `patch` / `minor` / `major`. It computes the next version from
+the higher of the last `v*` tag and the topmost released changelog version,
+stamps `## [Unreleased]` as `## [X.Y.Z] - <today>`, fixes the links, bumps
+`Cargo.toml`, and opens an auto-merging PR into `main`. It refuses to run if
+`## [Unreleased]` is empty — a version documenting nothing is worse than no
+release, because the changelog is what tells an operator whether to upgrade — or
+if the computed tag already exists. Owner-only.
+
+Two things about the button itself, both of which look like bugs and are not:
+
+- **It is only listed once the workflow file is on the default branch.** That is
+  how `workflow_dispatch` works. A release workflow that lives only on `dev` has
+  no button anywhere.
+- **Without `RELEASE_PAT` the PR does not trigger CI**, so its required checks
+  never run and auto-merge waits forever. The workflow says so in a warning
+  annotation; merge that PR by hand, or add the secret.
+
+**By hand.** The same three steps, done manually — which is also what you fall
+back to if the dispatch cannot open its PR:
 
 1. On `dev`, rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`.
 2. Open a PR `dev → main`. The version gate blocks the merge unless the version is
@@ -171,6 +197,44 @@ pipeline creates it after every gate has passed.
 A tag pointing at a commit that is not on `main` is refused: `refs/tags/v*` is not
 covered by branch protection, and the version gate is a no-op on a tag push, so
 without that check a hand-pushed tag on any commit would publish an image.
+
+### Why the tag is pushed with `RELEASE_PAT`
+
+**GitHub does not start a workflow from an event the built-in `GITHUB_TOKEN`
+created.** It is a recursion guard, it has no opt-out, and it is the single
+sharpest edge in this pipeline: `publish` pushes `vX.Y.Z`, `release.yml` listens
+on `push: tags`, and with the built-in token that push fires nothing at all.
+
+v0.1.0 was released that way and shows exactly what it costs. The image, the ghcr
+mirror and the tag were all correct — and there was no GitHub Release, no SBOM,
+no test report, and no housekeeping PR, with every job in the run green. Nothing
+reports this: the run that should have started simply does not exist.
+
+`publish`'s checkout therefore takes `RELEASE_PAT` when it is set, falling back
+to `GITHUB_TOKEN`. With the secret the release path completes on its own; without
+it, everything up to and including the tag still happens and `release.yml` has to
+be started by hand.
+
+### Driving `release.yml` by hand
+
+Actions → **Release** → *Run workflow*, with the existing tag (`v0.1.0`) as the
+input. It does the same work the tag push would have: re-runs the suite on the
+tagged commit, creates the Release with notes, test report and SBOM, and opens
+the housekeeping PR.
+
+It is safe to run more than once. `gh release view` guards creation, the asset
+uploads use `--clobber`, and `prepare-dev` exits early when `dev` is already
+prepared. Every step reads the *tag*, not the branch the button was pressed on —
+which is why the "is this tag on main" check compares the checked-out commit
+rather than `github.sha`.
+
+One consequence is worth knowing before you dispatch an **older** tag: the suite
+and `scripts/test-report.sh` both come from that tag's commit, not from `dev`. A
+reporting bug fixed since then is still present there. That is why the report is
+best-effort — the tests decide whether a release happens, the report only
+describes them, and a Release whose tests passed is not withheld because a
+formatter failed. When there is no report, the run carries a warning and the
+notes omit the test section instead of asserting a verdict they cannot show.
 
 ## Repository settings — maintainer, by hand
 
@@ -221,7 +285,7 @@ hand. The setting is off by default on new repositories.
 | Name | Needed for | Consequence if absent |
 |---|---|---|
 | `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
-| `RELEASE_PAT` | the post-release housekeeping PR | the PR is still opened with `GITHUB_TOKEN`, but CI does not trigger on it and auto-merge hangs — merge it by hand |
+| `RELEASE_PAT` | the release tag push, the release-dispatch PR, and the post-release housekeeping PR | **`release.yml` never runs** — the tag is pushed by `GITHUB_TOKEN`, which starts no workflow, so there is no GitHub Release, SBOM or test report until you [drive it by hand](#driving-releaseyml-by-hand). The two PRs are still opened, but CI does not trigger on them and auto-merge hangs |
 
 `GITHUB_TOKEN` is built in and needs no setup. It carries the ghcr mirror
 (`packages: write`), the git tag (`contents: write`) and the SARIF uploads

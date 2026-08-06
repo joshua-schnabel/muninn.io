@@ -8,6 +8,96 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 The release pipeline reads the version from this file — see
 [`docs/ci-cd.md`](docs/ci-cd.md). Never hand-push a `v*` tag.
 
+## [0.1.1] - 2026-08-06
+
+Fixes the release path itself. muninn's own code is untouched — the image
+`0.1.1` publishes is `0.1.0` rebuilt from the same sources.
+
+### Added
+
+- **A one-click release** — `release-dispatch.yml`, taken from huginn.io. Pick
+  `patch`, `minor` or `major`; it computes the version from the last release,
+  stamps the changelog and `Cargo.toml`, and opens the release PR into `main`.
+  Owner-only, and it refuses an empty `## [Unreleased]`: a version that
+  documents nothing is worse than no release, because the changelog is what
+  tells an operator whether to upgrade. It is an entry point, not a second
+  release path — it produces the same PR the manual flow does, and every gate
+  still runs on it. Three things differ from huginn.io's copy, each because a
+  rule here requires it: the changelog version is read through the validating
+  `scripts/changelog-version.sh` rather than a bare `grep`, the `Cargo.toml`
+  edit is scoped to `[workspace.package]`, and the merge is a squash because
+  that is the only method this repository enables.
+
+### Fixed
+
+- **`release.yml` never fired for `v0.1.0`, and could not have.** `ci.yml`'s
+  `publish` pushes the tag with the built-in `GITHUB_TOKEN`, and GitHub does not
+  start a workflow from an event that token created — the recursion guard. So
+  the image, the ghcr mirror and the tag all shipped, and the GitHub Release,
+  the SBOM, the test report and the housekeeping PR did not. The tag push now
+  uses `RELEASE_PAT` where it is available, which is the same reason
+  `prepare-dev` already needed it, and `release.yml` gains a
+  `workflow_dispatch` entry point so an existing tag can be released — or
+  re-released — without touching the tag itself.
+- The `## [Unreleased]` block and the changelog's compare links, reopened by
+  hand here because the workflow that does it never ran.
+- **`scripts/test-report.sh` could never have parsed a real CI log.** Cargo
+  colours its `Running` status lines even when its output is piped to a file,
+  and the escape sequences sit before the word — so the anchored pattern that
+  opens a test suite never matched, every `test result:` line was discarded as
+  belonging to no suite, and the script exited with *no `test result:` lines
+  found in input* against a log holding ten of them. It now strips ANSI before
+  parsing, which is the right layer: the input is a captured log, and a parser
+  that only works on logs captured one particular way breaks on the next
+  caller. Verified against the exact bytes of the failing run — 9 suites, 402
+  tests, 91.24 % line coverage.
+
+  This is the second thing v0.1.0 found by being the first release ever cut,
+  and both were invisible until then. Nothing before it had run
+  `release.yml`.
+- **A failing test suite could not fail the release run.** `cargo llvm-cov …
+  | tee` takes its exit status from `tee`, and GitHub's default shell has no
+  `pipefail` — so a red suite left the step green, and the only thing between
+  it and a published Release was the report generator noticing a non-zero
+  failure count. That step now runs under `shell: bash`, which brings
+  `pipefail`.
+- Building the report is now best-effort, and the Release no longer depends on
+  it: tests are the gate, the report only describes them. When it cannot be
+  built the run says so in a warning and the notes omit the test section
+  rather than claiming a verdict they cannot show. This is also what lets an
+  older tag be released by dispatch — such a run executes *that tag's* copy of
+  the script, bug included.
+- **Every automated version bump would have produced a red PR.** Both places
+  that raise the version — `release.yml`'s housekeeping and the new dispatch —
+  edited `Cargo.toml` and left `Cargo.lock` behind, and every CI job runs
+  `--locked`, so the next job to start would have died on *cannot update the
+  lock file* before a single test ran. New `scripts/set-workspace-version.sh`
+  sets both, and both callers use it. Which packages are the workspace's is
+  read from the lock file itself — they are the ones with no `source` line —
+  rather than from a hard-coded list of crate names that would need keeping in
+  step. Verified byte-identical to `cargo update --workspace`.
+
+  It does the job without invoking cargo on purpose. Both callers hold a write
+  token, and "no job runs cargo with a write token" is a security property this
+  repository shipped rather than a preference. Dependency resolution executes no
+  build script, so the rule would arguably permit it — but an invariant that
+  holds except where someone reasoned it away is not an invariant.
+- **Dependabot targeted `main`**, because that is the default branch and
+  `dependabot.yml` never said otherwise — so every bump landed on `main` without
+  passing through `dev`, and the next `dev → main` release PR reverted it.
+  Found while opening the 0.1.1 release PR: it would have downgraded
+  `codeql-action/upload-sarif` from v4.37.5 back to v4.37.4, the bump that had
+  merged into `main` an hour after v0.1.0. Every ecosystem now carries
+  `target-branch: dev`, and that bump is carried into `dev` here so the release
+  PR no longer reverses it. A silent downgrade of a security-scanning action is
+  the kind of change that is only ever noticed by looking for it.
+
+  The recovery itself then made the same mistake in miniature: the bump touched
+  two files, `security.yml` and `ci.yml`, and only the first was carried over,
+  because it was the one the release diff happened to show first. Every `uses:`
+  pin in every workflow is now compared between the two branches rather than
+  chased one grep at a time — one difference remained, and it was this one.
+
 ## [0.1.0] - 2026-08-06
 
 First release. Everything below is what muninn is on day one.
@@ -370,3 +460,7 @@ project brief:
   keys.
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
+
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.1
+[0.1.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.0

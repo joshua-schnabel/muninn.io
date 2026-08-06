@@ -19,12 +19,57 @@ name: Release
 # never run and auto-merge would hang. With RELEASE_PAT the PR is attributed to
 # a real identity, CI runs, and auto-merge completes. Without it the PR is still
 # opened (via GITHUB_TOKEN) but you must run CI / merge it yourself.
+#
+# The same GITHUB_TOKEN rule is why `publish` pushes the tag with RELEASE_PAT:
+# GitHub does not start a workflow from an event that token created, so a tag
+# pushed with it fires nothing here. v0.1.0 shipped its image, its mirror and its
+# tag, and got no Release at all, because of exactly that.
+#
+# workflow_dispatch is the way back in when that happens — and the way to rebuild
+# a Release whose run failed halfway. It takes an existing tag and does the same
+# work the tag push would have done. It creates nothing: `gh release view` makes
+# creation idempotent, and every step reads the tag rather than the branch it was
+# started from.
 
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build the release for, e.g. v0.1.0"
+        required: true
+        type: string
 
 jobs:
+  # ── Resolve which tag this run is about, once ──────────────────────────────
+  # Both triggers land here, so no later job has to know which one fired. The
+  # dispatch input is validated before anything uses it: it reaches a shell, a
+  # `git checkout` and a registry reference, and it is typed by whoever clicked
+  # the button. Same standard as scripts/changelog-version.sh applies to the
+  # changelog heading, and for the same reason.
+  resolve:
+    name: Resolve the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+      version: ${{ steps.t.outputs.version }}
+    steps:
+      - name: Validate and split the tag
+        id: t
+        env:
+          RAW: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if ! printf '%s' "$RAW" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$RAW' is not a vX.Y.Z tag"
+            exit 1
+          fi
+          echo "tag=$RAW" >> "$GITHUB_OUTPUT"
+          echo "version=${RAW#v}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $RAW"
   # ── Re-run the suite on the released commit, with no write access ──────────
   # Its own job for one reason: `cargo` compiles and *executes* `build.rs` and
   # proc-macros from every dependency in the tree, and the report it produces is
@@ -39,12 +84,18 @@ jobs:
   test-report:
     name: Test report
     runs-on: ubuntu-latest
+    needs: resolve
     timeout-minutes: 25
     permissions:
       contents: read
     steps:
+      # Explicitly at the tag. On a tag push that is what the run already points
+      # at; on a dispatch it is not — the run points at the branch the button was
+      # pressed on, and a report built from that branch would describe code the
+      # release does not contain.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.resolve.outputs.tag }}
           persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
@@ -76,15 +127,38 @@ jobs:
       - name: Fetch the pinned Telegraf binary
         run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
 
+      # `shell: bash` for the pipefail it brings. The default `bash -e` takes the
+      # exit status of the *last* command in a pipeline, which is `tee` — so a
+      # red suite would leave this step green, and the only thing standing
+      # between a failed test run and a published Release would be a report
+      # generator noticing the failure count. Tests are the gate; the report
+      # merely describes them.
       - name: Run tests with coverage on the tagged commit
+        shell: bash
         env:
           MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
         run: cargo llvm-cov --workspace --locked 2>&1 | tee test-output.txt
 
+      # COMMIT comes from the checkout, not from github.sha: on a dispatch the
+      # latter is the branch the button was pressed on, and a report header
+      # naming a commit the release does not contain is a report that lies.
+      #
+      # Best-effort, deliberately. The step above already decided whether the
+      # code is fit to release; this one turns a log into Markdown, and a
+      # formatting bug in it must not withhold a Release whose tests passed —
+      # the same reasoning the digest lookup in github-release already follows.
+      # It matters concretely: a dispatch for an *older* tag runs that tag's copy
+      # of the script, which is where the bug this fixes still lives.
       - name: Build the test report
+        id: report
+        continue-on-error: true
         env:
-          COMMIT: ${{ github.sha }}
-        run: VERSION="${GITHUB_REF_NAME#v}" bash scripts/test-report.sh test-output.txt
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: COMMIT="$(git rev-parse HEAD)" bash scripts/test-report.sh test-output.txt
+
+      - name: Note a missing report
+        if: steps.report.outcome != 'success'
+        run: echo "::warning::the test report could not be built; the Release will carry the tests' verdict but no report"
 
       - name: Upload the report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -93,7 +167,9 @@ jobs:
           path: |
             test-report.md
             test-summary.md
-          if-no-files-found: error
+          # warn, not error: the report is best-effort above, so its absence is
+          # already reported and must not fail the job that proved the tests.
+          if-no-files-found: warn
           retention-days: 7
 
   # ── Create the GitHub Release from the CHANGELOG section ───────────────────
@@ -102,33 +178,35 @@ jobs:
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
-    needs: test-report
+    needs: [resolve, test-report]
     timeout-minutes: 15
     permissions:
       contents: write   # gh release create + asset upload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.resolve.outputs.tag }}
           persist-credentials: false
           fetch-depth: 0   # needed to prove the tag is on main
 
       # Nothing protects `refs/tags/v*` server-side, so a hand-pushed tag would
       # otherwise create a GitHub Release — and trigger prepare-dev below — for a
-      # commit that never passed a release gate.
+      # commit that never passed a release gate. The dispatch entry point makes
+      # this check matter more, not less: it takes a tag name as input.
+      #
+      # The commit under test is the checkout's HEAD, i.e. the tag's commit.
+      # github.sha would be the branch a dispatch was started from, which is
+      # always on main and would make the check vacuous.
       - name: Refuse tags that are not on main
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
-            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
+          if ! git merge-base --is-ancestor "$(git rev-parse HEAD)" FETCH_HEAD; then
+            echo "::error::tag $TAG does not point at a commit on main"
             exit 1
           fi
-          echo "OK: $GITHUB_REF_NAME is on main"
-
-      # The image tag has no `v`; the git tag does. Computed once here so the
-      # steps below take it as an output rather than each stripping it again.
-      - name: Version from the tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "OK: $TAG is on main"
 
       # The Telegraf version the release notes quote. Read from the Dockerfile
       # rather than repeated here: it is the authority everywhere else in this
@@ -142,7 +220,11 @@ jobs:
           fi
           echo "TELEGRAF_VERSION=$v" >> "$GITHUB_ENV"
 
+      # continue-on-error for the same reason the build step above is
+      # best-effort: when no report was produced there is no artefact to fetch,
+      # and that must not withhold a Release whose tests passed.
       - name: Download the test report
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: test-report
@@ -152,8 +234,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
           GHCR_REPO: ghcr.io/${{ github.repository_owner }}/muninn.io
+          V: ${{ needs.resolve.outputs.version }}
         run: |
-          V="${GITHUB_REF_NAME#v}"
           echo "Releasing v$V"
 
           # Notes = the lines under `## [X.Y.Z]` up to the next `## [` heading.
@@ -205,8 +287,15 @@ jobs:
             echo "::warning::could not resolve the manifest digest for ${DH_REPO}:${V}; the notes omit it"
           fi
 
-          # Test summary from the report step above.
-          cat test-summary.md >> notes.md
+          # Test summary from the report step above, when there is one. Its
+          # absence is already a warning annotation on the test-report job; the
+          # notes simply say nothing rather than claiming a verdict they cannot
+          # show. Silence beats an unsupported "all tests passed".
+          if [ -s test-summary.md ]; then
+            cat test-summary.md >> notes.md
+          else
+            echo "::warning::no test summary available; the release notes omit it"
+          fi
 
           # 0.x and any -prerelease build are marked as a pre-release.
           PRE=""
@@ -220,8 +309,11 @@ jobs:
             gh release create "v$V" --title "v$V" --notes-file notes.md
           fi
 
-          # Attach (or refresh, on a re-run) the full test report.
-          gh release upload "v$V" test-report.md --clobber
+          # Attach (or refresh, on a re-run) the full test report, when one was
+          # produced.
+          if [ -s test-report.md ]; then
+            gh release upload "v$V" test-report.md --clobber
+          fi
 
       # ── SBOM for the published image ──────────────────────────────────────
       # ci.yml already produced one per architecture from the build artefact and
@@ -232,7 +324,7 @@ jobs:
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/muninn:${{ steps.version.outputs.version }}
+          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/muninn:${{ needs.resolve.outputs.version }}
           format: cyclonedx
           output: sbom.cdx.json
           exit-code: "0"
@@ -240,8 +332,8 @@ jobs:
       - name: Attach the SBOM
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          V: ${{ needs.resolve.outputs.version }}
         run: |
-          V="${GITHUB_REF_NAME#v}"
           if [ -s sbom.cdx.json ]; then
             mv sbom.cdx.json "muninn-${V}.cdx.json"
             gh release upload "v$V" "muninn-${V}.cdx.json" --clobber
@@ -253,7 +345,7 @@ jobs:
   prepare-dev:
     name: Prepare dev for next cycle
     runs-on: ubuntu-latest
-    needs: github-release
+    needs: [resolve, github-release]
     timeout-minutes: 10
     permissions:
       contents: write
@@ -270,8 +362,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          V: ${{ needs.resolve.outputs.version }}
         run: |
-          V="${GITHUB_REF_NAME#v}"
           DATE=$(date +%F)
           BR="release/prepare-after-v${V}"
           git config user.name "github-actions[bot]"
@@ -304,17 +396,19 @@ jobs:
             sed -i "/^\[Unreleased\]:/a [${V}]: ${REPO_URL}/releases/tag/v${V}" CHANGELOG.md
           fi
 
-          # 3) Keep Cargo.toml's workspace version in step with the release.
-          #    Scoped to [workspace.package], where the one version lives — an
-          #    unscoped sed would also rewrite dependency version pins.
-          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"${V}\"/" Cargo.toml
+          # 3) Keep the workspace version in step with the release — manifest and
+          #    lock file together, through the shared helper. Bumping only
+          #    Cargo.toml leaves every `--locked` job failing with "cannot update
+          #    the lock file" before a test runs, which is how the housekeeping
+          #    PR would have arrived red every single release.
+          bash scripts/set-workspace-version.sh "$V"
 
           if git diff --quiet; then
             echo "dev already prepared for the next cycle — nothing to do."
             exit 0
           fi
 
-          git add CHANGELOG.md Cargo.toml
+          git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "chore: reopen changelog and bump version after v${V}"
           git push -f origin "$BR"
 
