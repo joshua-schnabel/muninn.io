@@ -16,8 +16,9 @@ name: Release (dispatch)
 # Adapted from huginn.io's workflow of the same name. Three things differ, each
 # because a rule in *this* repository requires it, and each is commented where it
 # happens: the changelog version is read through scripts/changelog-version.sh,
-# the Cargo.toml edit is scoped to [workspace.package], and the merge is a squash
-# because that is the only method this repository enables.
+# the version bump goes through scripts/set-workspace-version.sh so Cargo.lock
+# moves with Cargo.toml, and the merge is a squash because that is the only
+# method this repository enables.
 #
 # Only the repository owner may run it (the first step asserts this). RELEASE_PAT
 # is needed so the release PR triggers CI and can auto-merge — see release.yml
@@ -146,12 +147,12 @@ jobs:
             fi
           fi
 
-          # Scoped to [workspace.package], where the one version lives. An
-          # unscoped sed would also rewrite dependency version pins — release.yml
-          # makes the same point at the same edit.
-          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"${N}\"/" Cargo.toml
+          # Cargo.toml *and* Cargo.lock, through the shared helper. Bumping only
+          # the manifest leaves every `--locked` job failing with "cannot update
+          # the lock file" before a test runs — the two files are one fact.
+          bash scripts/set-workspace-version.sh "$N"
 
-          git add CHANGELOG.md Cargo.toml
+          git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "release: v${N}"
           # Force, so re-running after a failed attempt reuses the branch rather
           # than wedging on it. The branch belongs to this workflow alone.

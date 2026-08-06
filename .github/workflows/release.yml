@@ -127,7 +127,14 @@ jobs:
       - name: Fetch the pinned Telegraf binary
         run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
 
+      # `shell: bash` for the pipefail it brings. The default `bash -e` takes the
+      # exit status of the *last* command in a pipeline, which is `tee` — so a
+      # red suite would leave this step green, and the only thing standing
+      # between a failed test run and a published Release would be a report
+      # generator noticing the failure count. Tests are the gate; the report
+      # merely describes them.
       - name: Run tests with coverage on the tagged commit
+        shell: bash
         env:
           MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
         run: cargo llvm-cov --workspace --locked 2>&1 | tee test-output.txt
@@ -135,10 +142,23 @@ jobs:
       # COMMIT comes from the checkout, not from github.sha: on a dispatch the
       # latter is the branch the button was pressed on, and a report header
       # naming a commit the release does not contain is a report that lies.
+      #
+      # Best-effort, deliberately. The step above already decided whether the
+      # code is fit to release; this one turns a log into Markdown, and a
+      # formatting bug in it must not withhold a Release whose tests passed —
+      # the same reasoning the digest lookup in github-release already follows.
+      # It matters concretely: a dispatch for an *older* tag runs that tag's copy
+      # of the script, which is where the bug this fixes still lives.
       - name: Build the test report
+        id: report
+        continue-on-error: true
         env:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: COMMIT="$(git rev-parse HEAD)" bash scripts/test-report.sh test-output.txt
+
+      - name: Note a missing report
+        if: steps.report.outcome != 'success'
+        run: echo "::warning::the test report could not be built; the Release will carry the tests' verdict but no report"
 
       - name: Upload the report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -147,7 +167,9 @@ jobs:
           path: |
             test-report.md
             test-summary.md
-          if-no-files-found: error
+          # warn, not error: the report is best-effort above, so its absence is
+          # already reported and must not fail the job that proved the tests.
+          if-no-files-found: warn
           retention-days: 7
 
   # ── Create the GitHub Release from the CHANGELOG section ───────────────────
@@ -198,7 +220,11 @@ jobs:
           fi
           echo "TELEGRAF_VERSION=$v" >> "$GITHUB_ENV"
 
+      # continue-on-error for the same reason the build step above is
+      # best-effort: when no report was produced there is no artefact to fetch,
+      # and that must not withhold a Release whose tests passed.
       - name: Download the test report
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: test-report
@@ -261,8 +287,15 @@ jobs:
             echo "::warning::could not resolve the manifest digest for ${DH_REPO}:${V}; the notes omit it"
           fi
 
-          # Test summary from the report step above.
-          cat test-summary.md >> notes.md
+          # Test summary from the report step above, when there is one. Its
+          # absence is already a warning annotation on the test-report job; the
+          # notes simply say nothing rather than claiming a verdict they cannot
+          # show. Silence beats an unsupported "all tests passed".
+          if [ -s test-summary.md ]; then
+            cat test-summary.md >> notes.md
+          else
+            echo "::warning::no test summary available; the release notes omit it"
+          fi
 
           # 0.x and any -prerelease build are marked as a pre-release.
           PRE=""
@@ -276,8 +309,11 @@ jobs:
             gh release create "v$V" --title "v$V" --notes-file notes.md
           fi
 
-          # Attach (or refresh, on a re-run) the full test report.
-          gh release upload "v$V" test-report.md --clobber
+          # Attach (or refresh, on a re-run) the full test report, when one was
+          # produced.
+          if [ -s test-report.md ]; then
+            gh release upload "v$V" test-report.md --clobber
+          fi
 
       # ── SBOM for the published image ──────────────────────────────────────
       # ci.yml already produced one per architecture from the build artefact and
@@ -360,17 +396,19 @@ jobs:
             sed -i "/^\[Unreleased\]:/a [${V}]: ${REPO_URL}/releases/tag/v${V}" CHANGELOG.md
           fi
 
-          # 3) Keep Cargo.toml's workspace version in step with the release.
-          #    Scoped to [workspace.package], where the one version lives — an
-          #    unscoped sed would also rewrite dependency version pins.
-          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"${V}\"/" Cargo.toml
+          # 3) Keep the workspace version in step with the release — manifest and
+          #    lock file together, through the shared helper. Bumping only
+          #    Cargo.toml leaves every `--locked` job failing with "cannot update
+          #    the lock file" before a test runs, which is how the housekeeping
+          #    PR would have arrived red every single release.
+          bash scripts/set-workspace-version.sh "$V"
 
           if git diff --quiet; then
             echo "dev already prepared for the next cycle — nothing to do."
             exit 0
           fi
 
-          git add CHANGELOG.md Cargo.toml
+          git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "chore: reopen changelog and bump version after v${V}"
           git push -f origin "$BR"
 

@@ -228,6 +228,14 @@ prepared. Every step reads the *tag*, not the branch the button was pressed on �
 which is why the "is this tag on main" check compares the checked-out commit
 rather than `github.sha`.
 
+One consequence is worth knowing before you dispatch an **older** tag: the suite
+and `scripts/test-report.sh` both come from that tag's commit, not from `dev`. A
+reporting bug fixed since then is still present there. That is why the report is
+best-effort — the tests decide whether a release happens, the report only
+describes them, and a Release whose tests passed is not withheld because a
+formatter failed. When there is no report, the run carries a warning and the
+notes omit the test section instead of asserting a verdict they cannot show.
+
 ## Repository settings — maintainer, by hand
 
 Deliberately not automated. Changing repository settings, secrets or rulesets is
