@@ -167,6 +167,10 @@ jobs:
               echo "::warning::Could not open the release PR; branch ${BR} is pushed — open it by hand. If the error mentions permissions, see docs/ci-cd.md."
           fi
 
-          # Squash, because it is the only merge method this repository enables.
-          gh pr merge --auto --squash "$BR" || \
+          # A merge commit, not a squash: `dev → main` is the one place this
+          # repository keeps history (AGENTS.md §8, docs/CONTRIBUTING.md).
+          # Squashing here would give main a single commit whose parents dev
+          # never shares, and the next `main → dev` sync would conflict with
+          # itself. Needs "Allow merge commits" enabled — see docs/ci-cd.md.
+          gh pr merge --auto --merge "$BR" || \
             echo "::warning::Could not enable auto-merge (RELEASE_PAT missing?). Merge the PR manually."

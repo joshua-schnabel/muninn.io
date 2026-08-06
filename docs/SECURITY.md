@@ -106,3 +106,9 @@ Only the latest release receives fixes.
 
 Coordinated. A fix is released first, then an advisory naming the affected
 versions. Credit is given unless you prefer otherwise.
+
+## Related
+
+- [`hardening.md`](hardening.md) — the posture behind this policy
+- [`host-mounts.md`](host-mounts.md) — the exposure a deployment accepts
+- [`versioning.md`](versioning.md) — which versions are supported

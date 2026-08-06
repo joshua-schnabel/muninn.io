@@ -46,3 +46,51 @@ vulnerabilities:
       listener the generated config opens is outputs.prometheus_client, which is
       net/http, not grpc-go. Re-evaluate on the next Telegraf release.
     expired_at: 2026-11-03
+
+  # ── Four more rclone findings, published 2026-08 ──────────────────────────
+  # Trivy started reporting these on 2026-08-06; the dev run twelve hours
+  # earlier was clean, and no muninn change is involved. All four are marked
+  # `fixed` upstream (rclone 1.74.4 / 1.75.0), so `ignore-unfixed` does not
+  # filter them — Telegraf 1.39.2 is the newest release and still vendors
+  # v1.74.1-0.20260628215305.
+  #
+  # The reachability argument is the same for all four and it is stronger than
+  # for CVE-2026-49980 above: each of them requires rclone to be *executed* —
+  # as a sync client, as a `serve restic` server, or against an SFTP backend.
+  # muninn never executes rclone at all. It is in the image only because
+  # Telegraf vendors it for plugins muninn cannot emit: the complete set muninn
+  # can ever render is twelve — cpu, disk, diskio, docker, exec, mem, net,
+  # processes, swap, system, influxdb_v2, prometheus_client — and there is no
+  # raw TOML escape hatch (ADR-0004), so an operator cannot add one.
+  - id: CVE-2026-54572
+    statement: >-
+      Unvalidated symlink target in rclone's local backend with `--links`,
+      allowing arbitrary file write from an untrusted remote. Fixed in rclone
+      1.74.4. Requires running rclone as a sync client against a remote; muninn
+      never invokes rclone. Re-evaluate on the next Telegraf release.
+    expired_at: 2026-11-03
+
+  - id: CVE-2026-59733
+    statement: >-
+      Authorization bypass in `rclone serve restic --private-repos`: `..` in the
+      URL path lets an authenticated user reach other users' repositories. Fixed
+      in rclone 1.74.4. Requires rclone's restic server to be running; muninn
+      starts no rclone process and opens no such listener. Re-evaluate on the
+      next Telegraf release.
+    expired_at: 2026-11-03
+
+  - id: CVE-2026-71309
+    statement: >-
+      Incomplete path validation allows a backend root escape in `rclone serve
+      restic`. Fixed in rclone 1.75.0. Same unreachability as CVE-2026-59733 —
+      the server it affects is never started. Re-evaluate on the next Telegraf
+      release.
+    expired_at: 2026-11-03
+
+  - id: CVE-2026-71312
+    statement: >-
+      Smart-quote filename injection in rclone's SFTP backend enabling
+      server-side command execution through PowerShell. Fixed in rclone 1.75.0.
+      muninn renders no SFTP backend, executes no rclone, and the image is Linux
+      with no PowerShell. Re-evaluate on the next Telegraf release.
+    expired_at: 2026-11-03
