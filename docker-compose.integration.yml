@@ -1,0 +1,96 @@
+# muninn.io — the integration stack.
+#
+# Not a deployment to copy: that is docker-compose.yml. This one exists so the
+# whole path can be observed at once — muninn generates a configuration,
+# Telegraf collects the host, InfluxDB receives the writes, Prometheus scrapes
+# both endpoints — with every hop being a real process rather than a stub.
+#
+#   bash scripts/integration-test.sh          # brings this up, asserts, tears down
+#
+# Driven by that script, not by hand: MUNINN_WORK and MUNINN_INFLUX_TOKEN have
+# no defaults, so `docker compose -f docker-compose.integration.yml up` on its
+# own fails immediately instead of starting a stack with an empty token.
+#
+# The credentials here are throwaway by construction — the harness generates a
+# random token per run, into a temporary directory, for a database that is
+# destroyed with the stack. Nothing in this file is a secret and nothing in it
+# should ever become one.
+
+name: muninn-integration
+
+services:
+  influxdb:
+    image: influxdb:2.7-alpine
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: integration
+      DOCKER_INFLUXDB_INIT_PASSWORD: integration-password
+      # Must match config/muninn.integration.yaml, which is what muninn writes
+      # with. A mismatch here produces a 404 from InfluxDB that reads like a
+      # network problem.
+      DOCKER_INFLUXDB_INIT_ORG: testorg
+      DOCKER_INFLUXDB_INIT_BUCKET: testbucket
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${MUNINN_INFLUX_TOKEN:?set by scripts/integration-test.sh}
+    # Published so the harness can query from the host as well as through
+    # `compose exec` — the two paths fail differently and both are worth having.
+    ports:
+      - "18086:8086"
+    healthcheck:
+      # The CLI that ships in the image. curl is not guaranteed to be there, and
+      # a healthcheck that silently always fails would make every dependent
+      # service wait out its timeout.
+      test: ["CMD", "influx", "ping", "--host", "http://localhost:8086"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    # No volume, deliberately: the database is meant to die with the stack. A
+    # named volume surviving a run would let one run's metrics satisfy the next
+    # run's query — the failure mode where a broken write path keeps passing.
+    # A tmpfs is not used either: it would be root-owned and the image's own
+    # user could not initialise into it.
+
+  muninn:
+    image: ${MUNINN_IMAGE:-muninn:dev}
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+    # Above runtime.shutdown_grace_period in the configuration, or Docker kills
+    # the container before muninn has finished asking Telegraf to flush — and
+    # the teardown-flush assertion would be testing the SIGKILL path instead.
+    stop_grace_period: 20s
+
+    volumes:
+      - ./config/muninn.integration.yaml:/etc/muninn/muninn.yaml:ro
+      - /:/hostfs:ro
+      - ${MUNINN_WORK:?set by scripts/integration-test.sh}/influxdb-token:/run/secrets/influxdb_token:ro
+
+    tmpfs:
+      - /run/muninn:mode=0700,uid=10001,gid=10001
+
+    # The same hardening the documentation promises. A stack that quietly
+    # relaxed one of them would prove the path works in a posture nobody ships.
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    ports:
+      - "18080:8080"
+      - "19273:9273"
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    depends_on:
+      - muninn
+    volumes:
+      - ./config/prometheus.integration.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # Short, because the stack lives for the length of one test run.
+      - --storage.tsdb.retention.time=1h
+      - --web.listen-address=:9090
+    ports:
+      - "19090:9090"

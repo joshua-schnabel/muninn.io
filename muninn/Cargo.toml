@@ -1,0 +1,33 @@
+[package]
+name = "muninn"
+description = "Supervisor and configuration layer around Telegraf — opinionated YAML in, validated Telegraf config out"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+muninn-core = { workspace = true }
+muninn-telegraf = { workspace = true }
+muninn-modules = { workspace = true }
+muninn-health = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# anyhow only at the binary boundary, where an error is about to be printed to a
+# human and its type no longer matters. Library crates use typed errors.
+anyhow = { workspace = true }
+
+# tempfile is a runtime dependency, not only a test one: `validate
+# --with-telegraf` renders to a scratch file for Telegraf to judge.
+tempfile = { workspace = true }
+
+# The lifecycle tests send a real SIGTERM to the compiled binary, which is the
+# only way to observe the shutdown path that matters. Unix only — Windows has no
+# SIGTERM, and muninn's artefact is a Linux container.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

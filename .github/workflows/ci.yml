@@ -1,0 +1,851 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "dev"]
+    tags: ["v*.*.*"]
+  # Every PR, whatever its target branch — so every change is gated before merge.
+  pull_request:
+
+# Cancel superseded PR runs. Never cancel a push run — it may be mid-publish.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Minimal default permissions — no secrets exposed to PR builds
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The version the Dockerfile pins and the reference configuration is verified
+  # against. Kept here so the reference job and the image cannot drift; the
+  # Dockerfile remains the authority and is checked against this value.
+  TELEGRAF_VERSION: "1.39.2"
+
+# ── Pipeline shape ─────────────────────────────────────────────────────────
+#
+#   check ─┬ test (stable + beta·canary) ─┐
+#          ├ supply-chain ────────────────┤
+#          ├ coverage (needs test) ───────┤
+#          ├ reference (Telegraf accepts the target format) ┤
+#          └ version-gate (SemVer + successor, main only) ──┤
+#                                         ▼
+#              build (per arch, native) → image.tar artifact
+#                 ├ scan        (Trivy on the artifact)
+#                 ├ integration (compose stack + hardened image, on the artifact)
+#                 └ updates     (the updates module against real host trees)
+#                                         ▼
+#              push (per arch, push only) → skopeo by digest → digest artifact
+#                                         ▼
+#              publish → DockerHub manifest, mirror to ghcr, staging cleanup, tag
+#                                         ▼            (tag push → release.yml:
+#                                                       GitHub Release + dev PR)
+#
+# One job, one responsibility. The image is built ONCE per arch into a tarball;
+# every later job consumes that same artifact, so the bytes scanned, tested and
+# published are identical. publish needs scan AND integration AND updates, so
+# nothing unscanned or untested can ship.
+#
+# Two jobs have no counterpart in huginn.io's pipeline, both from WP0 findings:
+# `reference` (the target TOML must still be real Telegraf) and `updates` (the
+# module that reads the host's package state, which only a real host tree can
+# exercise). See docs/ci-cd.md.
+
+jobs:
+  # ── Gate 1: Format & Lint ──────────────────────────────────────────────────
+  check:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # `persist-credentials: false` is on every checkout in this repository
+      # except the two that push — ci.yml `publish` and release.yml
+      # `prepare-dev`, both marked where they are.
+      #
+      # The default writes the job's token into `.git/config`, where anything
+      # running afterwards can read it. What runs afterwards here is `cargo`,
+      # which compiles and executes `build.rs` and proc-macros from every
+      # dependency in the tree. A token that is not on disk is one a compromised
+      # crate cannot take. Steps that genuinely need the API get `GH_TOKEN` in
+      # `env:` on that step alone, which the checkout never sees.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Pinned to the action's v1 SHA, which makes `toolchain` a required input —
+      # the channel itself stays floating, only the action code is frozen.
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # ── Gate 2: Tests (stable + beta) ─────────────────────────────────────────
+  test:
+    name: Tests (${{ matrix.rust }})
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false   # report both matrix legs even if one fails
+      matrix:
+        rust: [stable, beta]
+    # beta = next Rust compiler. A canary: non-blocking (continue-on-error) so an
+    # upcoming-toolchain break warns without blocking the merge.
+    continue-on-error: ${{ matrix.rust == 'beta' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # The unix-only tests — signals, permissions, reaping — are the ones that
+      # matter most here and are silently absent on the maintainer's Windows
+      # machine. They need the Telegraf the artefact ships, which is what
+      # scripts/test-linux.sh gives them locally.
+      #
+      # From the checksum-pinned tarball the Dockerfile already names, not from
+      # the `telegraf:x.y.z` image tag. A tag is mutable: whoever can move it
+      # decides which binary the unix-only tests run against, and Dependabot
+      # does not watch a `docker create` reference (dependabot-core#5819 — the
+      # same limitation security.yml records for its Semgrep image). The script
+      # reads the version and the per-arch SHA-256 out of the Dockerfile, so
+      # there is one pin to maintain and it is the one ADR-0011 already
+      # describes.
+      - name: Fetch the pinned Telegraf binary
+        run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
+
+      - name: cargo test
+        env:
+          MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
+        run: cargo test --workspace --locked
+
+  # ── Gate 3: Supply-chain security (cargo-deny) ────────────────────────────
+  # cargo-deny is a superset of cargo-audit: advisories, licenses, banned
+  # crates and registry sources in one pass.
+  supply-chain:
+    name: Supply-Chain Security
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Uncached on purpose, but pinned. The freshness that matters comes from
+      # the *advisory database*, which cargo-deny fetches at run time — not from
+      # the tool binary. Pinning the version therefore costs nothing in coverage
+      # and removes an unpinned `cargo install` that compiles and runs a third
+      # party's build scripts on every CI run. Exactly the reasoning
+      # security.yml applies to its Semgrep image: pinned by digest, still
+      # scanning with current rules.
+      #
+      # Dependabot's `cargo` ecosystem does not see this line — it reads
+      # Cargo.toml, and cargo-deny is not a dependency. Bump it by hand.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: cargo deny check
+        run: cargo deny check
+
+  # ── Gate 4: Code coverage ≥ 80 % ──────────────────────────────────────────
+  coverage:
+    name: Code Coverage (≥ 80%)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Cache the cargo-llvm-cov binary (pinned) so it is compiled from source
+      # once, not every run.
+      - name: Cache cargo-llvm-cov
+        id: cache-llvm-cov
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-llvm-cov
+          key: cargo-llvm-cov-${{ runner.os }}-0.8.7
+      - name: Install cargo-llvm-cov
+        if: steps.cache-llvm-cov.outputs.cache-hit != 'true'
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      # From the checksum-pinned tarball the Dockerfile already names, not from
+      # the `telegraf:x.y.z` image tag. A tag is mutable: whoever can move it
+      # decides which binary the unix-only tests run against, and Dependabot
+      # does not watch a `docker create` reference (dependabot-core#5819 — the
+      # same limitation security.yml records for its Semgrep image). The script
+      # reads the version and the per-arch SHA-256 out of the Dockerfile, so
+      # there is one pin to maintain and it is the one ADR-0011 already
+      # describes.
+      - name: Fetch the pinned Telegraf binary
+        run: bash scripts/fetch-telegraf.sh "${{ runner.temp }}"
+
+      - name: Run coverage
+        env:
+          MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info --fail-under-lines 80
+
+      - name: Upload LCOV report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-lcov
+          path: lcov.info
+          retention-days: 7
+
+  # ── Gate 5: the target format is still real Telegraf ──────────────────────
+  # muninn's own addition, from the WP0 findings. Three things drift silently
+  # and none of them is visible to a Rust test:
+  #
+  #   - docs/reference/telegraf.reference.conf is what the renderer targets and
+  #     what the snapshots are anchored to. If the pinned Telegraf stops
+  #     accepting it, every snapshot still passes and the artefact is wrong.
+  #   - the ordering fixtures are the evidence for ADR-0007. Both pass
+  #     `config check`; only the emitted metric count tells them apart.
+  #   - every plugin option named in docs/modules.md must exist upstream. This
+  #     is what catches documentation drifting away from the shipped version,
+  #     which is R5.
+  reference:
+    name: Telegraf reference & docs
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      # The Dockerfile is the authority on which Telegraf is shipped. If this
+      # workflow's TELEGRAF_VERSION ever disagrees, the reference below would be
+      # verified against a version the image does not carry.
+      - name: The pinned version matches the Dockerfile
+        run: |
+          in_dockerfile="$(grep -oE 'TELEGRAF_VERSION=[0-9]+\.[0-9]+\.[0-9]+' Dockerfile | head -1 | cut -d= -f2)"
+          if [ -z "$in_dockerfile" ]; then
+            echo "::error::could not read TELEGRAF_VERSION from the Dockerfile"
+            exit 1
+          fi
+          if [ "$in_dockerfile" != "$TELEGRAF_VERSION" ]; then
+            echo "::error::Dockerfile pins $in_dockerfile, this workflow pins $TELEGRAF_VERSION"
+            exit 1
+          fi
+          echo "OK: both pin $TELEGRAF_VERSION"
+
+      # Checks 3-7 of the design-package suite: the reference config, the
+      # ordering fixtures, the plugin options, the Telegraf checksums and the
+      # documentation cross-references. Check 1 is skipped because `check`,
+      # `test` and `supply-chain` above are the same gates on their own runners.
+      - name: Verify the design package
+        env:
+          VERIFY_SKIP_CARGO: "1"
+        run: bash scripts/verify-design-package.sh
+
+  # ── Release version gate (SemVer + must exceed the last tag) ───────────────
+  # Enforces only for a release context: a PR whose base is main, or a push to
+  # main. On every other event it is a deliberate no-op pass — a *skipped* job
+  # in `needs` would skip `build` too, so this job must always run and decide
+  # internally whether to enforce.
+  version-gate:
+    name: Version gate
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # need the tag history to find the last release
+      - name: Validate SemVer and successor
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.base_ref }}
+          REF: ${{ github.ref }}
+        run: |
+          # Only a release cut is gated: PR into main, or a push to main.
+          if [ "$EVENT" = "pull_request" ] && [ "$BASE" = "main" ]; then :
+          elif [ "$EVENT" = "push" ] && [ "$REF" = "refs/heads/main" ]; then :
+          else
+            echo "Not a release event (base is not main) — version gate is a no-op."
+            exit 0
+          fi
+
+          # Extraction *and* SemVer validation live in the shared script, so the
+          # gate and the publish job cannot drift apart. Deliberately without
+          # --allow-unreleased: a release must name its version in the changelog.
+          NEW="$(bash scripts/changelog-version.sh)"
+          echo "CHANGELOG version: $NEW"
+
+          LAST=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
+          if [ -z "$LAST" ]; then
+            echo "No existing v* tag — treating $NEW as the first release."
+            exit 0
+          fi
+          echo "Last released version: $LAST"
+
+          if [ "$NEW" = "$LAST" ]; then
+            echo "::error::Version $NEW equals the last release — bump it before releasing"
+            exit 1
+          fi
+          # sort -V is not full SemVer pre-release precedence, but is correct for
+          # x.y.z and adequate for the 0.x / -rc versions used here.
+          HIGHEST=$(printf '%s\n%s\n' "$LAST" "$NEW" | sort -V | tail -1)
+          if [ "$HIGHEST" != "$NEW" ]; then
+            echo "::error::Version $NEW is not greater than the last release $LAST"
+            exit 1
+          fi
+          echo "OK: $NEW is a valid successor to $LAST"
+
+  # ── Build ONCE per arch → image.tar artifact ──────────────────────────────
+  # One build per architecture on its own native runner (amd64 on ubuntu-latest,
+  # arm64 on ubuntu-24.04-arm — no QEMU). The tarball is uploaded as an artifact
+  # and is the single source of truth for scan, integration, updates and publish.
+  build:
+    name: Build image ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    needs: [check, test, supply-chain, coverage, reference, version-gate]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Docker metadata (labels only)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          labels: |
+            org.opencontainers.image.title=muninn.io
+            org.opencontainers.image.description=Supervisor and configuration layer around Telegraf
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # The build verifies Telegraf's SHA-256 per architecture and fails on a
+      # mismatch — ADR-0011. That check is inside the Dockerfile, so it runs here
+      # whatever the caller does.
+      - name: Build image to a local tarball
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          tags: muninn:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=docker,dest=${{ runner.temp }}/image.tar
+          cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
+
+      - name: Upload image tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/image.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Scan the built artifact (never rebuilds it) ───────────────────────────
+  # Runs on ubuntu-latest for both arches: Trivy reads the tarball's layers, so
+  # the host architecture is irrelevant.
+  scan:
+    name: Trivy scan ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write   # Trivy SARIF upload
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      # Needed for .trivyignore.yaml, which the blocking scan reads. The full
+      # scan below deliberately does not use it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Trivy - full scan (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Upload SARIF to GitHub Security tab
+        # Fork PRs have a read-only token and can't upload SARIF; the blocking
+        # pass still gates them. Per-arch category so the legs don't overwrite.
+        if: always() && github.event.pull_request.head.repo.fork != true
+        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38 # v4.37.4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-${{ env.PLATFORM_PAIR }}
+
+      # Blocking on FIXABLE CRITICAL/HIGH only. The base is debian-slim rather
+      # than distroless because the updates module needs real apt and dpkg, and
+      # that trade is measured in docs/hardening.md: more unfixable CVEs, none
+      # of them actionable. A gate that blocks on unfixable findings is a gate
+      # that gets switched off.
+      #
+      # .trivyignore.yaml is read HERE and not by the full scan above, so a
+      # suppressed finding still reaches the Security tab. Every entry in it
+      # carries an expiry date and a reason the code is unreachable in muninn's
+      # generated configuration — see the file.
+      - name: Trivy - blocking scan (fixable CRITICAL/HIGH only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          trivyignores: .trivyignore.yaml
+          exit-code: "1"
+
+      # ── SBOM, from the same tarball ──────────────────────────────────────
+      # Generated from the artefact rather than from a rebuild or a registry
+      # pull, for the reason the whole pipeline is shaped this way: an SBOM that
+      # describes different bytes than the ones that shipped is worse than none,
+      # because it will be believed. Two packages matter most here and neither
+      # comes from Cargo.lock — the Telegraf binary and everything debian-slim
+      # brings with apt and dpkg (docs/hardening.md).
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          input: ${{ runner.temp }}/image.tar
+          format: cyclonedx
+          output: sbom-${{ env.PLATFORM_PAIR }}.cdx.json
+          exit-code: "0"
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-${{ env.PLATFORM_PAIR }}
+          path: sbom-${{ env.PLATFORM_PAIR }}.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
+  # ── Integration-test the built artifact (loaded, never rebuilt) ───────────
+  # Native runner per arch: the loaded container must run on matching hardware.
+  integration:
+    name: Integration test ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    needs: build
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Load image
+        run: docker load -i "${{ runner.temp }}/image.tar" && docker tag muninn:ci muninn:dev
+
+      # The whole path: muninn, Telegraf, InfluxDB and Prometheus, one metric
+      # followed from the host into a database and back out. The harness
+      # generates its own throwaway credentials per run — no secret is involved
+      # and none is reachable from a PR build.
+      - name: System integration (stack)
+        run: bash scripts/integration-test.sh muninn:dev
+
+      # The image itself, under the hardening the documentation promises, plus
+      # the Docker module against a real socket and through a socket proxy.
+      - name: Container tests (hardened image)
+        run: bash scripts/container-test.sh muninn:dev
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.integration.yml logs || true
+          docker logs muninn-test 2>&1 | tail -50 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down -v --remove-orphans || true
+
+  # ── The updates module against real host trees ────────────────────────────
+  # Its own job because it builds Debian and Ubuntu fixtures, which is minutes
+  # of apt work that should not sit in front of the stack test. Cell S11 (a real
+  # host through WSL) skips here and says so; the rest run.
+  updates:
+    name: Updates module ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    needs: build
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Load image
+        run: docker load -i "${{ runner.temp }}/image.tar" && docker tag muninn:ci muninn:dev
+
+      - name: Updates system tests
+        run: bash scripts/updates-test.sh muninn:dev
+
+      # The image_updates counterpart, in the same job rather than its own: it
+      # needs the same loaded image and the runner's own Docker daemon, and it
+      # is minutes rather than the tens the updates fixtures cost. Every cell
+      # resolves a tag against Docker Hub, so it is subject to the same
+      # anonymous rate limit the module documents — one run per job, well
+      # inside 100 per 6 hours.
+      - name: Image updates system tests
+        run: bash scripts/image-updates-test.sh muninn:dev
+
+  # ── Push the scanned+tested bytes by digest (push events only) ────────────
+  # Skopeo copies straight from the artifact tarball — the exact bytes that
+  # scan, integration and updates validated. Skipped on pull_request, so the
+  # DockerHub credentials are never reachable from a PR (fork-safe).
+  push:
+    name: Push image ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    needs: [scan, integration, updates]
+    if: github.event_name == 'push'
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Sanitise platform name
+        env:
+          platform: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Download image tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}
+
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Push scanned image and record its digest
+        env:
+          REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          # skopeo writes and reads its credentials here instead of taking them
+          # on the command line. `--dest-creds user:token` puts the token in
+          # /proc/<pid>/cmdline, readable by every other process on the runner
+          # for as long as the copy runs; an auth file is 0600 and confined to
+          # this step's temp directory.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
+        run: |
+          # Through env, never through an expression inside the shell: workflow
+          # expressions are substituted into the script TEXT before bash sees
+          # it, so a repository variable would be script rather than data.
+          # (Even a mention of the syntax in a comment here is parsed — which is
+          # how literally this happens.)
+          if [ -z "$DHUSER" ] || [ -z "$DHTOKEN" ]; then
+            echo "::error::DOCKERHUB_USERNAME (repository variable) and DOCKERHUB_TOKEN (repository secret) are not set — see docs/ci-cd.md"
+            exit 1
+          fi
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN | skopeo login --username "$DHUSER" --password-stdin docker.io
+
+          mkdir -p "${{ runner.temp }}/digests"
+          # Staging tag is only a push target; the user-facing multi-arch tag is
+          # created by the `publish` job from the digest recorded here, and the
+          # staging tags are deleted again once the manifest exists.
+          skopeo copy \
+            "docker-archive:${{ runner.temp }}/image.tar" \
+            "docker://${REPO}:staging-${PLATFORM_PAIR}" \
+            --digestfile "${{ runner.temp }}/digest.txt"
+          digest="$(cat "${{ runner.temp }}/digest.txt")"
+          echo "Pushed ${PLATFORM_PAIR} as ${REPO}@${digest}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Assemble the multi-arch manifest, tag it, tag the release ─────────────
+  publish:
+    name: Publish to DockerHub
+    runs-on: ubuntu-latest
+    needs: [push]
+    if: github.event_name == 'push'
+    timeout-minutes: 15
+    permissions:
+      # contents: write — the "Create git tag" step. Inheriting `contents: read`
+      #   made `git push origin vX.Y.Z` 403.
+      # packages: write — the "Mirror image to ghcr.io" step pushes to GHCR with
+      #   the built-in GITHUB_TOKEN.
+      contents: write
+      packages: write
+    steps:
+      # The one checkout in this file that keeps its credentials: the last step
+      # runs `git push origin "$TAG"`. Nothing between here and there executes
+      # third-party code — no cargo, no build — so the token stays inside a job
+      # that only runs skopeo, jq and git.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # needed to read git history for version tagging
+
+      # `refs/tags/v*` is not covered by the branch ruleset, and the version gate
+      # is a no-op on a tag push — so without this a hand-pushed tag on any
+      # commit would publish an image and cut a release. The tag this pipeline
+      # creates itself always points at a commit on main, so the normal flow is
+      # unaffected.
+      - name: Refuse tags that are not on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
+            exit 1
+          fi
+          echo "OK: $GITHUB_REF_NAME is on main"
+
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      # ── Version detection (from CHANGELOG.md) ────────────────────────────
+      # The shared script validates SemVer before printing, so `version` can only
+      # ever be `x.y.z[-pre][+build]` — it is safe to hand on from here. Every
+      # consumer below still takes it through `env:`, never through `${{ }}`
+      # inside a shell, so the guarantee does not rest on the script alone.
+      #
+      # --allow-unreleased so that pushes to `dev` keep producing a :x.y.z-dev
+      # image before the first release is cut, when the changelog holds only
+      # `## [Unreleased]`. The version gate above calls the script WITHOUT it,
+      # so a real release still has to name its version in the changelog.
+      - name: Read version from CHANGELOG.md
+        id: version
+        run: |
+          VERSION="$(bash scripts/changelog-version.sh --allow-unreleased)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION"
+
+      - name: Check if git tag already exists
+        id: tag_check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${VERSION}" | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${VERSION} already exists — skipping tag creation"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Docker metadata (tags + labels) ───────────────────────────────────
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          tags: |
+            # dev branch → :dev
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            # dev branch → :x.y.z-dev  (e.g. 0.1.0-dev)
+            type=raw,value=${{ steps.version.outputs.version }}-dev,enable=${{ github.ref == 'refs/heads/dev' }}
+            # main branch → :latest
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            # main branch + version from CHANGELOG → :x.y.z
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false' }}
+            # Git tags (v1.2.3) → semver tags (fallback for manual tagging)
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+          labels: |
+            org.opencontainers.image.title=muninn.io
+            org.opencontainers.image.description=Supervisor and configuration layer around Telegraf
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to DockerHub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push manifest
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+        run: |
+          # shellcheck disable=SC2046  # word-splitting is intentional: each -t
+          # and each digest must become a separate argument.
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${REPO}@sha256:%s " *)
+
+      - name: Inspect manifest
+        env:
+          REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${REPO}:${VERSION}"
+
+      # ── Mirror the finished image to GitHub Container Registry ─────────────
+      # `skopeo copy --all` copies the manifest list and every arch blob, so the
+      # ghcr image ends up byte-identical (same digests) to the DockerHub image
+      # that was scanned and tested — no second build, no ghcr staging tag.
+      # Runs for every user-facing tag metadata-action emitted.
+      - name: Install skopeo
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+
+      - name: Mirror image to ghcr.io
+        env:
+          DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          DHTOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_REPO: ghcr.io/${{ github.repository_owner }}/muninn.io
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same reason as the push job: credentials through a 0600 auth file
+          # rather than through argv, where every process on the runner can read
+          # them out of /proc for the length of the copy.
+          REGISTRY_AUTH_FILE: ${{ runner.temp }}/registry-auth.json
+        run: |
+          trap 'rm -f "$REGISTRY_AUTH_FILE"' EXIT
+          printenv DHTOKEN   | skopeo login --username "$DHUSER"   --password-stdin docker.io
+          printenv GHCR_TOKEN | skopeo login --username "$GHCR_USER" --password-stdin ghcr.io
+
+          echo "$DOCKER_METADATA_OUTPUT_JSON" | jq -r '.tags[]' | while read -r ref; do
+            tag="${ref##*:}"
+            echo "Mirroring ${DH_REPO}:${tag} -> ${GHCR_REPO}:${tag}"
+            skopeo copy --all \
+              "docker://${DH_REPO}:${tag}" \
+              "docker://${GHCR_REPO}:${tag}"
+          done
+
+      # ── Delete the staging tags now the manifest references the digests ───
+      # The per-arch manifests survive: the multi-arch manifest list points at
+      # them by digest, so removing the tag only drops the pointer. Best-effort;
+      # a failure here must not fail a release.
+      - name: Remove staging tags
+        continue-on-error: true
+        env:
+          REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          DHUSER: ${{ vars.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          # Body through stdin, built by jq rather than by string interpolation:
+          # `-d "{...$TOKEN...}"` would put the token in /proc/<pid>/cmdline, and
+          # would also break on any character JSON needs escaped. `--data @-`
+          # keeps it in a pipe.
+          jwt="$(jq -n --arg u "$DHUSER" --arg p "$TOKEN" '{username:$u, password:$p}' \
+            | curl -s -H 'Content-Type: application/json' --data @- \
+              https://hub.docker.com/v2/users/login/ | jq -r .token)"
+          if [ -z "$jwt" ] || [ "$jwt" = "null" ]; then
+            echo "Could not obtain a DockerHub token; leaving staging tags in place"
+            exit 0
+          fi
+          # The session token goes through a curl config on stdin for the same
+          # reason as the password above — `-H "Authorization: ..."` is argv.
+          for tag in staging-linux-amd64 staging-linux-arm64; do
+            code="$(printf 'header = "Authorization: JWT %s"\n' "$jwt" \
+              | curl -s -K - -o /dev/null -w '%{http_code}' -X DELETE \
+                "https://hub.docker.com/v2/repositories/${REPO}/tags/${tag}/")"
+            echo "delete ${tag}: HTTP ${code}"
+          done
+
+      # ── Create git tag on main (if new version) ───────────────────────────
+      - name: Create git tag
+        if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "$TAG" -m "Release $TAG"
+          git push origin "$TAG"

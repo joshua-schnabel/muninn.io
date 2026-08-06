@@ -1,0 +1,68 @@
+# muninn.io — a deployment you can copy.
+#
+# Four details here are easy to get wrong and slow to debug. Each is commented
+# where it appears rather than in a note at the bottom: stop_grace_period,
+# hostname, the tmpfs uid, and the two published ports.
+
+services:
+  muninn:
+    image: ghcr.io/joshua-schnabel/muninn.io:0.1.0
+    restart: unless-stopped
+
+    # Docker's default stop timeout is 10s. muninn's default grace period is
+    # 20s, so without this Docker kills the container before muninn has finished
+    # asking Telegraf to flush — and the clean shutdown never happens.
+    stop_grace_period: 30s
+
+    # Inside a container the OS hostname is the container ID, which changes on
+    # every recreate. Every deploy would start a new InfluxDB time series and
+    # dashboards would quietly lose their history. Set this, or set
+    # agent.hostname in muninn.yaml. `muninn check-runtime` warns if neither is.
+    hostname: web-01.example.internal
+
+    volumes:
+      - ./muninn.yaml:/etc/muninn/muninn.yaml:ro
+
+      # The whole host root, read-only. One mount rather than several because
+      # HOST_MOUNT_PREFIX has to strip a common prefix from reported paths —
+      # without it every disk metric is tagged /hostfs/var instead of /var.
+      # See docs/adr/0005-hostfs-mount.md, and docs/hardening.md for what this
+      # exposes.
+      - /:/hostfs:ro
+
+      - ./influxdb-token:/run/secrets/influxdb_token:ro
+
+    # The generated Telegraf configuration lives here and holds resolved
+    # secrets, so it is memory-backed and never reaches disk.
+    #
+    # uid and gid are not optional: muninn runs as 10001, and a tmpfs without
+    # them is owned by root — the container would start and then fail to write
+    # its own configuration.
+    tmpfs:
+      - /run/muninn:mode=0700,uid=10001,gid=10001
+
+    read_only: true
+
+    security_opt:
+      - no-new-privileges:true
+
+    # No module in the MVP needs a capability. If a future one does, it declares
+    # it per module rather than raising this baseline for everyone.
+    cap_drop:
+      - ALL
+
+    ports:
+      # Host metrics, from Telegraf.
+      - "9273:9273"
+      # Health, status and muninn's own metrics. Both are needed: :9273 alone
+      # cannot distinguish a dead agent from a dead host.
+      - "8080:8080"
+
+    # The image declares a HEALTHCHECK already; this is here so the interval is
+    # visible and adjustable next to everything else.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/muninn", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

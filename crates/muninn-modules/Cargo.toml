@@ -1,0 +1,23 @@
+[package]
+name = "muninn-modules"
+description = "Monitoring modules and outputs for muninn.io — each renders a Telegraf plugin fragment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+muninn-core = { workspace = true }
+muninn-telegraf = { workspace = true }
+tracing = { workspace = true }
+# Parses the Docker Engine API's JSON responses for the image_updates check —
+# see the note in the workspace Cargo.toml.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tempfile = { workspace = true }

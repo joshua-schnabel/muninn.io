@@ -1,0 +1,415 @@
+//! The input modules.
+//!
+//! Each is a thin, declarative mapping from muninn's options onto a Telegraf
+//! plugin. They are kept in one file rather than one file each because reading
+//! them side by side is how you notice an inconsistency — nine files of twenty
+//! lines would hide exactly the kind of drift this layer has to avoid.
+//!
+//! Ranks decide the order plugins appear in the generated file. They are spaced
+//! by ten so a module can be inserted between two others without renumbering.
+
+use muninn_core::Config;
+use muninn_telegraf::PluginInstance;
+
+use std::time::Duration;
+
+use crate::{Endpoint, EndpointKind, MonitoringModule, RenderContext, Requirements};
+
+/// Split a Docker endpoint into what has to be reachable.
+///
+/// `unix:///var/run/docker.sock` → a socket file.
+/// `tcp://docker-socket-proxy:2375` → an address.
+///
+/// Used by `docker` and `image_updates` to derive their [`Requirements`], and
+/// by [`crate::image_updates::check::check`] to turn an `--endpoint` argument
+/// back into an [`Endpoint`] — the same parsing in all three places, not a
+/// second implementation of it. All three are inside this crate, so the
+/// endpoint grammar stays a crate-internal detail.
+pub(crate) fn parse_docker_endpoint(endpoint: &str, timeout: Duration) -> Option<Endpoint> {
+    let kind = if let Some(path) = endpoint.strip_prefix("unix://") {
+        (!path.is_empty()).then(|| EndpointKind::UnixSocket(path.to_string()))
+    } else if let Some(addr) = endpoint.strip_prefix("tcp://") {
+        (!addr.is_empty()).then(|| EndpointKind::Tcp(addr.to_string()))
+    } else {
+        None
+    }?;
+    Some(Endpoint { kind, timeout })
+}
+
+const RANK_CPU: u16 = 10;
+const RANK_MEM: u16 = 20;
+const RANK_SYSTEM: u16 = 30;
+const RANK_SWAP: u16 = 40;
+const RANK_PROCESSES: u16 = 50;
+const RANK_DISK: u16 = 60;
+const RANK_DISKIO: u16 = 70;
+const RANK_NET: u16 = 80;
+const RANK_DOCKER: u16 = 90;
+/// The updates module renders from [`crate::updates`], but its rank belongs with
+/// the others so the uniqueness test below can see all ten at once.
+pub(crate) const RANK_UPDATES: u16 = 100;
+/// The image_updates module renders from [`crate::image_updates`]; same reason
+/// as `RANK_UPDATES` for keeping the constant here rather than there.
+pub(crate) const RANK_IMAGE_UPDATES: u16 = 110;
+
+// ---------------------------------------------------------------------------
+
+pub struct Cpu;
+
+impl MonitoringModule for Cpu {
+    fn id(&self) -> &'static str {
+        "cpu"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.cpu.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        vec![
+            PluginInstance::input("cpu", RANK_CPU)
+                .from_module("cpu")
+                .scalar("percpu", true)
+                .scalar("totalcpu", true)
+                .scalar("collect_cpu_time", false)
+                // `usage_active` includes iowait, so it reads as CPU saturation
+                // when the machine is actually waiting on disk. Off by default.
+                .scalar("report_active", false),
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct Memory;
+
+impl MonitoringModule for Memory {
+    fn id(&self) -> &'static str {
+        "memory"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.memory.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        vec![PluginInstance::input("mem", RANK_MEM).from_module("memory")]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+/// Load averages.
+///
+/// Renders into `inputs.system` with the `load` group, and shares a merge key
+/// with [`System`] so the two never produce separate instances.
+pub struct Load;
+
+impl MonitoringModule for Load {
+    fn id(&self) -> &'static str {
+        "load"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.load.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        vec![
+            PluginInstance::input("system", RANK_SYSTEM)
+                .merge_key("system")
+                .from_module("load")
+                .scalar("include", vec!["load"]),
+        ]
+    }
+}
+
+/// Uptime and logged-in users.
+///
+/// Note this deliberately does *not* include the `load` group, even though
+/// Telegraf's own default (`include = ["legacy"]`) would. muninn is explicit
+/// rather than convenient: a module you did not enable does not collect.
+pub struct System;
+
+impl MonitoringModule for System {
+    fn id(&self) -> &'static str {
+        "system"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.system.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc", "var"])
+    }
+    fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        vec![
+            PluginInstance::input("system", RANK_SYSTEM)
+                .merge_key("system")
+                .from_module("system")
+                .scalar("include", vec!["uptime", "users"]),
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct Swap;
+
+impl MonitoringModule for Swap {
+    fn id(&self) -> &'static str {
+        "swap"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.swap.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        vec![PluginInstance::input("swap", RANK_SWAP).from_module("swap")]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct Processes;
+
+impl MonitoringModule for Processes {
+    fn id(&self) -> &'static str {
+        "processes"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.processes.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, _ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        vec![PluginInstance::input("processes", RANK_PROCESSES).from_module("processes")]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct Disks;
+
+impl MonitoringModule for Disks {
+    fn id(&self) -> &'static str {
+        "disks"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.disks.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        let m = &ctx.config.modules.disks;
+        vec![
+            PluginInstance::input("disk", RANK_DISK)
+                .from_module("disks")
+                .list("mount_points", &m.include_mountpoints)
+                .list("ignore_fs", &m.exclude_filesystems)
+                // `inputs.disk` can filter by filesystem type but not by path,
+                // so path exclusions become a metric filter.
+                .tagdrop("path", &m.exclude_mountpoints),
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct DiskIo;
+
+impl MonitoringModule for DiskIo {
+    fn id(&self) -> &'static str {
+        "disk_io"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.disk_io.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc", "sys"])
+    }
+    fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        let m = &ctx.config.modules.disk_io;
+        vec![
+            PluginInstance::input("diskio", RANK_DISKIO)
+                .from_module("disk_io")
+                .list("devices", &m.include_devices)
+                // The device tag is `name`, not `device`.
+                .tagdrop("name", &m.exclude_devices),
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct Network;
+
+impl MonitoringModule for Network {
+    fn id(&self) -> &'static str {
+        "network"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.network.enabled
+    }
+    fn requirements(&self, _c: &Config) -> Requirements {
+        Requirements::host(&["proc"])
+    }
+    fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        let m = &ctx.config.modules.network;
+        vec![
+            PluginInstance::input("net", RANK_NET)
+                .from_module("network")
+                .list("interfaces", &m.include_interfaces)
+                .tagdrop("interface", &m.exclude_interfaces),
+        ]
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+pub struct Docker;
+
+impl MonitoringModule for Docker {
+    fn id(&self) -> &'static str {
+        "docker"
+    }
+    fn enabled(&self, c: &Config) -> bool {
+        c.modules.docker.enabled
+    }
+    fn requirements(&self, c: &Config) -> Requirements {
+        let mut req = Requirements::default();
+        // Derived from the configured endpoint, not hard-coded. A socket proxy
+        // — the recommended deployment — is reached over TCP and has no socket
+        // file at all, so demanding one would refuse the safest setup.
+        //
+        // The socket is deliberately not under the host mount prefix either: it
+        // is its own, root-equivalent grant. See ADR-0010.
+        let m = &c.modules.docker;
+        if let Some(endpoint) = parse_docker_endpoint(&m.endpoint, m.timeout.inner()) {
+            // A unix socket is a file as well as a service, and both are worth
+            // checking separately: "the socket file is not mounted" and "the
+            // daemon behind it is not answering" need different fixes.
+            if let EndpointKind::UnixSocket(path) = &endpoint.kind {
+                req.absolute_paths.push(path.clone());
+            }
+            req.endpoints.push(endpoint);
+        }
+        // Validation rejects any other scheme before this runs. If a malformed
+        // endpoint reached here, demanding nothing is the honest response —
+        // guessing at a socket path would check something the agent never uses.
+        req
+    }
+    fn render(&self, ctx: &RenderContext<'_>) -> Vec<PluginInstance> {
+        let m = &ctx.config.modules.docker;
+        vec![
+            PluginInstance::input("docker", RANK_DOCKER)
+                .from_module("docker")
+                .scalar("endpoint", m.endpoint.clone())
+                .scalar("timeout", m.timeout.as_telegraf())
+                .list("container_name_include", &m.container_include)
+                .list("container_name_exclude", &m.container_exclude)
+                // Running only by default. A stopped container then disappears
+                // from the metrics rather than reporting zeros, which is
+                // unambiguous — zeros look exactly like an idle container.
+                .scalar("container_state_include", m.container_states.clone())
+                .scalar("perdevice_include", vec!["cpu"])
+                .scalar("total_include", vec!["cpu", "blkio", "network"]),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ranks_are_unique_and_ordered() {
+        let ranks = [
+            RANK_CPU,
+            RANK_MEM,
+            RANK_SYSTEM,
+            RANK_SWAP,
+            RANK_PROCESSES,
+            RANK_DISK,
+            RANK_DISKIO,
+            RANK_NET,
+            RANK_DOCKER,
+            RANK_UPDATES,
+            RANK_IMAGE_UPDATES,
+        ];
+        let mut sorted = ranks.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ranks.len(), "ranks must be unique");
+        assert_eq!(sorted, ranks.to_vec(), "ranks must already be in order");
+    }
+
+    /// `load` and `system` must agree on the merge key, or they emit two
+    /// `[[inputs.system]]` blocks and every metric is collected twice.
+    #[test]
+    fn load_and_system_share_a_merge_key() {
+        let cfg = crate::tests::config_with(|c| {
+            c.modules.load.enabled = true;
+            c.modules.system.enabled = true;
+        });
+        let ctx = RenderContext::new(&cfg);
+        let load = Load.render(&ctx).remove(0);
+        let system = System.render(&ctx).remove(0);
+        assert_eq!(load.merge_key, system.merge_key);
+        assert!(load.merge_key.is_some());
+        assert_eq!(load.plugin, system.plugin);
+    }
+
+    /// No MVP module may require a Linux capability: the hardening baseline
+    /// drops them all, so a module that needed one would silently not work.
+    #[test]
+    fn no_module_requires_a_capability() {
+        let cfg = crate::tests::config_with(|_| {});
+        for module in crate::all_modules() {
+            assert!(
+                module.requirements(&cfg).capabilities.is_empty(),
+                "{} requires a capability, which the hardening baseline drops",
+                module.id()
+            );
+        }
+    }
+
+    /// The Docker socket must not be declared as a host path: it is a separate,
+    /// deliberate grant, and folding it into the mount prefix would make it look
+    /// like part of the ordinary host mount.
+    ///
+    /// `image_updates` needs the same socket as `docker`, for the same reason —
+    /// both talk to the Docker Engine API rather than reading `/proc`.
+    #[test]
+    fn only_docker_and_image_updates_require_an_absolute_path() {
+        let cfg = crate::tests::config_with(|_| {});
+        for module in crate::all_modules() {
+            let req = module.requirements(&cfg);
+            if module.id() == "docker" || module.id() == "image_updates" {
+                assert_eq!(req.absolute_paths, vec!["/var/run/docker.sock".to_string()]);
+                assert!(req.host_paths.is_empty());
+            } else {
+                assert!(
+                    req.absolute_paths.is_empty(),
+                    "{} should not need an absolute path",
+                    module.id()
+                );
+            }
+        }
+    }
+
+    /// Found during the WP1 spike: /etc/os-release is a symlink into /usr/lib,
+    /// so a mount set with /etc but not /usr reports "not a Debian host".
+    #[test]
+    fn the_updates_module_requires_usr_for_the_os_release_symlink() {
+        let req = crate::updates::Updates.requirements(&crate::tests::config_with(|_| {}));
+        assert!(req.host_paths.contains(&"usr"), "got: {:?}", req.host_paths);
+        assert!(req.debian_family_only);
+    }
+}

@@ -1,0 +1,89 @@
+# muninn.io with the Docker module — the recommended deployment.
+#
+# The difference from docker-compose.yml is one container and one line of
+# configuration, and it is the difference between granting muninn root on the
+# host and granting it four read-only API endpoints.
+#
+# Read docs/modules.md#docker before using this. The short version: the Docker
+# socket is root-equivalent, `:ro` on the mount does not change that, and the
+# proxy below is what turns it into something bounded.
+#
+# Tested by scripts/container-test.sh against a real Docker daemon.
+
+services:
+  # The boundary. It holds the socket; muninn never sees it.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+
+    environment:
+      # Exactly what the module needs, and nothing else.
+      CONTAINERS: 1   # /containers/json and /containers/*/stats — the metrics
+      INFO: 1         # /info — host-level container counts
+      VERSION: 1      # /version — Telegraf reads it on connect
+      PING: 1         # /_ping — muninn's startup reachability check
+
+      # The line that makes this a boundary rather than a suggestion. Without
+      # it the proxy forwards container creation, and the proxy buys nothing.
+      POST: 0
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    # Deliberately not published to the host. Reachable only from this network,
+    # which is the point — an unauthenticated Docker API on a host port would be
+    # worse than the socket it replaces.
+    networks: [muninn]
+
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /run
+      - /var/run
+
+  muninn:
+    image: ghcr.io/joshua-schnabel/muninn.io:0.1.0
+    restart: unless-stopped
+
+    # muninn refuses to start if the proxy is not answering, so without this the
+    # first start after `up` is a race it can lose. `depends_on` alone is not
+    # enough — it waits for the container, not for the API.
+    depends_on:
+      docker-socket-proxy:
+        condition: service_started
+
+    stop_grace_period: 30s
+    hostname: web-01.example.internal
+
+    volumes:
+      - ./muninn.docker-module.yaml:/etc/muninn/muninn.yaml:ro
+      - /:/hostfs:ro
+
+    tmpfs:
+      - /run/muninn:mode=0700,uid=10001,gid=10001
+
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    ports:
+      - "9273:9273"
+      - "8080:8080"
+
+    networks: [muninn]
+
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/muninn", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  muninn:
+    # No external access needed: the proxy talks to the socket, muninn talks to
+    # the proxy, and nothing here talks out.
+    internal: false

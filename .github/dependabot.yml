@@ -1,0 +1,90 @@
+version: 2
+
+# Continuous dependency updates, consolidated. Each ecosystem gets ONE grouped
+# PR that Dependabot keeps maintained (rebased, deps added/removed as they
+# change) instead of a PR per dependency. Dependabot cannot group across
+# ecosystems, so this is one PR for Rust crates + one for GitHub Actions.
+#
+# The group includes major bumps too, so the PR really is "everything in one".
+# Interaction with dependabot-auto-merge.yml: that workflow only auto-merges
+# patch/minor, so a group PR that happens to include a major waits for manual
+# review — you review exactly when a breaking bump is present.
+#
+# Security updates (advisory-driven) are intentionally NOT grouped — Dependabot
+# still opens those as their own PRs so an urgent CVE fix isn't held back.
+#
+# `cooldown` makes a released version wait before Dependabot will propose it.
+# dependabot-auto-merge.yml merges patch/minor without human review, so a
+# freshly published malicious release would otherwise reach `dev` — and from
+# there the registry — within the hour. The wait buys the time in which such a
+# release is typically yanked or gets an advisory. It does NOT close that hole
+# (an attacker can simply wait it out); only a required review does.
+# Two things worth knowing about it:
+#   - It applies to *version* updates only. Security updates are exempt by
+#     design, so a CVE fix is never delayed by this.
+#   - GitHub has applied a 3-day cooldown by default since 2026-07-14. Spelling
+#     it out changes no behaviour today; it makes the value explicit, reviewable
+#     and raisable in one place.
+#
+# Note: Dependabot uses `dependabot/*` branch names, which auto-pr.yml leaves
+# alone (see its branches-ignore).
+#
+# NOT covered here, deliberately:
+#   - Telegraf. Dependabot does not track `dl.influxdata.com` URLs, and the pin
+#     is a version string plus two SHA-256 values in the Dockerfile (ADR-0011).
+#     Bumping it means re-verifying both checksums and re-running the reference
+#     check, which is a change that belongs in a diff someone reads.
+#   - The Semgrep image in security.yml. Dependabot does not update `container:`
+#     references (dependabot-core#5819). Acceptable: the rules are fetched at
+#     scan time, so a pinned image still scans with current rules.
+#   - The InfluxDB and Prometheus images in docker-compose.integration.yml.
+#     They are test scaffolding, not shipped, and a silent bump there would
+#     change what the stack test means without anyone deciding to.
+updates:
+  # ── Rust crates (workspace root Cargo.toml / Cargo.lock) ──────────────────
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    # Scope deliberately left at Dependabot's default (direct dependencies
+    # only). Widening it to `dependency-type: all` produces lockfiles that
+    # `cargo test --locked` refuses, because the updater bumps a transitive
+    # crate without updating the derive macro that pins it exactly. Security
+    # updates reach transitive crates regardless of this setting.
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # ── GitHub Actions pinned in .github/workflows ────────────────────────────
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # ── The Dockerfile's base images ──────────────────────────────────────────
+  # `rust:1.88-slim` (builder) and `debian:12-slim` (runtime). The runtime base
+  # is where the CVE surface documented in docs/hardening.md lives, and R7 says
+  # the fix for an unfixable CVE arrives with a Debian point release — this is
+  # what notices it.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+    cooldown:
+      default-days: 3
+    groups:
+      docker:
+        patterns: ["*"]

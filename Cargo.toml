@@ -1,0 +1,121 @@
+[workspace]
+members = [
+    "muninn",
+    "crates/muninn-core",
+    "crates/muninn-telegraf",
+    "crates/muninn-modules",
+    "crates/muninn-health",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+# Edition 2024 (resolver 3), where huginn.io is on 2021/resolver 2. This is a
+# greenfield tree with no 2021-era code to keep compatible, so there is nothing
+# to gain from the older edition.
+edition = "2024"
+# Matches the builder image in the Dockerfile, and matches huginn.io so both
+# projects track one toolchain number.
+#
+# Unlike under huginn.io's resolver 2, this field now steers dependency
+# resolution: resolver 3 is MSRV-aware and will pick an older release of a crate
+# rather than one requiring a newer compiler. That is a security trap — it is
+# how a project silently stays on the version *before* a CVE fix, which is
+# exactly what huginn.io hit with hickory-resolver and RUSTSEC-2026-0119.
+#
+# Verified at the time of writing: nothing in the tree is held back by this
+# floor; resolution is byte-identical at 1.88 and at 1.94. If that ever changes,
+# the fix is to RAISE this number and the Dockerfile builder together — never to
+# accept the older crate. `cargo update --dry-run` reports what a floor costs.
+rust-version = "1.88"
+authors = ["muninn.io contributors"]
+license = "MIT"
+repository = "https://github.com/joshua-schnabel/muninn.io"
+# muninn ships as a container image, not as crates. The crate APIs are internal
+# structure and `docs/versioning.md` says so explicitly — this makes that a
+# property of the manifest rather than a promise in a document, and stops an
+# accidental `cargo publish` from turning them into someone's dependency.
+publish = false
+
+[workspace.dependencies]
+# ── Internal crates ────────────────────────────────────────────────────────
+muninn-core = { path = "crates/muninn-core" }
+muninn-telegraf = { path = "crates/muninn-telegraf" }
+muninn-modules = { path = "crates/muninn-modules" }
+muninn-health = { path = "crates/muninn-health" }
+
+# ── Async runtime ──────────────────────────────────────────────────────────
+# Explicit feature set rather than "full". Note "process" and "signal" are NOT
+# test-only here, unlike in huginn.io: supervising the Telegraf child process
+# and forwarding SIGTERM to it is this program's core job.
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "time",
+    "sync",
+    "signal",
+    "process",
+    "fs",
+    "io-util",
+] }
+
+# ── Configuration ──────────────────────────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+# Same YAML crate as huginn.io. serde_yaml is unmaintained; serde_yaml_ng is the
+# maintained fork and supports `deny_unknown_fields`, which the config model
+# depends on (rejecting typo'd keys is a hard requirement, not a nicety).
+serde_yaml_ng = "0.10"
+# Serialising the generated Telegraf configuration. `toml` rather than
+# hand-built strings so escaping lives in one audited place — every path,
+# glob and URL that reaches the output goes through one tested encoder.
+toml = "1"
+# Parsing the Docker Engine API's JSON responses for the image_updates module —
+# the only place muninn itself is an HTTP client rather than a renderer for
+# Telegraf. Already in the tree transitively through serde; this adds a name to
+# Cargo.toml and no TLS, no crypto, nothing cargo-deny's licence gate has not
+# already seen.
+serde_json = "1"
+# Parses "30s" / "5m" / "1h" into std Duration. The alternative — a hand-rolled
+# parser — is a surprising amount of edge cases (overflow, mixed units, signs)
+# for a solved problem.
+humantime-serde = "1"
+# The crate humantime-serde wraps, declared directly for `format_duration` in
+# error messages. Already in the tree as humantime-serde's own dependency, so
+# this adds a name to Cargo.toml and nothing to the supply chain.
+humantime = "2"
+
+# ── CLI ────────────────────────────────────────────────────────────────────
+clap = { version = "4", features = ["derive", "env"] }
+
+# ── Health / status HTTP server ────────────────────────────────────────────
+axum = "0.8"
+
+# ── Logging ────────────────────────────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+# Unix only, for one call: kill(pid, SIGTERM). tokio's Child::kill sends
+# SIGKILL, which would deny Telegraf the chance to flush its buffers — the whole
+# point of a graceful shutdown. Already in the tree as tokio's own dependency on
+# unix, so this adds a name to Cargo.toml and nothing to the supply chain.
+libc = "0.2"
+
+# ── Errors ─────────────────────────────────────────────────────────────────
+thiserror = "2"
+anyhow = "1"
+
+# ── Test helpers (available workspace-wide) ────────────────────────────────
+# Snapshot tests for the generated Telegraf configuration. A generated config is
+# exactly the kind of large, structured artefact where a reviewed diff beats a
+# wall of assert_eq!.
+insta = "1"
+tempfile = "3"
+
+# Release profile — the binary that ships in the image.
+# strip: drop symbols. lto=thin + codegen-units=1: cross-crate inlining and a
+# single codegen unit for a smaller, faster artefact. `panic` stays "unwind".
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

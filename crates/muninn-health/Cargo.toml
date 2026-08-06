@@ -1,0 +1,20 @@
+[package]
+name = "muninn-health"
+description = "Liveness, readiness, status and self-metrics HTTP endpoints for muninn.io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+muninn-core = { workspace = true }
+axum = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
