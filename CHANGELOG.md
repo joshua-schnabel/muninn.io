@@ -8,6 +8,37 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 The release pipeline reads the version from this file — see
 [`docs/ci-cd.md`](docs/ci-cd.md). Never hand-push a `v*` tag.
 
+## [Unreleased]
+
+### Added
+
+- **A one-click release** — `release-dispatch.yml`, taken from huginn.io. Pick
+  `patch`, `minor` or `major`; it computes the version from the last release,
+  stamps the changelog and `Cargo.toml`, and opens the release PR into `main`.
+  Owner-only, and it refuses an empty `## [Unreleased]`: a version that
+  documents nothing is worse than no release, because the changelog is what
+  tells an operator whether to upgrade. It is an entry point, not a second
+  release path — it produces the same PR the manual flow does, and every gate
+  still runs on it. Three things differ from huginn.io's copy, each because a
+  rule here requires it: the changelog version is read through the validating
+  `scripts/changelog-version.sh` rather than a bare `grep`, the `Cargo.toml`
+  edit is scoped to `[workspace.package]`, and the merge is a squash because
+  that is the only method this repository enables.
+
+### Fixed
+
+- **`release.yml` never fired for `v0.1.0`, and could not have.** `ci.yml`'s
+  `publish` pushes the tag with the built-in `GITHUB_TOKEN`, and GitHub does not
+  start a workflow from an event that token created — the recursion guard. So
+  the image, the ghcr mirror and the tag all shipped, and the GitHub Release,
+  the SBOM, the test report and the housekeeping PR did not. The tag push now
+  uses `RELEASE_PAT` where it is available, which is the same reason
+  `prepare-dev` already needed it, and `release.yml` gains a
+  `workflow_dispatch` entry point so an existing tag can be released — or
+  re-released — without touching the tag itself.
+- The `## [Unreleased]` block and the changelog's compare links, reopened by
+  hand here because the workflow that does it never ran.
+
 ## [0.1.0] - 2026-08-06
 
 First release. Everything below is what muninn is on day one.
@@ -100,18 +131,6 @@ does not control, which is the class it closes everywhere else.
   coverage, the Telegraf reference check, the version gate, a per-architecture
   image build, Trivy, the system suites, and the push and publish path. Plus
   Semgrep, the release workflow, Dependabot and the branch automation.
-- **A one-click release** — `release-dispatch.yml`, taken from huginn.io. Pick
-  `patch`, `minor` or `major`; it computes the version from the last release,
-  stamps the changelog and `Cargo.toml`, and opens the release PR into `main`.
-  Owner-only, and it refuses an empty `## [Unreleased]`: a version that
-  documents nothing is worse than no release, because the changelog is what
-  tells an operator whether to upgrade. It is an entry point, not a second
-  release path — it produces the same PR the manual flow does, and every gate
-  still runs on it. Three things differ from huginn.io's copy, each because a
-  rule here requires it: the changelog version is read through the validating
-  `scripts/changelog-version.sh` rather than a bare `grep`, the `Cargo.toml`
-  edit is scoped to `[workspace.package]`, and the merge is a squash because
-  that is the only method this repository enables.
 - **The image is built once per architecture into an artefact, and every later
   job consumes that same artefact.** The bytes that are scanned, tested and
   published are byte-identical. A pipeline that rebuilds between scanning and
@@ -382,3 +401,6 @@ project brief:
   keys.
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
+
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.0
