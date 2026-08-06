@@ -42,10 +42,12 @@ an expired credential looks like — all of it lands in
 `scripts/image-updates-test.sh` before any reason token is split.
 [R9](risks.md), [ADR-0013](adr/0013-image-updates-via-docker-api.md).
 
-**Two suppressed image findings expire 2026-11-03.** `CVE-2026-49980` and
-`GHSA-hrxh-6v49-42gf` sit in Go modules vendored into the Telegraf binary, are
-unreachable from any configuration muninn can generate, and have no upstream fix
-in 1.39.2. When the dates pass the image scan blocks again — which is the point,
+**Six suppressed image findings expire 2026-11-03.** One gRPC-Go finding and five rclone
+findings, all in Go modules vendored into the Telegraf binary, all unreachable
+from any configuration muninn can generate, and none carried by a Telegraf
+release — 1.39.2 is the newest and still vendors the affected rclone. Four of
+the five rclone entries were added on 2026-08-06, when Trivy began reporting
+them against an image nothing had changed. When the dates pass the image scan blocks again — which is the point,
 so re-check upstream before then. [`hardening.md`](hardening.md).
 
 **A bounded restart, if operational experience asks for it.** Off by default, at
