@@ -266,6 +266,14 @@ still gate `publish`, so nothing unscanned ships either way.
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
 with `gh pr merge --auto`, which does nothing without it.
 
+**Enable both "Allow merge commits" and "Allow squash merging"** (same page).
+The branch model uses one of each: `feature/* → dev` squashes, `dev → main`
+keeps a merge commit, and `release-dispatch.yml` asks for `--merge` explicitly.
+0.1.0 and 0.1.1 were squashed into `main` because merge commits were the only
+method *not* enabled — which is why `main` does not share `dev`'s history for
+those two releases. With merge commits disabled the release PR is still opened,
+but auto-merge warns and you merge it by hand.
+
 **Enable "Allow GitHub Actions to create and approve pull requests"** (Settings
 → Actions → General → Workflow permissions). Without it the API refuses with
 *"GitHub Actions is not permitted to create or approve pull requests"*, and two

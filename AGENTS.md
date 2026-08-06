@@ -222,7 +222,8 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 ## 8. Git & PR workflow
 
 - Branch off `dev` with a valid prefix: `feature/` · `fix/` · `chore/` · `docs/`
-  · `test/`.
+  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into
+  `dev`; a branch that does not match the prefix is **auto-deleted**.
 - Flow: `feature/* → dev` (squash) → `main` (merge commit). No direct pushes
   (§3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·

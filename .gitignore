@@ -18,6 +18,10 @@ secrets/
 # rootfs snapshots and apt caches they produce are large and machine-specific
 /.fixtures/
 
+# personal Claude Code settings; .claude/settings.json is the shared one and is
+# committed
+.claude/settings.local.json
+
 # local integration-test scratch directory
 /temp-int/
 
