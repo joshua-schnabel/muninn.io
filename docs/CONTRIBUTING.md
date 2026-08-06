@@ -2,7 +2,7 @@
 
 ## Before you start
 
-muninn is feature-complete and unreleased. Read
+muninn is feature-complete and released — `0.1.0` is the first version. Read
 [`architecture.md`](architecture.md) for the shape of the thing, and
 [`roadmap.md`](roadmap.md) for what is still open.
 

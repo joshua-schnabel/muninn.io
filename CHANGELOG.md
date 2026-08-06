@@ -8,7 +8,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 The release pipeline reads the version from this file — see
 [`docs/ci-cd.md`](docs/ci-cd.md). Never hand-push a `v*` tag.
 
-## [Unreleased]
+## [0.1.0] - 2026-08-06
+
+First release. Everything below is what muninn is on day one.
 
 ### Security
 
@@ -280,8 +282,9 @@ does not control, which is the class it closes everywhere else.
 - The README, `AGENTS.md`, the roadmap and this file all said no image was
   published. Pushes to `dev` have been publishing `0.1.0-dev` and `dev` to
   `jschnabel/muninn` and to `ghcr.io/joshua-schnabel/muninn.io` since the CI/CD
-  work landed, and the quick start named `ghcr.io/…:0.1.0`, a tag that does not
-  exist. The quick start now pins `0.1.0-dev`.
+  work landed, and the quick start named `ghcr.io/…:0.1.0`, a tag that did not
+  exist. The quick start pinned `0.1.0-dev` until this release cut the tag it
+  had been naming; it now pins `0.1.0`.
 
 - `muninn validate --with-telegraf` failed inside the shipped image. It rendered
   its scratch file through `tempfile`, which writes to `/tmp`, and the hardened
@@ -347,13 +350,15 @@ does not control, which is the class it closes everywhere else.
 
 ### Notes
 
-Nothing is released yet. Every command works — `run`, `validate`,
-`render-config`, `check-runtime`, `healthcheck`, `update-check` and `version` —
-and the container image builds and passes its tests under the full hardening.
-The pipeline builds, scans, tests and publishes it: pushes to `dev` produce the
-pre-release tags `0.1.0-dev` and `dev` on `jschnabel/muninn`, mirrored
-byte-identically to `ghcr.io/joshua-schnabel/muninn.io`. What is missing is a
-cut version, which is what turns those into `0.1.0`.
+This is a `0.x` release: the surfaces [`docs/versioning.md`](docs/versioning.md)
+names are the ones muninn intends to keep, and it has not yet run long enough
+anywhere to promise a `1.0`. Every command works — `run`, `validate`,
+`render-config`, `check-runtime`, `healthcheck`, `update-check`, `image-check`
+and `version` — and the container image builds for `linux/amd64` and
+`linux/arm64` and passes its tests under the full hardening. `0.1.0` is the same
+pipeline output the pre-release tags `0.1.0-dev` and `dev` have been carrying,
+published from one build to `jschnabel/muninn` and mirrored byte-identically to
+`ghcr.io/joshua-schnabel/muninn.io`.
 
 Three findings during the design package changed the design away from the
 project brief:

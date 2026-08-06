@@ -63,7 +63,7 @@ not need.
 ```yaml
 services:
   muninn:
-    image: jschnabel/muninn:0.1.0-dev
+    image: jschnabel/muninn:0.1.0
     restart: unless-stopped
     stop_grace_period: 30s
     hostname: web-01.example.internal
@@ -102,11 +102,13 @@ Four details in that compose file are easy to get wrong and slow to debug —
 `stop_grace_period`, `hostname`, the tmpfs and the two ports. Each is explained
 in [`docs/host-mounts.md`](docs/host-mounts.md).
 
-**No release is cut yet.** What the pipeline publishes today is the pre-release
-image built from `dev`: `0.1.0-dev` and the moving `dev` tag, on
+**`0.1.0` is the first release.** It is published to
 [Docker Hub](https://hub.docker.com/r/jschnabel/muninn/tags) and mirrored
-byte-identically to `ghcr.io/joshua-schnabel/muninn.io`. Pin `0.1.0-dev` rather
-than `dev` if you try it; `0.1.0` appears with the first release.
+byte-identically to `ghcr.io/joshua-schnabel/muninn.io`, multi-arch for
+`linux/amd64` and `linux/arm64`. Pin the version rather than the moving `dev`
+tag, which continues to carry pre-release builds from the `dev` branch. It is a
+`0.x` release — what a version number promises here is in
+[`docs/versioning.md`](docs/versioning.md).
 
 ## Two metrics endpoints
 
