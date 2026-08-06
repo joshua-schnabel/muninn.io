@@ -396,17 +396,19 @@ jobs:
             sed -i "/^\[Unreleased\]:/a [${V}]: ${REPO_URL}/releases/tag/v${V}" CHANGELOG.md
           fi
 
-          # 3) Keep Cargo.toml's workspace version in step with the release.
-          #    Scoped to [workspace.package], where the one version lives — an
-          #    unscoped sed would also rewrite dependency version pins.
-          sed -i "/^\[workspace.package\]/,/^\[/s/^version = \".*\"/version = \"${V}\"/" Cargo.toml
+          # 3) Keep the workspace version in step with the release — manifest and
+          #    lock file together, through the shared helper. Bumping only
+          #    Cargo.toml leaves every `--locked` job failing with "cannot update
+          #    the lock file" before a test runs, which is how the housekeeping
+          #    PR would have arrived red every single release.
+          bash scripts/set-workspace-version.sh "$V"
 
           if git diff --quiet; then
             echo "dev already prepared for the next cycle — nothing to do."
             exit 0
           fi
 
-          git add CHANGELOG.md Cargo.toml
+          git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "chore: reopen changelog and bump version after v${V}"
           git push -f origin "$BR"
 

@@ -67,6 +67,21 @@ Fixes the release path itself. muninn's own code is untouched — the image
   rather than claiming a verdict they cannot show. This is also what lets an
   older tag be released by dispatch — such a run executes *that tag's* copy of
   the script, bug included.
+- **Every automated version bump would have produced a red PR.** Both places
+  that raise the version — `release.yml`'s housekeeping and the new dispatch —
+  edited `Cargo.toml` and left `Cargo.lock` behind, and every CI job runs
+  `--locked`, so the next job to start would have died on *cannot update the
+  lock file* before a single test ran. New `scripts/set-workspace-version.sh`
+  sets both, and both callers use it. Which packages are the workspace's is
+  read from the lock file itself — they are the ones with no `source` line —
+  rather than from a hard-coded list of crate names that would need keeping in
+  step. Verified byte-identical to `cargo update --workspace`.
+
+  It does the job without invoking cargo on purpose. Both callers hold a write
+  token, and "no job runs cargo with a write token" is a security property this
+  repository shipped rather than a preference. Dependency resolution executes no
+  build script, so the rule would arguably permit it — but an invariant that
+  holds except where someone reasoned it away is not an invariant.
 
 ## [0.1.0] - 2026-08-06
 
