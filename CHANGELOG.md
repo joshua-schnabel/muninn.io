@@ -82,6 +82,15 @@ Fixes the release path itself. muninn's own code is untouched — the image
   repository shipped rather than a preference. Dependency resolution executes no
   build script, so the rule would arguably permit it — but an invariant that
   holds except where someone reasoned it away is not an invariant.
+- **Dependabot targeted `main`**, because that is the default branch and
+  `dependabot.yml` never said otherwise — so every bump landed on `main` without
+  passing through `dev`, and the next `dev → main` release PR reverted it.
+  Found while opening the 0.1.1 release PR: it would have downgraded
+  `codeql-action/upload-sarif` from v4.37.5 back to v4.37.4, the bump that had
+  merged into `main` an hour after v0.1.0. Every ecosystem now carries
+  `target-branch: dev`, and that bump is carried into `dev` here so the release
+  PR no longer reverses it. A silent downgrade of a security-scanning action is
+  the kind of change that is only ever noticed by looking for it.
 
 ## [0.1.0] - 2026-08-06
 
