@@ -130,10 +130,10 @@ is a slower way to learn that `cargo fmt` was not run.
 
 ---
 
-## 6. Four upstream facts that shape the code
+## 6. Facts that shape the code
 
-Each cost real investigation and each contradicts a plausible assumption. Do not
-undo them.
+Each cost real investigation, and each contradicts a plausible assumption. Do not
+undo them. All four are upstream facts — about Telegraf, or about Docker.
 
 **`telegraf config check`, not `--test`.** `config check` initialises plugins
 without starting them. `--test` runs a collection cycle, which means
