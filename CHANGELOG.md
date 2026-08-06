@@ -92,6 +92,12 @@ Fixes the release path itself. muninn's own code is untouched — the image
   PR no longer reverses it. A silent downgrade of a security-scanning action is
   the kind of change that is only ever noticed by looking for it.
 
+  The recovery itself then made the same mistake in miniature: the bump touched
+  two files, `security.yml` and `ci.yml`, and only the first was carried over,
+  because it was the one the release diff happened to show first. Every `uses:`
+  pin in every workflow is now compared between the two branches rather than
+  chased one grep at a time — one difference remained, and it was this one.
+
 ## [0.1.0] - 2026-08-06
 
 First release. Everything below is what muninn is on day one.
