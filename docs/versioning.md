@@ -80,3 +80,9 @@ hand-push a `v*` tag. See [`ci-cd.md`](ci-cd.md).
 ## Supported versions
 
 Only the latest release receives fixes. See [`SECURITY.md`](SECURITY.md).
+
+## Related
+
+- [`CHANGELOG.md`](../CHANGELOG.md) — what changed in each release
+- [`releasing.md`](releasing.md) — how a version number becomes a release
+- [`roadmap.md`](roadmap.md) — what might change next

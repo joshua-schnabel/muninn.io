@@ -236,3 +236,10 @@ rather than stopping at the first.
 ## Reporting a vulnerability
 
 See [`SECURITY.md`](SECURITY.md).
+
+## Related
+
+- [`SECURITY.md`](SECURITY.md) — the reporting policy
+- [`host-mounts.md`](host-mounts.md) — the host mount, discussed honestly
+- [`risks.md`](risks.md) — what stays open, and why
+- [`ci-cd.md`](ci-cd.md) — the gates that enforce all of this

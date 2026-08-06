@@ -121,3 +121,10 @@ Code and documentation land together. A module without an entry in
 [`configuration.md`](configuration.md), is not finished.
 
 Everything committed is in **English** — code, comments, commit messages, docs.
+
+## Related
+
+- [`AGENTS.md`](../AGENTS.md) — the rules, the gates and the doc map
+- [`testing.md`](testing.md) — what a test has to look like here
+- [`workflows.md`](workflows.md) — what CI will run on your branch
+- [`releasing.md`](releasing.md) — how a release is cut

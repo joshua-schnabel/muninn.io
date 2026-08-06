@@ -257,3 +257,9 @@ rather than dismissed as a different repository.
 | New CLI command | Integration | `muninn/tests/` |
 | Anything lifecycle-dependent | E2E subprocess | `muninn/tests/` |
 | Bug fix | Reproduce first | same file as the fix |
+
+## Related
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — where a change goes before it is tested
+- [`workflows.md`](workflows.md) — how these run in the pipeline
+- [`architecture.md`](architecture.md) — what the system suites exercise

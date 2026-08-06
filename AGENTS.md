@@ -130,10 +130,10 @@ is a slower way to learn that `cargo fmt` was not run.
 
 ---
 
-## 6. Four upstream facts that shape the code
+## 6. Facts that shape the code
 
-Each cost real investigation and each contradicts a plausible assumption. Do not
-undo them.
+Each cost real investigation, and each contradicts a plausible assumption. Do not
+undo them. All four are upstream facts — about Telegraf, or about Docker.
 
 **`telegraf config check`, not `--test`.** `config check` initialises plugins
 without starting them. `--test` runs a collection cycle, which means
@@ -222,7 +222,8 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 ## 8. Git & PR workflow
 
 - Branch off `dev` with a valid prefix: `feature/` · `fix/` · `chore/` · `docs/`
-  · `test/`.
+  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into
+  `dev`; a branch that does not match the prefix is **auto-deleted**.
 - Flow: `feature/* → dev` (squash) → `main` (merge commit). No direct pushes
   (§3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·
@@ -277,7 +278,10 @@ explicitly and flagged in the PR.
 | Vulnerability reporting | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Contributor workflow | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |
+| Symptom → cause → fix | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 | CI/CD and repository setup | [`docs/ci-cd.md`](docs/ci-cd.md) |
+| Every workflow explained | [`docs/workflows.md`](docs/workflows.md) |
+| Release runbook | [`docs/releasing.md`](docs/releasing.md) |
 | Open risks | [`docs/risks.md`](docs/risks.md) |
 | Architecture decisions | [`docs/adr/`](docs/adr/) |
 | Why the updates module works | [`docs/updates-evidence.md`](docs/updates-evidence.md) |
