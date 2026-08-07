@@ -1,33 +1,32 @@
-name: Dependabot auto-merge
+name: Dependabot
 
-# Auto-merges Dependabot PRs into dev once the branch ruleset's required checks
-# are green (the ruleset needs 0 approvals, so green checks are enough).
+# Two things, in one file and one job on purpose: they act on the same event and
+# the second depends on what the first did, so separate workflows would race.
 #
-# Only patch/minor bumps — and the grouped minor/patch PR — are auto-merged.
-# Major bumps stay open for manual review: CI green does not prove a major has
-# no breaking runtime behaviour that the tests miss.
+#   1. retarget  — move a security update off `main` and onto `dev`
+#   2. auto-merge — queue patch/minor bumps once the required checks are green
 #
-# Worth being clear about what "green" means here, because muninn's gates are
-# unusually good at catching a bad dependency: the full pipeline builds the
-# image, scans it, runs the stack against a real database and exercises the
-# updates module against real host trees. A crate that breaks any of that does
-# not merge.
+# Auto-merge only ever touches patch/minor — and the grouped patch/minor PR.
+# Major bumps stay open for review: CI green does not prove a major has no
+# breaking runtime behaviour the tests miss. What "green" means here is unusually
+# strong: the full pipeline builds the image, scans it, runs the stack against a
+# real database and exercises the updates module against real host trees.
 #
 # Requires the repo setting "Allow auto-merge" (Settings → General → Pull
 # Requests). `--auto` only *queues* the merge; GitHub still waits for every
-# required check before it actually merges.
+# required check.
 
 on: pull_request
 
 # For Dependabot-triggered runs the token is read-only by default; elevate it so
-# `gh pr merge --auto` can enable auto-merge.
+# `gh pr edit` and `gh pr merge --auto` work.
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  auto-merge:
-    name: Enable auto-merge
+  dependabot:
+    name: Retarget and auto-merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
     # Only act on Dependabot's own PRs.
@@ -37,10 +36,74 @@ jobs:
         id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
 
+      # ── 1. Security updates arrive on the wrong branch ────────────────────
+      #
+      # `target-branch: dev` in dependabot.yml covers VERSION updates only.
+      # Security updates — the advisory-driven ones — ignore it and always open
+      # against the **default branch**, and no setting changes that. The only
+      # supported lever is which branch is the default, and `main` is the
+      # default here deliberately.
+      #
+      # Left alone, such a PR merges a lockfile into `main` that `dev` has never
+      # seen, and the next `dev → main` release merge reverts it — silently,
+      # because a revert of a dependency bump looks like any other diff.
+      # huginn.io#51 was exactly that.
+      #
+      # `ghsa-id` is populated only for security updates, which is what
+      # distinguishes them here. The `base.ref` check makes this a no-op once a
+      # PR has already been moved, so the recreate below cannot loop.
+      - name: Move a security update onto dev
+        id: retarget
+        if: >-
+          steps.meta.outputs.ghsa-id != '' &&
+          github.event.pull_request.base.ref == 'main'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GHSA: ${{ steps.meta.outputs.ghsa-id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "::notice::${GHSA} opened against main; retargeting to dev"
+          gh pr edit "$PR_URL" --base dev
+
+          # Retargeting alone is not enough, and this is the part to understand
+          # before trusting it. Dependabot resolved the manifest against `main`,
+          # so the branch carries `main`'s idea of the lockfile. Against a `dev`
+          # that has moved on, that can be a DOWNGRADE — #51 proposed
+          # rustls-webpki 0.103.10 while dev already carried 0.103.13.
+          #
+          # `recreate` rebuilds the branch from scratch against the PR's base,
+          # which is now dev. If the advisory is already fixed there, Dependabot
+          # closes the PR itself, which is the outcome we want.
+          # Through a heredoc, not `--body "..."`: a quoted string spanning
+          # lines keeps the continuation lines' indentation, and ten leading
+          # spaces make Markdown treat the block as code — which would leave
+          # `@dependabot recreate` as text Dependabot never acts on.
+          gh pr comment "$PR_URL" --body-file - <<'EOF'
+          Retargeted from `main` to `dev` by `.github/workflows/dependabot-auto-merge.yml`.
+
+          Security updates ignore `target-branch` and always open against the default branch. Merged into `main`, this would be reverted by the next `dev → main` release merge.
+
+          Asking Dependabot to rebuild the branch against `dev`: the original diff was resolved against `main`'s manifests, so it may not apply cleanly — or may already be redundant, in which case Dependabot closes this itself.
+
+          @dependabot recreate
+          EOF
+
+      # Deliberately NOT auto-merged in this run: the retarget above triggers a
+      # recreate, and the run that follows it sees `base.ref == 'dev'` and picks
+      # the PR up normally. Reviewing the recreated diff before it merges is the
+      # point — see the note above about downgrades.
+      - name: Note that the retargeted PR will be re-evaluated
+        if: steps.retarget.outcome == 'success'
+        run: echo "::notice::retargeted; auto-merge is skipped until Dependabot rebuilds the branch against dev"
+
+      # ── 2. Auto-merge, once the PR is on the right branch ─────────────────
+      # `base.ref == 'dev'` is what keeps a just-retargeted PR out: at this
+      # point the event payload still says `main`.
       - name: Enable auto-merge (patch/minor only)
         if: >-
-          steps.meta.outputs.update-type == 'version-update:semver-patch' ||
-          steps.meta.outputs.update-type == 'version-update:semver-minor'
+          github.event.pull_request.base.ref == 'dev' &&
+          (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
+           steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

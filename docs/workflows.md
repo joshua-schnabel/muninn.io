@@ -12,7 +12,7 @@ The pipeline's rationale and the repository settings it needs are
 | `ci.yml` | every PR · push to `dev`/`main` · `v*.*.*` tags | Quality gates, build-once image, publish to Docker Hub + ghcr |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
-| `dependabot-auto-merge.yml` | Dependabot PRs | Auto-merge patch and minor bumps |
+| `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
 | `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
 
@@ -132,23 +132,56 @@ ignored, or the naming rule would delete them on sight.
   Without it the step warns rather than failing — the branch is pushed either
   way.
 
-## `dependabot-auto-merge.yml` — hands-off dependency bumps
+## `dependabot-auto-merge.yml` — Dependabot policy
 
 **Runs on** `pull_request`, but acts only when the author is `dependabot[bot]`.
+Two things in one job on purpose: they act on the same event and the second
+depends on what the first did, so separate workflows would race.
 
-- Reads the bump type via `dependabot/fetch-metadata`.
-- **Patch and minor** get `gh pr merge --auto --squash` into `dev`; the merge
-  completes once the required checks are green.
+### 1. Retarget a security update onto `dev`
+
+`target-branch: dev` in `dependabot.yml` covers **version** updates only.
+Security updates ignore it and always open against the **default branch**, and
+no setting changes that — the only supported lever is which branch is the
+default. That is why this job exists.
+
+Left alone, such a PR merges a lockfile into `main` that `dev` has never seen,
+and the next `dev → main` release merge reverts it — silently, because a
+reverted dependency bump looks like any other diff. huginn.io#51 was exactly
+that.
+
+The job moves the PR's base to `dev` and then asks Dependabot to **recreate**
+it. The recreate is the part that matters: Dependabot resolved the manifest
+against `main`, so the branch carries `main`'s idea of the lockfile, and against
+a `dev` that has moved on that can be a **downgrade** — #51 proposed
+`rustls-webpki` 0.103.10 while `dev` already carried 0.103.13. Rebuilding
+against the new base fixes that, and if the advisory is already fixed on `dev`
+Dependabot closes the PR itself.
+
+A security update is recognised by `ghsa-id` being non-empty in the
+`fetch-metadata` output; version updates never set it.
+
+### 2. Auto-merge, once the PR is on the right branch
+
+- **Patch and minor** get `gh pr merge --auto --squash`; the merge completes once
+  the required checks are green.
 - **Major** bumps are left for review. Because Dependabot groups per ecosystem, a
   group containing a major waits as a whole — you review exactly when a breaking
   bump is present.
+- A **just-retargeted** PR is deliberately *not* queued in the same run. The
+  guard is `base.ref == 'dev'`, which the event payload still reports as `main`
+  at that point; the run that follows the recreate picks it up normally. Seeing
+  the rebuilt diff before it merges is the point.
 
-What "green" means here is worth being clear about: the full pipeline builds the
-image, scans it, runs the stack against a real database and exercises the updates
-module against real host trees. A crate that breaks any of that does not merge.
+**Gotchas**
 
-**Gotcha:** `--auto` only *queues* the merge, and does nothing at all unless
-"Allow auto-merge" is enabled on the repository.
+- `--auto` only *queues* the merge, and does nothing at all unless "Allow
+  auto-merge" is enabled on the repository.
+- The retarget cannot loop: the `base.ref == 'main'` condition makes it a no-op
+  once the PR has been moved.
+- This is a workaround for a platform behaviour, not a fix. Making the
+  integration branch the default branch would remove the need for it entirely —
+  that trade is in [`ci-cd.md`](ci-cd.md).
 
 ## `release.yml` — Release, SBOM, and next-cycle prep
 
