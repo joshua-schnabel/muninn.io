@@ -50,6 +50,22 @@ A Telegraf version bump can therefore change them without muninn changing at all
 Such a bump is treated as a **minor** release at minimum, with the change noted
 in the changelog, and as **major** if it alters metrics the MVP modules produce.
 
+## The runtime base image
+
+The base is debian-slim, pinned in the `Dockerfile` and moved forward by
+Dependabot. A bump within a Debian release is an update and needs no version
+bump of its own.
+
+A bump across a **Debian major release** is treated as a **minor** release at
+minimum, for the same reason a Telegraf bump is: the updates module runs the
+image's own `apt` and `dpkg` against the host's package state, so the machinery
+producing `muninn_updates_pending` changes even though muninn does not. CI
+covers it — `scripts/updates-test.sh` runs against real Debian and Ubuntu trees
+— but "the tests passed" is not the same as "nothing an operator can see
+changed", and the changelog should say which base the release carries.
+
+It is **not** major unless the metrics the modules produce actually change.
+
 ## MSRV
 
 The minimum supported Rust version is `rust-version` in `Cargo.toml` — read it
