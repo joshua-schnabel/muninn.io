@@ -10,6 +10,8 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-07
+
 ### Added
 
 - **Three guides taken from huginn.io**, the ones you reach for when something
@@ -523,6 +525,7 @@ project brief:
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
 
-[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.0
 [0.1.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.1
 [0.1.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.0
