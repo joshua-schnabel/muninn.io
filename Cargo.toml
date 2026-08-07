@@ -9,7 +9,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 # Edition 2024 (resolver 3), where huginn.io is on 2021/resolver 2. This is a
 # greenfield tree with no 2021-era code to keep compatible, so there is nothing
 # to gain from the older edition.
