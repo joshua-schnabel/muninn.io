@@ -10,6 +10,21 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-07
+
+A maintenance release. muninn's own code is untouched and the image `0.2.1`
+publishes is `0.2.0` rebuilt from the same sources — the reason to cut it is the
+repository's history, not the artefact.
+
+### Fixed
+
+- **`main` and `dev` share ancestry again.** They had none beyond `chore: initialise repository`: every release until now was squash-merged into `main`, and a squash creates a commit with no link to the branch it came from, so git computed the merge-base as the first commit and reported an add/add conflict on essentially every file. v0.2.0's release pull request hit that and had to be repaired by hand mid-release, and the repair was then discarded — the branch ruleset allowed nothing but squash at the time. This release carries the repair as a merge commit, so it holds. `Main — merge commits only` now prevents a recurrence.
+
+### Changed
+
+- **`github/codeql-action/upload-sarif` pinned to 4.37.6.** CI only; it does not reach the image.
+- **The release runbook loses its one-time reconciliation section**, having been used, and the roadmap loses the corresponding item.
+
 ## [0.2.0] - 2026-08-07
 
 ### Added
@@ -525,7 +540,8 @@ project brief:
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
 
-[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.1
 [0.2.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.0
 [0.1.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.1
 [0.1.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.0
