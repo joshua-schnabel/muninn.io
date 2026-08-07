@@ -308,6 +308,27 @@ hand. The setting is off by default on new repositories.
 | `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
 | `RELEASE_PAT` | the release tag push, the release-dispatch PR, and the post-release housekeeping PR | **`release.yml` never runs** — the tag is pushed by `GITHUB_TOKEN`, which starts no workflow, so there is no GitHub Release, SBOM or test report until you [drive it by hand](#driving-releaseyml-by-hand). The two PRs are still opened, but CI does not trigger on them and auto-merge hangs |
 
+| `GPG_PRIVATE_KEY` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
+| `GPG_PASSPHRASE` | only if the signing key has one | gpg cannot use the key |
+
+**The signing key.** Generate one **for CI**, not a copy of a personal key: if it
+leaks, revoking a dedicated key costs nothing, and a personal one costs
+everything it ever signed. No passphrase is the normal choice — the private key
+is already a secret, and a passphrase beside it in the same secret store adds no
+layer.
+
+```bash
+gpg --batch --quick-generate-key "<name> <email>" ed25519 sign never
+gpg --armor --export-secret-keys <email>   # -> the GPG_PRIVATE_KEY secret
+gpg --armor --export <email>               # -> GitHub, Settings -> SSH and GPG keys
+```
+
+The email has to be **verified on the GitHub account** that holds the public key,
+or the signature is valid and GitHub still labels the commit *Unverified*. The
+workflows read the name and email out of the key's UID rather than hard-coding
+them, so whichever identity you pick is the one that signs — but that identity
+and the account must agree.
+
 `GITHUB_TOKEN` is built in and needs no setup. It carries the ghcr mirror
 (`packages: write`), the git tag (`contents: write`) and the SARIF uploads
 (`security-events: write`).

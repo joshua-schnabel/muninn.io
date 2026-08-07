@@ -64,6 +64,59 @@ jobs:
           # See docs/ci-cd.md, "What can reach a credential".
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
+      # ── Commit signing ────────────────────────────────────────────────────
+      # `dev` and `main` both carry a `required_signatures` rule, so a commit
+      # this job creates with the runner's default identity is rejected at merge
+      # time — the pull request opens, every check goes green, and the merge
+      # button stays blocked with nothing failing. That is what happened after
+      # v0.2.1.
+      #
+      # The identity is read out of the key rather than hard-coded: GitHub marks
+      # a signature "Verified" only when the commit's author email matches a UID
+      # on the signing key *and* a verified email on the account that owns it.
+      # Hard-coding `github-actions[bot]` next to a personal key produces a valid
+      # signature that GitHub still shows as unverified.
+      - name: Import the commit signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "::error::GPG_PRIVATE_KEY is not set. The commit would be unsigned and the branch ruleset requires signatures — see docs/ci-cd.md."
+            exit 1
+          fi
+          printenv GPG_PRIVATE_KEY | gpg --batch --quiet --import
+
+          KEYID="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')"
+          UIDSTR="$(gpg --list-secret-keys --with-colons "$KEYID" | awk -F: '/^uid:/ {print $10; exit}')"
+          NAME="${UIDSTR%% <*}"
+          EMAIL="${UIDSTR##*<}"; EMAIL="${EMAIL%>}"
+          if [ -z "$NAME" ] || [ -z "$EMAIL" ]; then
+            echo "::error::could not read a name and email from the signing key's UID"
+            exit 1
+          fi
+          echo "signing as $NAME <$EMAIL> with $KEYID"
+
+          # A passphrase is optional — a key generated for CI normally has none.
+          # When there is one it goes through a 0600 file, never argv:
+          # /proc/<pid>/cmdline is readable by every process on the runner, which
+          # is the same rule the registry credentials in ci.yml follow.
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
+            umask 077
+            printenv GPG_PASSPHRASE > "$RUNNER_TEMP/gpg-pass"
+            {
+              echo '#!/usr/bin/env bash'
+              echo "exec gpg --batch --pinentry-mode loopback --passphrase-file \"$RUNNER_TEMP/gpg-pass\" \"\$@\""
+            } > "$RUNNER_TEMP/gpg-wrap"
+            chmod +x "$RUNNER_TEMP/gpg-wrap"
+            git config gpg.program "$RUNNER_TEMP/gpg-wrap"
+          fi
+
+          git config user.name "$NAME"
+          git config user.email "$EMAIL"
+          git config user.signingkey "$KEYID"
+          git config commit.gpgsign true
+
       - name: Compute the version, stamp the changelog, open the release PR
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
@@ -123,8 +176,6 @@ jobs:
 
           DATE="$(date +%F)"
           BR="release/v${N}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git switch -c "$BR"
 
           # Stamp the top ## [Unreleased] as the release heading; the entries stay
