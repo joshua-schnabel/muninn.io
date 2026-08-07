@@ -178,9 +178,10 @@ To report a vulnerability: [`docs/SECURITY.md`](docs/SECURITY.md).
   orchestrator restarts the container — so a crash is never invisible inside a
   seemingly-healthy container. [ADR-0002](docs/adr/0002-supervisor-no-restart-loop.md)
 - **The image is debian-slim, not distroless.** Reading the host's package state
-  needs real `apt` and `dpkg`, which costs 88 packages instead of 10 and a shell
-  in the image. Measured and traded deliberately —
-  [`docs/hardening.md`](docs/hardening.md) has the numbers and the mitigations.
+  needs real `apt` and `dpkg`, which costs roughly an order of magnitude more
+  packages than a distroless base, and a shell in the image. Measured and traded
+  deliberately — [`docs/hardening.md`](docs/hardening.md) has the numbers, the
+  date they were taken, and the mitigations.
 - **Windows and macOS hosts** are out of scope.
 
 ## Development

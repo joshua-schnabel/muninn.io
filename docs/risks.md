@@ -8,9 +8,12 @@ mentioned.
 **Severity: medium · Status: accepted trade, monitor**
 
 The updates module needs real `apt` and `dpkg` in the image, so the base is
-`debian:12-slim` rather than distroless: 88 packages instead of 10, and 5
-CRITICAL / 17 HIGH CVEs instead of none. All are currently unfixable, and four of
-the five CRITICAL are in `perl-base`, which muninn never invokes.
+debian-slim rather than distroless: roughly an order of magnitude more packages,
+and a CVE surface where distroless has none. Measured on 2026-08-03 against
+`debian:12-slim`: 88 packages against 10, and 5 CRITICAL / 17 HIGH, all
+unfixable at the time, four of the five CRITICAL in `perl-base`, which muninn
+never invokes. The counts move with the base image; the Security tab has the
+current ones.
 
 The CVE count is the lesser problem. A shell and a package manager inside a
 container that mounts the host filesystem is a real convenience for anyone who
