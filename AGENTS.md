@@ -130,10 +130,10 @@ is a slower way to learn that `cargo fmt` was not run.
 
 ---
 
-## 6. Four upstream facts that shape the code
+## 6. Facts that shape the code
 
-Each cost real investigation and each contradicts a plausible assumption. Do not
-undo them.
+Each cost real investigation, and each contradicts a plausible assumption. Do not
+undo them. All four are upstream facts — about Telegraf, or about Docker.
 
 **`telegraf config check`, not `--test`.** `config check` initialises plugins
 without starting them. `--test` runs a collection cycle, which means
@@ -184,6 +184,15 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 - Small, single-purpose functions; tight crate surfaces (`pub` only what other
   crates need).
 - Doc-comment (`///`) public items. Comments explain the **why**, not the what.
+- **Never repeat a version number in prose.** A version belongs where it is the
+  authority — `rust-version` in `Cargo.toml`, the pins in the `Dockerfile`, a
+  `fixed_version` in `.trivyignore.yaml` — and everywhere else you name the
+  field and let the reader look. A number copied into a sentence is wrong the
+  morning after Dependabot bumps it, and nothing fails when it goes stale.
+  Two exceptions, because they are records rather than claims about now:
+  a **historical incident** and a **dated measurement** — the tables in
+  [`docs/updates-evidence.md`](docs/updates-evidence.md) and the ADR-0009 cells
+  are exactly that. Both keep their numbers, and both say when.
 - `cargo fmt` defaults (no `rustfmt.toml`); **fix** clippy rather than
   `#[allow]`-ing it, and if an allow is genuinely needed, give a one-line reason.
 - Avoid `unsafe`. Adding a dependency needs approval (§3).
@@ -207,7 +216,8 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 - **Rendering:** no module builds TOML with `format!`. Everything goes through
   the typed model and the one serialiser —
   [`docs/telegraf-rendering.md`](docs/telegraf-rendering.md).
-- **MSRV 1.88**, edition 2024, resolver 3. Note resolver 3 is MSRV-aware and will
+- **MSRV** is `rust-version` in `Cargo.toml`; edition 2024, resolver 3. Note
+  resolver 3 is MSRV-aware and will
   hold a dependency back rather than require a newer compiler — which is how a
   project silently stays on the release before a CVE fix. If the floor starts
   constraining resolution, **raise the floor**, do not accept the old crate.
@@ -222,7 +232,8 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 ## 8. Git & PR workflow
 
 - Branch off `dev` with a valid prefix: `feature/` · `fix/` · `chore/` · `docs/`
-  · `test/`.
+  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into
+  `dev`; a branch that does not match the prefix is **auto-deleted**.
 - Flow: `feature/* → dev` (squash) → `main` (merge commit). No direct pushes
   (§3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·
@@ -277,7 +288,10 @@ explicitly and flagged in the PR.
 | Vulnerability reporting | [`docs/SECURITY.md`](docs/SECURITY.md) |
 | Contributor workflow | [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) |
 | SemVer policy, stable surface | [`docs/versioning.md`](docs/versioning.md) |
+| Symptom → cause → fix | [`docs/troubleshooting.md`](docs/troubleshooting.md) |
 | CI/CD and repository setup | [`docs/ci-cd.md`](docs/ci-cd.md) |
+| Every workflow explained | [`docs/workflows.md`](docs/workflows.md) |
+| Release runbook | [`docs/releasing.md`](docs/releasing.md) |
 | Open risks | [`docs/risks.md`](docs/risks.md) |
 | Architecture decisions | [`docs/adr/`](docs/adr/) |
 | Why the updates module works | [`docs/updates-evidence.md`](docs/updates-evidence.md) |

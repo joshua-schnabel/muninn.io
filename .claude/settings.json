@@ -1,0 +1,43 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo fmt:*)",
+      "Bash(cargo fmt-check:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo lint:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo t:*)",
+      "Bash(cargo t-all:*)",
+      "Bash(cargo t-unit:*)",
+      "Bash(cargo t-int:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo deny:*)",
+      "Bash(cargo audit-all:*)",
+      "Bash(cargo llvm-cov:*)",
+      "Bash(cargo cov:*)",
+      "Bash(cargo cov-ci:*)",
+      "Bash(cargo doc:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git fetch:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git merge-base:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(gh pr list:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh release view:*)",
+      "Bash(shellcheck:*)",
+      "Bash(actionlint:*)"
+    ]
+  }
+}

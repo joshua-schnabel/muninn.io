@@ -26,6 +26,19 @@ version: 2
 #     it out changes no behaviour today; it makes the value explicit, reviewable
 #     and raisable in one place.
 #
+# `target-branch` covers VERSION updates only. Security updates — the
+# advisory-driven ones — ignore it and always open against the **default
+# branch**, and there is no setting that changes that; the only lever is which
+# branch is the default. Observed on huginn.io#51: a cargo security PR landed on
+# `main` while every version update went to `dev`, and the branch name gives it
+# away — `dependabot/cargo/cargo-…` with no `/dev/` segment, where a version
+# update reads `dependabot/docker/dev/docker-…`.
+#
+# That matters when the default branch lags: the alerts, and the security PRs
+# raised from them, describe the default branch's lockfile rather than the code
+# being developed. Releasing regularly keeps the two close; making the
+# integration branch the default closes the gap outright.
+#
 # `target-branch: dev` on every ecosystem, because Dependabot otherwise targets
 # the *default* branch — `main` — and that breaks the branching model in both
 # directions. A bump merged straight into `main` is a change `dev` never saw, so
@@ -83,7 +96,7 @@ updates:
         patterns: ["*"]
 
   # ── The Dockerfile's base images ──────────────────────────────────────────
-  # `rust:1.88-slim` (builder) and `debian:12-slim` (runtime). The runtime base
+  # The `rust:*-slim` builder and the debian-slim runtime. The runtime base
   # is where the CVE surface documented in docs/hardening.md lives, and R7 says
   # the fix for an unfixable CVE arrives with a Debian point release — this is
   # what notices it.

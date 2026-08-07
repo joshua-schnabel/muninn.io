@@ -1,0 +1,24 @@
+{
+  "recommendations": [
+    // ── Rust Core ────────────────────────────────────────────────────────────
+    "rust-lang.rust-analyzer",       // Rust language server (autocomplete, hover, inlay hints)
+    "tamasfe.even-better-toml",      // Cargo.toml syntax + schema validation
+    "serayuzgur.crates",             // Inline crate version hints in Cargo.toml
+    "vadimcn.vscode-lldb",           // LLDB debugger for Rust (launch.json integration)
+
+    // ── Code Quality ─────────────────────────────────────────────────────────
+    "usernamehakobyan.error-lens",   // Inline error / warning messages in editor
+    "streetsidesoftware.code-spell-checker", // Spell-checking in comments & strings
+
+    // ── Config & Infra ───────────────────────────────────────────────────────
+    "redhat.vscode-yaml",            // YAML schema validation (muninn.yaml)
+    "ms-azuretools.vscode-docker",   // Dockerfile + docker-compose syntax & Compose runner
+
+    // ── Git & Collaboration ──────────────────────────────────────────────────
+    "eamodio.gitlens",               // Enhanced Git blame, history, branch comparison
+
+    // ── AI Assistance ────────────────────────────────────────────────────────
+    "github.copilot",                // GitHub Copilot inline completions
+    "github.copilot-chat"            // Copilot Chat panel
+  ]
+}

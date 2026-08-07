@@ -44,8 +44,9 @@ bash scripts/test-linux.sh              # whole workspace, in a container
 bash scripts/test-linux.sh -p muninn    # anything after the name goes to cargo test
 ```
 
-It runs the suite in `rust:1.88-slim` against the Telegraf binary taken from the
-pinned image, so the tests see the same version the artefact ships.
+It runs the suite in the same `rust:*-slim` builder the Dockerfile pins, against
+the Telegraf binary taken from the pinned image, so the tests see the same
+versions the artefact ships.
 
 This is not belt-and-braces. The first time the suite ran under Linux it found a
 real bug: signal handlers were installed inside the supervise loop, leaving a
@@ -257,3 +258,9 @@ rather than dismissed as a different repository.
 | New CLI command | Integration | `muninn/tests/` |
 | Anything lifecycle-dependent | E2E subprocess | `muninn/tests/` |
 | Bug fix | Reproduce first | same file as the fix |
+
+## Related
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — where a change goes before it is tested
+- [`workflows.md`](workflows.md) — how these run in the pipeline
+- [`architecture.md`](architecture.md) — what the system suites exercise

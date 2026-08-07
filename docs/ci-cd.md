@@ -98,9 +98,9 @@ readable by every process on the runner. `skopeo login --password-stdin` with
 `REGISTRY_AUTH_FILE` replaces `--dest-creds`, and `curl --data @-` / `-K -`
 replaces `-d` and `-H` where a token is involved.
 
-`scan` blocks on **fixable** CRITICAL/HIGH only. The runtime base is
-`debian:12-slim` rather than distroless because the updates module needs real
-apt and dpkg; the cost of that trade is measured in
+`scan` blocks on **fixable** CRITICAL/HIGH only. The runtime base is debian-slim
+rather than distroless because the updates module needs real apt and dpkg; the
+cost of that trade is measured in
 [`hardening.md`](hardening.md) and is CVEs with no fix available. A gate that
 blocks on findings nobody can act on is a gate that gets switched off.
 
@@ -245,26 +245,47 @@ checklist.
 **Branch protection** on `main` and `dev`:
 
 - require a pull request before merging;
-- require these status checks — the names are the jobs' display names, matrix
-  substitution included:
+- require these status checks — the names are the jobs' display names, and this
+  is the set actually configured today:
   - `Format & Lint`
-  - `Tests (stable)` — **not** `Tests (beta)`, which is a non-blocking canary
+  - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
   - `Supply-Chain Security`
   - `Code Coverage (≥ 80%)`
-  - `Telegraf reference & docs`
-  - `Version gate`
   - `Semgrep SAST`
+  - `Trivy scan linux/amd64` · `Trivy scan linux/arm64`
+  - `Integration test linux/amd64` · `Integration test linux/arm64`
 - require branches to be up to date before merging;
 - disallow force pushes and deletion.
 
-The image jobs (`build`, `scan`, `integration`, `updates`) are deliberately not
-required checks: they take tens of minutes, and requiring them would make every
-documentation typo wait for two container builds. They still run on every PR and
-still gate `publish`, so nothing unscanned ships either way.
+**The image jobs are required, deliberately.** It costs: they depend on `build`,
+so a documentation-only PR waits for two container builds, and an advisory
+published that morning against something in the image blocks a branch that never
+touched the image — that happened on 2026-08-06. The decision is that this is
+the right way round: a finding that blocks is a finding someone looks at, and
+the alternative lets a fixable CRITICAL reach `dev` and be caught one step
+later, at `publish`.
+
+Two jobs are **not** required and it is worth knowing which:
+
+- `Version gate` is required only transitively — `build` lists it in `needs`, so
+  an invalid release version fails `build`, and the required image checks then
+  never report. The effect is the same; the mechanism is worth understanding
+  before anyone "simplifies" it.
+- `ShellCheck` and `Actionlint` live in `security.yml` and gate nothing. They
+  run on every push and PR and go red visibly, but a PR can merge past them.
+  Adding them is a one-line ruleset change and probably worth doing.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
 with `gh pr merge --auto`, which does nothing without it.
+
+**Enable both "Allow merge commits" and "Allow squash merging"** (same page).
+The branch model uses one of each: `feature/* → dev` squashes, `dev → main`
+keeps a merge commit, and `release-dispatch.yml` asks for `--merge` explicitly.
+0.1.0 and 0.1.1 were squashed into `main` because merge commits were the only
+method *not* enabled — which is why `main` does not share `dev`'s history for
+those two releases. With merge commits disabled the release PR is still opened,
+but auto-merge warns and you merge it by hand.
 
 **Enable "Allow GitHub Actions to create and approve pull requests"** (Settings
 → Actions → General → Workflow permissions). Without it the API refuses with
