@@ -63,6 +63,42 @@ keeps history. That needs "Allow merge commits" enabled;
 [`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) has the full
 settings checklist.
 
+## One-time: reconcile main's history
+
+**Do this at the next release, once.** Then delete this section.
+
+`main` and `dev` share no history beyond `chore: initialise repository`. Every
+release so far was **squash**-merged into `main`, and a squash creates a commit
+with no link to the branch it came from — so git computes the merge-base as the
+first commit and reports an add/add conflict on essentially every file. It is
+not a content disagreement; the branches agree. v0.2.0's release PR hit it and
+had to be repaired by hand.
+
+On the release branch, before opening the PR:
+
+```bash
+git merge -s ours --no-ff origin/main -m "chore: reconcile main's history into the release branch"
+```
+
+`-s ours` records `main` as a second parent and keeps the release branch's tree
+**unchanged** — verify that, do not assume it:
+
+```bash
+git rev-parse HEAD^{tree}          # must equal the tree before the merge
+git merge-tree --write-tree origin/main HEAD | head -1   # must print the same tree, no CONFLICT lines
+```
+
+Check first that `main` holds nothing newer — `git diff --diff-filter=A --name-only HEAD origin/main`
+must be empty. If it is not, `-s ours` would discard it silently and this is the
+wrong tool.
+
+Then merge the release PR with a **merge commit**. A squash would start the
+divergence over, which is how it began; the `Main — merge commits only` ruleset
+now prevents that, and this section exists because the ruleset arrived one
+release too late.
+
+huginn.io did the same repair in its own 0.2.1.
+
 ## What happens after the merge
 
 ```text
