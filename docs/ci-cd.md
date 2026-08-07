@@ -98,9 +98,9 @@ readable by every process on the runner. `skopeo login --password-stdin` with
 `REGISTRY_AUTH_FILE` replaces `--dest-creds`, and `curl --data @-` / `-K -`
 replaces `-d` and `-H` where a token is involved.
 
-`scan` blocks on **fixable** CRITICAL/HIGH only. The runtime base is
-`debian:12-slim` rather than distroless because the updates module needs real
-apt and dpkg; the cost of that trade is measured in
+`scan` blocks on **fixable** CRITICAL/HIGH only. The runtime base is debian-slim
+rather than distroless because the updates module needs real apt and dpkg; the
+cost of that trade is measured in
 [`hardening.md`](hardening.md) and is CVEs with no fix available. A gate that
 blocks on findings nobody can act on is a gate that gets switched off.
 

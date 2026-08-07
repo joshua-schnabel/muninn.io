@@ -23,10 +23,14 @@ edition = "2024"
 # how a project silently stays on the version *before* a CVE fix, which is
 # exactly what huginn.io hit with hickory-resolver and RUSTSEC-2026-0119.
 #
-# Verified at the time of writing: nothing in the tree is held back by this
-# floor; resolution is byte-identical at 1.88 and at 1.94. If that ever changes,
-# the fix is to RAISE this number and the Dockerfile builder together — never to
-# accept the older crate. `cargo update --dry-run` reports what a floor costs.
+# Verified 2026-08-03: nothing in the tree was held back by this floor;
+# resolution was byte-identical at 1.88 and at 1.94. If that ever changes, the
+# fix is to RAISE this number — never to accept the older crate.
+# `cargo update --dry-run` reports what a floor costs.
+#
+# The Dockerfile's builder must sit at or above this floor, not equal it:
+# Dependabot moves that tag forward on its own, and doing so is an update, not
+# an MSRV change.
 rust-version = "1.88"
 authors = ["muninn.io contributors"]
 license = "MIT"

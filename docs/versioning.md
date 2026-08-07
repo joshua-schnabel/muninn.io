@@ -52,10 +52,14 @@ in the changelog, and as **major** if it alters metrics the MVP modules produce.
 
 ## MSRV
 
-The minimum supported Rust version (currently **1.88**, `rust-version` in
-`Cargo.toml`) may be raised in a minor release, never in a patch release. The
-Dockerfile builder is pinned to the same version, so the published image is the
-enforced gate.
+The minimum supported Rust version is `rust-version` in `Cargo.toml` — read it
+there rather than from a number repeated here, which is how the two drift. It
+may be raised in a minor release, never in a patch release.
+
+Under resolver 3 that field steers resolution, so raising it is a deliberate act
+with a changelog entry, never a side effect. The Dockerfile's builder sits at or
+above the floor; Dependabot moves that tag on its own and doing so is an update,
+not an MSRV change.
 
 Note the resolver interaction: edition 2024 uses resolver 3, which is MSRV-aware
 and will hold a dependency back rather than require a newer compiler. That is how

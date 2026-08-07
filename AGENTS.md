@@ -184,6 +184,15 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 - Small, single-purpose functions; tight crate surfaces (`pub` only what other
   crates need).
 - Doc-comment (`///`) public items. Comments explain the **why**, not the what.
+- **Never repeat a version number in prose.** A version belongs where it is the
+  authority — `rust-version` in `Cargo.toml`, the pins in the `Dockerfile`, a
+  `fixed_version` in `.trivyignore.yaml` — and everywhere else you name the
+  field and let the reader look. A number copied into a sentence is wrong the
+  morning after Dependabot bumps it, and nothing fails when it goes stale.
+  Two exceptions, because they are records rather than claims about now:
+  a **historical incident** and a **dated measurement** — the tables in
+  [`docs/updates-evidence.md`](docs/updates-evidence.md) and the ADR-0009 cells
+  are exactly that. Both keep their numbers, and both say when.
 - `cargo fmt` defaults (no `rustfmt.toml`); **fix** clippy rather than
   `#[allow]`-ing it, and if an allow is genuinely needed, give a one-line reason.
 - Avoid `unsafe`. Adding a dependency needs approval (§3).
@@ -207,7 +216,8 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 - **Rendering:** no module builds TOML with `format!`. Everything goes through
   the typed model and the one serialiser —
   [`docs/telegraf-rendering.md`](docs/telegraf-rendering.md).
-- **MSRV 1.88**, edition 2024, resolver 3. Note resolver 3 is MSRV-aware and will
+- **MSRV** is `rust-version` in `Cargo.toml`; edition 2024, resolver 3. Note
+  resolver 3 is MSRV-aware and will
   hold a dependency back rather than require a newer compiler — which is how a
   project silently stays on the release before a CVE fix. If the floor starts
   constraining resolution, **raise the floor**, do not accept the old crate.

@@ -43,10 +43,14 @@ than raising the baseline for everyone.
 
 The [measured evidence](updates-evidence.md) established that reading the host's
 package state needs real `apt` and `dpkg` in the runtime image. The base is
-therefore `debian:12-slim`, not distroless. This is a deliberate trade, made with
-measurements rather than estimates:
+therefore **debian-slim**, not distroless; the exact tag is pinned in the
+[`Dockerfile`](../Dockerfile) and Dependabot moves it forward.
 
-| | `gcr.io/distroless/cc-debian12` | `debian:12-slim` |
+This is a deliberate trade, made with measurements rather than estimates. The
+figures below were taken on 2026-08-03 against `debian:12-slim`; the shape of
+the trade is what matters and does not move, the absolute numbers do:
+
+| | distroless `cc` | debian-slim |
 |---|---|---|
 | Size | 8 MB | 26 MB |
 | Packages | 10 | 88 |
@@ -63,24 +67,31 @@ package manager, inside a container that has the host filesystem mounted
 read-only. For anyone who achieves code execution there, that is a meaningful
 convenience.
 
-### The two suppressed findings, and why
+### The suppressed findings, and why
 
-The blocking Trivy gate reads `.trivyignore.yaml`. It currently holds two
-entries, both **Go modules vendored into the Telegraf binary** rather than
-muninn's own dependencies — `cargo deny` covers those and is clean:
+The blocking Trivy gate reads `.trivyignore.yaml`. Every entry there is a **Go
+module vendored into the Telegraf binary** rather than one of muninn's own
+dependencies — `cargo deny` covers those and is clean. As of 2026-08-06:
 
-| Finding | Severity | Fixed upstream in |
-|---|---|---|
-| `CVE-2026-49980` — rclone RCE via `rcd --rc-serve` | CRITICAL | rclone 1.74.3 |
-| `GHSA-hrxh-6v49-42gf` — gRPC-Go xDS RBAC / HTTP/2 | HIGH | grpc-go 1.82.1 |
+| Finding | Severity |
+|---|---|
+| `CVE-2026-49980` — rclone RCE via `rcd --rc-serve` | CRITICAL |
+| `GHSA-hrxh-6v49-42gf` — gRPC-Go xDS RBAC / HTTP/2 | HIGH |
+| `CVE-2026-54572` — rclone symlink escape with `--links` | HIGH |
+| `CVE-2026-59733` — rclone `serve restic` authorization bypass | HIGH |
+| `CVE-2026-71309` — rclone `serve restic` root escape | HIGH |
+| `CVE-2026-71312` — rclone SFTP filename injection | HIGH |
 
-Both are *fixable* in the sense Trivy means — the upstream library has a fix —
-but no Telegraf release carries it: 1.39.2 is the newest, and muninn pins
-Telegraf by checksum ([ADR-0011](adr/0011-telegraf-pinning.md)). There is no
-version to move to.
+The file itself is the authority — it carries each entry's reasoning, the
+upstream release that fixes it, and an expiry date. Read it there rather than
+from this table, which is a summary and will fall behind.
 
-The reason they are suppressed rather than merely deferred is the same for both,
-and it is stronger here than in most projects: **muninn generates the entire
+All of them are *fixable* in the sense Trivy means — the upstream library has a
+fix — but no Telegraf release carries it, and muninn pins Telegraf by checksum
+([ADR-0011](adr/0011-telegraf-pinning.md)). There is no version to move to.
+
+The reason they are suppressed rather than merely deferred is the same for all of
+them, and it is stronger here than in most projects: **muninn generates the entire
 Telegraf configuration.** There are no free-form TOML blocks
 ([ADR-0004](adr/0004-no-raw-toml.md)), so an operator cannot enable a plugin
 muninn does not model. The complete set muninn can ever emit is twelve plugins,

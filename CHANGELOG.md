@@ -10,6 +10,66 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+### Added
+
+- **Three guides taken from huginn.io**, the ones you reach for when something
+  is already wrong. [`docs/troubleshooting.md`](docs/troubleshooting.md) is
+  symptom, cause and fix, organised by what you actually see — an exit code, a
+  metric reading zero, a fresh time series after every recreate — and it says
+  which behaviours are intended rather than broken: `Degraded` staying ready, no
+  internal restart loop, and a security count of zero on Ubuntu being a lower
+  bound. [`docs/workflows.md`](docs/workflows.md) explains every workflow, its
+  triggers and its gotchas. [`docs/releasing.md`](docs/releasing.md) is the
+  runbook for both release paths, with the verification commands; the release
+  passages stay in `ci-cd.md` only as far as the *why*.
+- **A coverage percentage in the Actions job summary**, computed from
+  `lcov.info`'s `LF`/`LH` records, plus a coverage-gate badge in the README.
+- **`.vscode/extensions.json` and a committed `.claude/settings.json`**, shared
+  with huginn.io. The settings file is deliberately read-only — gates,
+  inspection and `gh`/`git` queries, nothing that writes, pushes or merges.
+
+### Changed
+
+- **`release-dispatch.yml` merges `dev → main` with a merge commit**, not a
+  squash. `AGENTS.md` §8 and `docs/CONTRIBUTING.md` both say that merge keeps
+  history, and 0.1.0 and 0.1.1 were squashed anyway because merge commits were
+  the only method the repository had not enabled — so the documented branch
+  model was false for the two releases that exist. The setting is enabled now
+  and recorded with the rest of the by-hand checklist in `docs/ci-cd.md`.
+- **The base images moved forward**: the Rust builder and the debian-slim
+  runtime, the latter to a new Debian major release. Verified by the full
+  pipeline, including the updates module against real Debian and Ubuntu host
+  trees.
+- **No version number is repeated in prose.** A version lives where it is the
+  authority — `rust-version` in `Cargo.toml`, the pins in the `Dockerfile`, a
+  fixed-version in `.trivyignore.yaml` — and documentation names the field
+  instead, so a Dependabot bump no longer leaves a dozen sentences quietly
+  wrong. Measurements and historical incidents keep their numbers and now say
+  *when* they were taken: the tables in
+  [`docs/updates-evidence.md`](docs/updates-evidence.md), the ADR-0009 cells and
+  the base-image comparison in `hardening.md` are records, not claims about
+  today. The rule is a convention in `AGENTS.md` §7.
+- **Every document ends with a `## Related` footer** — eight did not — and the
+  doc map, README shape and `AGENTS.md` layout now match huginn.io's exactly.
+  The two projects are kept aligned deliberately, so a change to either has an
+  obvious counterpart in the other.
+- **`AGENTS.md` §8** records that `auto-pr.yml` deletes a branch whose name does
+  not match the prefix list, and §3 that the same prefixes are what a PR branch
+  must use.
+
+### Security
+
+- **Four further rclone findings are suppressed** with an expiry and a
+  reachability argument: `CVE-2026-54572`, `CVE-2026-59733`, `CVE-2026-71309`
+  and `CVE-2026-71312`. Trivy began reporting them on 2026-08-06 against an
+  image nothing had changed, and all four are marked fixed upstream — but no
+  Telegraf release carries the fixed rclone, so `ignore-unfixed` does not filter
+  them and there is no version to move to. Each requires rclone to be
+  *executed*, as a sync client, a `serve restic` server or against an SFTP
+  backend; muninn never executes rclone, and cannot be made to
+  ([ADR-0004](docs/adr/0004-no-raw-toml.md)). All six entries expire together on
+  2026-11-03.
+
 ## [0.1.1] - 2026-08-06
 
 Fixes the release path itself. muninn's own code is untouched — the image

@@ -83,7 +83,7 @@ updates:
         patterns: ["*"]
 
   # ── The Dockerfile's base images ──────────────────────────────────────────
-  # `rust:1.88-slim` (builder) and `debian:12-slim` (runtime). The runtime base
+  # The `rust:*-slim` builder and the debian-slim runtime. The runtime base
   # is where the CVE surface documented in docs/hardening.md lives, and R7 says
   # the fix for an unfixable CVE arrives with a Debian point release — this is
   # what notices it.
