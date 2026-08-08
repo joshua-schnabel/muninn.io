@@ -201,8 +201,14 @@ impl fmt::Debug for Redactor {
 ///
 /// Unix only: mode bits are the check, and there is nothing equivalent to look
 /// at elsewhere. The path is named, never the contents.
+///
+/// The parameter is `path_str` and not `display` on purpose: `%display` inside
+/// `tracing::warn!` resolves to `tracing::field::display`, the function, not to
+/// a local of that name, and the error it produces names a closure type rather
+/// than the collision. Because this whole function is `cfg(unix)`, a Windows
+/// machine compiles none of it and CI is the first thing to see it.
 #[cfg(unix)]
-fn warn_if_readable_by_others(path: &Path, display: &str) {
+fn warn_if_readable_by_others(path: &Path, path_str: &str) {
     use std::os::unix::fs::PermissionsExt as _;
 
     // Best-effort throughout: the file was just read successfully, so a stat
@@ -214,7 +220,7 @@ fn warn_if_readable_by_others(path: &Path, display: &str) {
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         tracing::warn!(
-            path = %display,
+            path = %path_str,
             mode = format!("{mode:04o}"),
             "secret file is readable beyond its owner; 0600 is expected"
         );
@@ -222,7 +228,7 @@ fn warn_if_readable_by_others(path: &Path, display: &str) {
 }
 
 #[cfg(not(unix))]
-fn warn_if_readable_by_others(_path: &Path, _display: &str) {}
+fn warn_if_readable_by_others(_path: &Path, _path_str: &str) {}
 
 #[cfg(test)]
 mod tests {
