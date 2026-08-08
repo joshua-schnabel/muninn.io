@@ -67,9 +67,7 @@ pub async fn serve(
     let bound = listener.local_addr().unwrap_or(listen);
     info!(%bound, "health server listening");
 
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown)
-        .await
+    crate::serve::serve_with_limits(listener, router(state), shutdown).await
 }
 
 /// Bind and return the address, so a caller that needs to know the port (a test,
@@ -84,9 +82,7 @@ pub async fn serve_on(
     state: ServerState,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(shutdown)
-        .await
+    crate::serve::serve_with_limits(listener, router(state), shutdown).await
 }
 
 // ---------------------------------------------------------------------------

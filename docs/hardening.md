@@ -215,6 +215,26 @@ set basic auth on the Prometheus output, or both.
 
 `/status` deliberately carries no secrets and no configuration dump.
 
+**The health listener caps connections and times out a request head.** 256
+concurrent connections, and ten seconds for a peer to send its head; a
+connection that has sent nothing complete by then is dropped. Without that, a
+client opening sockets and never finishing a request holds each one, and its
+task, indefinitely — measured on huginn.io's equivalent listeners as 4 000 idle
+half-open connections taking the image from 29.5 MiB to 113.3 MiB with nothing
+refusing them.
+
+It matters more here than it did there. huginn's listeners are off by default
+and bind loopback; port 8080 is *meant* to be published, because an orchestrator
+has to reach `/health/ready`. The exposure is the normal deployment.
+
+Neither limit is a `tower` layer, which is the obvious first idea and the wrong
+one: a layer wraps the service, and the service is not reached until hyper has
+parsed a request, so a head that never completes never reaches it. The cap is a
+semaphore permit taken before `accept`; the deadline is hyper's own
+`header_read_timeout`. Graceful shutdown is preserved, so a probe in flight when
+SIGTERM arrives is finished rather than cut.
+`crates/muninn-health/src/serve.rs` carries the reasoning and the tests.
+
 **`insecure_skip_verify`** on the InfluxDB output disables certificate
 verification entirely, so anyone able to intercept the connection can read your
 metrics and inject fabricated ones. If a certificate does not validate, fix the

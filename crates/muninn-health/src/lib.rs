@@ -31,6 +31,7 @@
 //! transition — least of all the shutdown it is meant to observe.
 
 pub mod metrics;
+mod serve;
 pub mod server;
 pub mod state;
 

@@ -12,6 +12,8 @@ repository.workspace = true
 [dependencies]
 muninn-core = { workspace = true }
 axum = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
