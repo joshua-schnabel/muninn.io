@@ -10,6 +10,8 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-08
+
 ### Fixed
 
 - **The health listener caps connections and times out a request head.** 256 concurrent connections, and ten seconds for a peer to send its head — a connection that has sent nothing complete by then is dropped. Port 8080 is meant to be published so an orchestrator can reach `/health/ready`, which makes an unbounded accept loop the normal exposure rather than an unusual one; huginn.io measured the cost as 4 000 idle half-open connections taking its image from 29.5 MiB to 113.3 MiB with nothing refusing them. Notably not a `tower` layer, which wraps the service and is therefore never reached by a request head that never completes. Graceful shutdown is preserved, so a probe in flight when SIGTERM arrives is finished rather than cut. `hyper` and `hyper-util` become direct dependencies and add no crate to the tree — deliberately hyper's HTTP/1 builder rather than hyper-util's `auto` one, which would have negotiated HTTP/2 and pulled in `h2`, `tokio-util`, `fnv` and `futures-sink` for a protocol muninn has never served.
@@ -548,7 +550,8 @@ project brief:
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
 
-[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.3.0
 [0.2.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.1
 [0.2.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.0
 [0.1.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.1
