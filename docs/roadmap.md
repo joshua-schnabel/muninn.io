@@ -60,14 +60,6 @@ part; everything else is `gopsutil` reading `/proc` and works anywhere Telegraf
 does. Adding a distribution means a second implementation behind the same
 interface, not a rewrite. Nothing is planned until someone needs it.
 
-**Reconcile `main`'s history with `dev`, at the next release.** They share no
-ancestry beyond the first commit, because every release so far was squash-merged
-into `main` — the branch ruleset allowed nothing else until 2026-08-07. The
-consequence is a repository-wide add/add conflict on every release PR, which
-v0.2.0 hit and had to be repaired by hand. The one-time step is in
-[`releasing.md`](releasing.md); after it lands as a merge commit, it never
-recurs.
-
 ## Not planned
 
 - **Raw Telegraf TOML.** [ADR-0004](adr/0004-no-raw-toml.md) — it is what makes
