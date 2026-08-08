@@ -216,6 +216,7 @@ agent, read [`AGENTS.md`](AGENTS.md) first.
 | [Supervision](docs/supervision.md) | Signals, exit codes, diagnosis |
 | [Rendering](docs/telegraf-rendering.md) | How the Telegraf config is produced |
 | [Hardening](docs/hardening.md) | Container security posture |
+| [Security audit](docs/security-audit.md) | The 2026-08-08 review: findings, and what was checked and holds |
 | [Testing](docs/testing.md) | Test pyramid, coverage, the no-sleep rule |
 | [Troubleshooting](docs/troubleshooting.md) | Symptom, cause, fix |
 | [CI/CD](docs/ci-cd.md) | Pipeline, release path, repository setup |
