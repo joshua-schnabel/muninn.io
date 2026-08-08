@@ -94,6 +94,12 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # ── Health / status HTTP server ────────────────────────────────────────────
 axum = "0.8"
+# The connection cap and header-read timeout in muninn-health/src/serve.rs.
+# Already in the tree under axum, so declaring it adds no crate to the supply
+# chain. A tower layer could not do the job: it wraps the service, and a request
+# head that never completes never reaches one.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["server", "server-graceful", "service", "tokio"] }
 
 # ── Logging ────────────────────────────────────────────────────────────────
 tracing = "0.1"
