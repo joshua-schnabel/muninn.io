@@ -435,6 +435,31 @@ jobs:
           BR="release/prepare-after-v${V}"
           git switch -c "$BR"
 
+          # 0) Bring main's release commits back into dev.
+          #
+          # Without this, dev never gains the commits the release created — the
+          # version stamp, the merge commit, whatever reconciliation the release
+          # branch carried. Their *content* arrives, because the steps below
+          # reapply it, but the commit objects do not, so dev reads "N commits
+          # behind main" and the gap grows by two or three every release.
+          #
+          # A merge, not a re-application: the point is the ancestry. That is
+          # also why the pull request below uses `--merge` and not `--squash` —
+          # a squash would flatten this into a single-parent commit and undo
+          # exactly what it is here for.
+          #
+          # A conflict is possible and is deliberately not auto-resolved. It
+          # means dev moved during the release and someone touched the lines the
+          # release stamped, almost always in CHANGELOG.md. Guessing at a
+          # changelog merge is how entries get silently dropped, so this stops
+          # and says what to do. The release itself is complete by this point;
+          # only the back-merge is outstanding.
+          if ! git merge --no-ff --no-edit origin/main; then
+            git merge --abort || true
+            echo "::error::merging main into dev conflicts — dev moved during the release. Do it by hand: git switch dev && git merge origin/main, resolve, then open the housekeeping PR. The release itself is complete."
+            exit 1
+          fi
+
           # 1) Ensure dev ends with a released ## [X.Y.Z] section and a fresh
           #    ## [Unreleased] on top.
           if grep -q "^## \[${V}\]" CHANGELOG.md; then
@@ -485,5 +510,10 @@ jobs:
               --body "Automated post-release housekeeping: fresh \`## [Unreleased]\`, updated compare links, and \`Cargo.toml\` bumped to ${V}. Merges automatically once checks pass." || \
               echo "::warning::Could not open the housekeeping PR; branch ${BR} is pushed — open it by hand. If the error mentions permissions, see docs/ci-cd.md."
           fi
-          gh pr merge --auto --squash "$BR" || \
-            echo "::warning::Could not enable auto-merge (RELEASE_PAT missing?). Merge the PR manually."
+          # --merge, not --squash: this branch carries a merge commit whose
+          # only purpose is to put main's release commits into dev's ancestry,
+          # and a squash would collapse it to one parent and throw that away.
+          # Feature branches keep squashing; the ruleset allows both on dev for
+          # exactly this reason.
+          gh pr merge --auto --merge "$BR" || \
+            echo "::warning::Could not enable auto-merge (RELEASE_PAT missing, or merge commits not allowed on dev?). Merge the PR by hand — with a merge commit."
