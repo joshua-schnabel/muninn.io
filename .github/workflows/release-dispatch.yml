@@ -89,10 +89,24 @@ jobs:
 
           KEYID="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')"
           UIDSTR="$(gpg --list-secret-keys --with-colons "$KEYID" | awk -F: '/^uid:/ {print $10; exit}')"
+          # `Name <email>` is a convention, not a guarantee — a GPG UID may be
+          # a bare string. Splitting one of those leaves NAME and EMAIL both
+          # equal to the whole UID, which is non-empty and so passes a naive
+          # emptiness check; the commit is then authored by something that is
+          # not an address, and GitHub labels it Unverified with no obvious
+          # cause. The keyring this was set up from held exactly such a key.
+          case "$UIDSTR" in
+            *"<"*">"*) ;;
+            *) echo "::error::the signing key's first UID is '$UIDSTR' — it must be 'Name <email>'"; exit 1 ;;
+          esac
           NAME="${UIDSTR%% <*}"
           EMAIL="${UIDSTR##*<}"; EMAIL="${EMAIL%>}"
-          if [ -z "$NAME" ] || [ -z "$EMAIL" ]; then
-            echo "::error::could not read a name and email from the signing key's UID"
+          case "$EMAIL" in
+            *?@?*) ;;
+            *) echo "::error::'$EMAIL' is not an email address"; exit 1 ;;
+          esac
+          if [ -z "$NAME" ]; then
+            echo "::error::could not read a name from the signing key's UID"
             exit 1
           fi
           echo "signing as $NAME <$EMAIL> with $KEYID"
