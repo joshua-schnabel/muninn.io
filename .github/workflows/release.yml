@@ -358,6 +358,73 @@ jobs:
           # PAT so the branch push + PR trigger ci.yml (GITHUB_TOKEN would not).
           token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
 
+      # ── Commit signing ────────────────────────────────────────────────────
+      # `dev` and `main` both carry a `required_signatures` rule, so a commit
+      # this job creates with the runner's default identity is rejected at merge
+      # time — the pull request opens, every check goes green, and the merge
+      # button stays blocked with nothing failing. That is what happened after
+      # v0.2.1.
+      #
+      # The identity is read out of the key rather than hard-coded: GitHub marks
+      # a signature "Verified" only when the commit's author email matches a UID
+      # on the signing key *and* a verified email on the account that owns it.
+      # Hard-coding `github-actions[bot]` next to a personal key produces a valid
+      # signature that GitHub still shows as unverified.
+      - name: Import the commit signing key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "::error::GPG_PRIVATE_KEY is not set. The commit would be unsigned and the branch ruleset requires signatures — see docs/ci-cd.md."
+            exit 1
+          fi
+          printenv GPG_PRIVATE_KEY | gpg --batch --quiet --import
+
+          KEYID="$(gpg --list-secret-keys --with-colons | awk -F: '/^sec:/ {print $5; exit}')"
+          UIDSTR="$(gpg --list-secret-keys --with-colons "$KEYID" | awk -F: '/^uid:/ {print $10; exit}')"
+          # `Name <email>` is a convention, not a guarantee — a GPG UID may be
+          # a bare string. Splitting one of those leaves NAME and EMAIL both
+          # equal to the whole UID, which is non-empty and so passes a naive
+          # emptiness check; the commit is then authored by something that is
+          # not an address, and GitHub labels it Unverified with no obvious
+          # cause. The keyring this was set up from held exactly such a key.
+          case "$UIDSTR" in
+            *"<"*">"*) ;;
+            *) echo "::error::the signing key's first UID is '$UIDSTR' — it must be 'Name <email>'"; exit 1 ;;
+          esac
+          NAME="${UIDSTR%% <*}"
+          EMAIL="${UIDSTR##*<}"; EMAIL="${EMAIL%>}"
+          case "$EMAIL" in
+            *?@?*) ;;
+            *) echo "::error::'$EMAIL' is not an email address"; exit 1 ;;
+          esac
+          if [ -z "$NAME" ]; then
+            echo "::error::could not read a name from the signing key's UID"
+            exit 1
+          fi
+          echo "signing as $NAME <$EMAIL> with $KEYID"
+
+          # A passphrase is optional — a key generated for CI normally has none.
+          # When there is one it goes through a 0600 file, never argv:
+          # /proc/<pid>/cmdline is readable by every process on the runner, which
+          # is the same rule the registry credentials in ci.yml follow.
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
+            umask 077
+            printenv GPG_PASSPHRASE > "$RUNNER_TEMP/gpg-pass"
+            {
+              echo '#!/usr/bin/env bash'
+              echo "exec gpg --batch --pinentry-mode loopback --passphrase-file \"$RUNNER_TEMP/gpg-pass\" \"\$@\""
+            } > "$RUNNER_TEMP/gpg-wrap"
+            chmod +x "$RUNNER_TEMP/gpg-wrap"
+            git config gpg.program "$RUNNER_TEMP/gpg-wrap"
+          fi
+
+          git config user.name "$NAME"
+          git config user.email "$EMAIL"
+          git config user.signingkey "$KEYID"
+          git config commit.gpgsign true
+
       - name: Open housekeeping PR into dev
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
@@ -366,9 +433,32 @@ jobs:
         run: |
           DATE=$(date +%F)
           BR="release/prepare-after-v${V}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git switch -c "$BR"
+
+          # 0) Bring main's release commits back into dev.
+          #
+          # Without this, dev never gains the commits the release created — the
+          # version stamp, the merge commit, whatever reconciliation the release
+          # branch carried. Their *content* arrives, because the steps below
+          # reapply it, but the commit objects do not, so dev reads "N commits
+          # behind main" and the gap grows by two or three every release.
+          #
+          # A merge, not a re-application: the point is the ancestry. That is
+          # also why the pull request below uses `--merge` and not `--squash` —
+          # a squash would flatten this into a single-parent commit and undo
+          # exactly what it is here for.
+          #
+          # A conflict is possible and is deliberately not auto-resolved. It
+          # means dev moved during the release and someone touched the lines the
+          # release stamped, almost always in CHANGELOG.md. Guessing at a
+          # changelog merge is how entries get silently dropped, so this stops
+          # and says what to do. The release itself is complete by this point;
+          # only the back-merge is outstanding.
+          if ! git merge --no-ff --no-edit origin/main; then
+            git merge --abort || true
+            echo "::error::merging main into dev conflicts — dev moved during the release. Do it by hand: git switch dev && git merge origin/main, resolve, then open the housekeeping PR. The release itself is complete."
+            exit 1
+          fi
 
           # 1) Ensure dev ends with a released ## [X.Y.Z] section and a fresh
           #    ## [Unreleased] on top.
@@ -420,5 +510,10 @@ jobs:
               --body "Automated post-release housekeeping: fresh \`## [Unreleased]\`, updated compare links, and \`Cargo.toml\` bumped to ${V}. Merges automatically once checks pass." || \
               echo "::warning::Could not open the housekeeping PR; branch ${BR} is pushed — open it by hand. If the error mentions permissions, see docs/ci-cd.md."
           fi
-          gh pr merge --auto --squash "$BR" || \
-            echo "::warning::Could not enable auto-merge (RELEASE_PAT missing?). Merge the PR manually."
+          # --merge, not --squash: this branch carries a merge commit whose
+          # only purpose is to put main's release commits into dev's ancestry,
+          # and a squash would collapse it to one parent and throw that away.
+          # Feature branches keep squashing; the ruleset allows both on dev for
+          # exactly this reason.
+          gh pr merge --auto --merge "$BR" || \
+            echo "::warning::Could not enable auto-merge (RELEASE_PAT missing, or merge commits not allowed on dev?). Merge the PR by hand — with a merge commit."

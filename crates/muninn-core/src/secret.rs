@@ -54,6 +54,8 @@ impl Secret {
             },
         })?;
 
+        warn_if_readable_by_others(path, &display);
+
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             // Fail closed. An empty secret file is never intent — and treating
@@ -183,6 +185,50 @@ impl fmt::Debug for Redactor {
         write!(f, "Redactor({} values)", self.values.len())
     }
 }
+
+/// Warn when a secret file is readable by anyone but its owner.
+///
+/// A warning, not a refusal. A read-only bind mount can carry permissions the
+/// operator does not control, and refusing to start over a mode bit would take
+/// down a deployment that is merely untidy — the token still works. What is not
+/// acceptable is saying nothing: the documentation prescribes `0600`, and until
+/// now nothing checked it or reported otherwise (M-01, docs/security-audit.md).
+///
+/// It matters more here than it would in a distroless image. muninn's runtime
+/// carries a shell and a package manager because the updates module needs real
+/// apt and dpkg, so "readable by anything else in the container" is a larger
+/// set than it sounds.
+///
+/// Unix only: mode bits are the check, and there is nothing equivalent to look
+/// at elsewhere. The path is named, never the contents.
+///
+/// The parameter is `path_str` and not `display` on purpose: `%display` inside
+/// `tracing::warn!` resolves to `tracing::field::display`, the function, not to
+/// a local of that name, and the error it produces names a closure type rather
+/// than the collision. Because this whole function is `cfg(unix)`, a Windows
+/// machine compiles none of it and CI is the first thing to see it.
+#[cfg(unix)]
+fn warn_if_readable_by_others(path: &Path, path_str: &str) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    // Best-effort throughout: the file was just read successfully, so a stat
+    // that fails says something odd about the filesystem rather than about the
+    // secret, and it is not a reason to hold up the start.
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        tracing::warn!(
+            path = %path_str,
+            mode = format!("{mode:04o}"),
+            "secret file is readable beyond its owner; 0600 is expected"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn warn_if_readable_by_others(_path: &Path, _path_str: &str) {}
 
 #[cfg(test)]
 mod tests {
@@ -405,5 +451,39 @@ mod tests {
         let out = format!("{r:?}");
         assert!(!out.contains("s3cret-token-value"), "leaked: {out}");
         assert_eq!(out, "Redactor(1 values)");
+    }
+
+    /// A secret file readable beyond its owner is warned about, not refused.
+    ///
+    /// The assertion is the *behaviour* — the secret still loads — because
+    /// refusing would take down a deployment whose token works. That the
+    /// warning is emitted is asserted by the tracing test below in spirit only;
+    /// what must never regress is that a loose mode does not become fatal.
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_secret_still_loads() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "s3cret").unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let s = Secret::from_file(f.path()).expect("a loose mode must not be fatal");
+        assert_eq!(s.expose(), "s3cret");
+    }
+
+    /// And the tight case keeps working unchanged.
+    #[cfg(unix)]
+    #[test]
+    fn a_correctly_moded_secret_loads() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "s3cret").unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert_eq!(Secret::from_file(f.path()).unwrap().expose(), "s3cret");
     }
 }

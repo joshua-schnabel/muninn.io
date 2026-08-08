@@ -8,7 +8,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 The release pipeline reads the version from this file — see
 [`docs/ci-cd.md`](docs/ci-cd.md). Never hand-push a `v*` tag.
 
-## [Unreleased]
+## [0.3.0] - 2026-08-08
+
+### Fixed
+
+- **The health listener caps connections and times out a request head.** 256 concurrent connections, and ten seconds for a peer to send its head — a connection that has sent nothing complete by then is dropped. Port 8080 is meant to be published so an orchestrator can reach `/health/ready`, which makes an unbounded accept loop the normal exposure rather than an unusual one; huginn.io measured the cost as 4 000 idle half-open connections taking its image from 29.5 MiB to 113.3 MiB with nothing refusing them. Notably not a `tower` layer, which wraps the service and is therefore never reached by a request head that never completes. Graceful shutdown is preserved, so a probe in flight when SIGTERM arrives is finished rather than cut. `hyper` and `hyper-util` become direct dependencies and add no crate to the tree — deliberately hyper's HTTP/1 builder rather than hyper-util's `auto` one, which would have negotiated HTTP/2 and pulled in `h2`, `tokio-util`, `fnv` and `futures-sink` for a protocol muninn has never served.
+- **A secret file readable beyond its owner is reported.** `Secret::from_file` checked that the file existed, was readable and was not empty, but never looked at its mode — the documentation prescribes `0600` and nothing said when it was not so. A warning rather than a refusal, because a read-only bind mount can carry permissions the operator does not control and a token that works should not stop a deployment. It matters more here than in a distroless image: muninn's runtime carries a shell and a package manager for the updates module, so "readable by anything else in the container" is a larger set than it sounds. Finding M-01 of the 2026-08-08 review.
+- **The release workflows sign the commits they create.** Both branch rulesets carry `required_signatures`, and `prepare-dev` and `release-dispatch` committed with the runner's default identity — unsigned. The failure mode gave nothing away: the pull request opened, every required check went green, and the merge button stayed blocked with nothing reported as failing. Both jobs now import a key from `GPG_PRIVATE_KEY` and fail with a message naming the secret when it is absent, because an unsigned commit here produces an unmergeable pull request either way.
+- **The signing identity is read from the key rather than hard-coded.** GitHub marks a signature *Verified* only when the commit's author email matches a UID on the key **and** a verified email on the account that owns it, so keeping `github-actions[bot]` beside a real key would have produced a valid signature that GitHub still labelled unverified. The UID's shape is asserted too: `Name <email>` is a convention, not a guarantee, and splitting a bare-string UID yields an "address" that is not one.
+- **`prepare-dev` merges `main` back into `dev`, and no longer invents a changelog heading.** The release notes are written on the release branch and reach `main` through the release merge; `dev` never saw them, so the old logic found no `## [X.Y.Z]` section and synthesised an empty one — every release silently lost its notes on `dev`. The merge brings the real section, and with it the commits `dev` had never received, which is why it read "N commits behind main" with the gap growing every release. The housekeeping pull request is merged with a merge commit rather than a squash, or the merge would collapse to a single parent and undo itself. A conflict aborts with instructions instead of being guessed at.
 
 ## [0.2.1] - 2026-08-07
 
@@ -540,7 +548,8 @@ project brief:
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
 
-[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.3.0
 [0.2.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.1
 [0.2.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.0
 [0.1.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.1.1
