@@ -9,7 +9,7 @@ rather than assumed.
 ```yaml
 services:
   muninn:
-    image: ghcr.io/joshua-schnabel/muninn.io:0.1.0
+    image: ghcr.io/joshua-schnabel/muninn.io:<version>
 
     read_only: true                    # no writable layer
     security_opt: [no-new-privileges:true]

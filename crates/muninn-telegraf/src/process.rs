@@ -88,6 +88,9 @@ const OUTPUT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 pub struct Telegraf {
     child: Child,
     pid: u32,
+    /// Kept for the `Debug` impl and for the spawn log line, not read
+    /// otherwise. The accessor that returned it was never called (N-05).
+    #[allow(dead_code, reason = "carried for Debug output")]
     binary: PathBuf,
     /// The stdout and stderr forwarders, kept so they can be drained.
     ///
@@ -199,10 +202,6 @@ impl Telegraf {
 
     pub fn pid(&self) -> u32 {
         self.pid
-    }
-
-    pub fn binary(&self) -> &Path {
-        &self.binary
     }
 
     /// Wait for Telegraf to exit.

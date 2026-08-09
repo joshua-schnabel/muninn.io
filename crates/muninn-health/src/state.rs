@@ -17,7 +17,7 @@
 //! never held across an await.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -157,7 +157,6 @@ pub struct HealthState(Arc<Inner>);
 #[derive(Debug)]
 struct Inner {
     state: AtomicU8,
-    telegraf_restarts: AtomicU64,
     started: Instant,
     details: RwLock<Details>,
 }
@@ -166,7 +165,6 @@ impl HealthState {
     pub fn new() -> Self {
         HealthState(Arc::new(Inner {
             state: AtomicU8::new(State::Starting as u8),
-            telegraf_restarts: AtomicU64::new(0),
             started: Instant::now(),
             details: RwLock::new(Details::default()),
         }))
@@ -208,14 +206,6 @@ impl HealthState {
 
     pub fn uptime(&self) -> Duration {
         self.0.started.elapsed()
-    }
-
-    pub fn telegraf_restarts(&self) -> u64 {
-        self.0.telegraf_restarts.load(Ordering::Relaxed)
-    }
-
-    pub fn record_telegraf_restart(&self) {
-        self.0.telegraf_restarts.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Read the details. The guard is dropped before returning, so no caller can
@@ -398,15 +388,6 @@ mod tests {
             d.module_checks["updates"].at > 0,
             "should carry a timestamp"
         );
-    }
-
-    #[test]
-    fn restarts_are_counted() {
-        let s = HealthState::new();
-        assert_eq!(s.telegraf_restarts(), 0);
-        s.record_telegraf_restart();
-        s.record_telegraf_restart();
-        assert_eq!(s.telegraf_restarts(), 2);
     }
 
     /// A panic elsewhere must not take the diagnostics with it.

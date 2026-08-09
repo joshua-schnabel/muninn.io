@@ -84,18 +84,6 @@ pub fn render(state: &HealthState, muninn_version: &str) -> String {
         bool_value(details.telegraf_pid.is_some())
     );
 
-    help(
-        &mut out,
-        "muninn_telegraf_restarts_total",
-        "counter",
-        "Times Telegraf has been restarted by muninn. Zero unless a bounded restart policy is enabled.",
-    );
-    let _ = writeln!(
-        out,
-        "muninn_telegraf_restarts_total {}",
-        state.telegraf_restarts()
-    );
-
     // Durations are omitted rather than reported as zero when the step has not
     // run: 0 would read as "instantaneous" on a graph, which is a different
     // claim from "has not happened".
@@ -204,6 +192,75 @@ mod tests {
             d.telegraf_pid = Some(17);
         });
         s
+    }
+
+    /// The families `docs/self-metrics.md` documents, in the order they render.
+    ///
+    /// `versioning.md` makes these names a stable surface, and until the 1.0
+    /// review the only enumeration of them was ADR-0012 — a decision record
+    /// rather than a reference, and one that had already drifted: it omitted
+    /// `muninn_state` and still listed a restart counter (F-17).
+    ///
+    /// Kept here rather than derived from the renderer, deliberately. A list
+    /// generated from the code would agree with the code by construction and
+    /// prove nothing; this one has to be *changed* when a family is added or
+    /// removed, which is the moment to ask whether the documentation and the
+    /// version policy have been thought about.
+    const DOCUMENTED: [&str; 9] = [
+        "muninn_info",
+        "muninn_state",
+        "muninn_uptime_seconds",
+        "muninn_ready",
+        "muninn_telegraf_running",
+        "muninn_config_generation_duration_seconds",
+        "muninn_telegraf_validation_duration_seconds",
+        "muninn_module_check_success",
+        "muninn_module_check_timestamp_seconds",
+    ];
+
+    /// Every family the renderer can emit is documented, and every documented
+    /// family is emitted.
+    ///
+    /// The state is populated so that the conditional families — the two
+    /// durations and the module checks, all absent until the step they describe
+    /// has happened — are present too.
+    #[test]
+    fn every_documented_metric_is_rendered_and_no_other() {
+        let s = ready_state();
+        s.update(|d| {
+            d.config_generation = Some(std::time::Duration::from_millis(3));
+            d.telegraf_validation = Some(std::time::Duration::from_millis(40));
+        });
+        s.record_module_check("updates", true);
+
+        let out = render(&s, "0.0.0");
+        let rendered: std::collections::BTreeSet<&str> = out
+            .lines()
+            .filter_map(|l| l.strip_prefix("# TYPE "))
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        let documented: std::collections::BTreeSet<&str> = DOCUMENTED.into_iter().collect();
+
+        assert_eq!(
+            rendered, documented,
+            "docs/self-metrics.md and the renderer disagree"
+        );
+    }
+
+    /// The families that are absent until they have something to say stay
+    /// absent. Zero would read as "instantaneous" on a graph, which is a
+    /// different claim from "has not happened".
+    #[test]
+    fn the_conditional_families_are_omitted_rather_than_zero() {
+        let out = render(&ready_state(), "0.0.0");
+        for name in [
+            "muninn_config_generation_duration_seconds",
+            "muninn_telegraf_validation_duration_seconds",
+            "muninn_module_check_success",
+            "muninn_module_check_timestamp_seconds",
+        ] {
+            assert!(!out.contains(name), "{name} should be absent, got:\n{out}");
+        }
     }
 
     #[test]

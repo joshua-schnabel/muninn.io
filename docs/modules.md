@@ -557,10 +557,12 @@ Measured against each host's own answer:
 Including from a container running a *different* distribution than the host,
 which is the normal case rather than the exotic one.
 
-The Ubuntu 24.04 zero is not an error and not a disagreement: the host's own apt
-says zero too, because the candidate versions now resolve through
-`noble-updates`. [The security subset is a lower bound on Ubuntu](#the-security-subset-is-a-lower-bound-on-ubuntu)
-explains why, and why the total is unaffected.
+The Ubuntu 24.04 zero was measured before the classification changed, and it is
+the measurement that forced the change: the host's own apt said zero too,
+because the candidate versions resolve through `noble-updates`.
+[How the security subset is decided](#how-the-security-subset-is-decided)
+explains what that number would be today, and why the total was never
+affected.
 
 **Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
 the same mount CPU, memory and disk already need. No extra capabilities, no root,

@@ -24,7 +24,7 @@ Findings are numbered `M-nn` so they cannot be confused with huginn's `F-nn`.
 
 | | Severity | Area | Summary | Status |
 |---|---|---|---|---|
-| [M-01](#m-01) | Low | `muninn-core` | Secret file permissions are neither checked nor reported | **Fixed** — warns when a secret is readable beyond its owner. The first version of the fix was discarded before an operator could see it; see the finding |
+| [M-01](#m-01--secret-file-permissions-are-neither-checked-nor-reported) | Low | `muninn-core` | Secret file permissions are neither checked nor reported | **Fixed** — warns when a secret is readable beyond its owner. The first version of the fix was discarded before an operator could see it; see the finding |
 
 One finding. That is not a claim that muninn is secure; it is what a source
 review of these surfaces produced, and the section below on what was checked and
@@ -40,7 +40,7 @@ and silently not true about the validator. That is the useful lesson of this
 document: "we looked and it holds" is worth recording precisely because it can
 be shown wrong later.
 
-### M-01 — Secret file permissions are neither checked nor reported {#m-01}
+### M-01 — Secret file permissions are neither checked nor reported
 
 **Severity:** Low · **Status:** Fixed in this pass
 

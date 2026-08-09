@@ -74,9 +74,6 @@ pub struct Requirements {
     pub host_paths: Vec<&'static str>,
     /// Absolute paths that are not under the prefix — the Docker socket.
     pub absolute_paths: Vec<String>,
-    /// Linux capabilities. Empty for every MVP module: nothing muninn does needs
-    /// one, and the hardening baseline drops them all.
-    pub capabilities: Vec<&'static str>,
     /// True when the module only works on a Debian-family host.
     pub debian_family_only: bool,
     /// Services the module has to be able to talk to.

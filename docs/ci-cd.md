@@ -147,9 +147,11 @@ does not, so a suppressed finding still reaches the Security tab. Every entry
 needs an expiry date and a reason the code is unreachable in muninn's generated
 configuration — not merely "not fixed upstream yet".
 
-Two entries today, both Go modules vendored into the Telegraf binary rather than
+Every entry is a Go module vendored into the Telegraf binary rather than one of
 muninn's own dependencies. The reasoning, and the table of what they are, is in
-[`hardening.md`](hardening.md#the-two-suppressed-findings-and-why).
+[`hardening.md`](hardening.md#the-suppressed-findings-and-why) — the file itself
+is the authority, because a count repeated here is wrong the next time one is
+added, and this one was.
 
 ## Architectures
 

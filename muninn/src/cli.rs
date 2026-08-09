@@ -1,10 +1,14 @@
 //! The command line.
 //!
-//! The command set is a stable contract (`docs/versioning.md`), so every command
-//! is declared here even where its implementation is still to come — `--help`
-//! should describe the tool, not the state of the build. The commands that are
-//! not implemented say so and name the work package, rather than failing in a
-//! way that looks like a bug.
+//! The command set is a stable contract (`docs/versioning.md`): the eight
+//! commands here are the ones `versioning.md` promises, and removing or
+//! renaming one is a major release.
+//!
+//! This used to say that some of them were "still to come" and named the work
+//! package for each. All eight have been implemented since well before the
+//! first release, so the note survived only as scaffolding in a user-facing
+//! file — `--help` describes the tool, and the module documentation should
+//! too (N-05).
 
 use std::path::PathBuf;
 
