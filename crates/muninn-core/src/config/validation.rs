@@ -88,11 +88,6 @@ fn validate_runtime(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
         cfg.runtime.shutdown_grace_period,
         "runtime.shutdown_grace_period",
     )?;
-    require_positive(
-        cfg.runtime.telegraf_start_timeout,
-        "runtime.telegraf_start_timeout",
-    )?;
-
     // A relative path would be resolved against whatever directory the process
     // happens to start in, which in a container is not something the operator
     // controls or can predict.

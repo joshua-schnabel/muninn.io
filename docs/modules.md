@@ -638,7 +638,16 @@ path, or apt's own message — is on stderr, which Telegraf logs.
 | `host_not_debian_family` | the host is not Debian or Ubuntu | disable the module |
 | `scratch_unavailable` | nowhere writable for apt's cache | give the container its tmpfs |
 | `apt_failed` | apt refused — usually a host index format the image's apt does not understand | see stderr; report it |
+| `apt_timed_out` | apt did not finish in the time it was given and was killed — usually a stalled or very slow host mount, not a slow host | check the mount; a network filesystem under `/hostfs` is the common cause |
 | `parse_inconsistent` | more security updates than updates in total | a bug; please report it |
+
+`apt_timed_out` is deliberately not folded into `apt_failed`. apt exiting
+non-zero says something about the host's package state; apt never getting that
+far says something about the mount, and the two have different fixes. The
+deadline is muninn's own — Telegraf's `inputs.exec` timeout is set longer than
+it by construction, so the check always runs out of muninn's time first and
+still has a moment to report `check_success=0`. A helper Telegraf kills reports
+nothing at all.
 
 ### A failed check degrades muninn — it does not stop it
 
@@ -659,6 +668,17 @@ muninn_module_check_success{module="updates"} 0
 ```
 
 and `/status` reports `degraded` — ready, serving, one module down.
+
+**And it recovers.** A failed check is retried on the module's own interval
+until it succeeds; when the last failing module reports success, muninn returns
+to `ready`. A check that succeeded is not repeated here, because Telegraf is
+already running it on the same schedule and those results are the ones that
+reach the outputs — running it twice would parse the host's whole package index
+twice per interval to learn the same thing.
+
+The retry exists for the state rather than the metric. Without it, a mount that
+was briefly unavailable during startup left a container reporting `degraded` for
+its entire life, with nothing able to clear it.
 
 **Preconditions are the exception, and they are checked earlier.** A host tree
 that is not mounted at all, or a host that is not Debian-family, is not a failed

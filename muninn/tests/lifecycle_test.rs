@@ -85,7 +85,6 @@ agent:
   hostname: "lifecycle-test"
 runtime:
   shutdown_grace_period: 10s
-  telegraf_start_timeout: 15s
   generated_config_path: "{generated}"
   host_mount_prefix: "{host_mount_prefix}"
 logging:
@@ -838,7 +837,6 @@ agent:
   hostname: "lifecycle-test"
 runtime:
   shutdown_grace_period: 10s
-  telegraf_start_timeout: 15s
   generated_config_path: "{generated}"
   host_mount_prefix: "/hostfs"
 logging:

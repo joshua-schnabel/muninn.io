@@ -161,18 +161,6 @@ It should stay below the orchestrator's own stop timeout — **Docker's default 
 10 seconds**, so the 20s default here needs `stop_grace_period: 30s` in compose,
 or Docker kills the container mid-flush and the grace period never applies.
 
-### `runtime.telegraf_start_timeout`
-
-| | |
-|---|---|
-| Type | duration |
-| Required | no |
-| Default | `15s` |
-
-How long Telegraf may take to come up before muninn gives up and exits with code
-21. Generous enough for a loaded host, short enough that a broken deploy fails
-fast rather than hanging in "starting" indefinitely.
-
 ### `runtime.generated_config_path`
 
 | | |

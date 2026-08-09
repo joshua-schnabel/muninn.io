@@ -18,7 +18,7 @@ change meaning. The authoritative definition is
 | `11` | SECRET | A secret file is missing, unreadable or empty | Fix the mount, not the config |
 | `12` | RUNTIME | An enabled module's precondition is absent: unmounted host path, unreachable Docker socket, unsupported host OS | Fix the deployment; `muninn check-runtime` reports specifics |
 | `20` | TELEGRAF_CONFIG | The generated config was rejected by `telegraf config check` | **A muninn bug or version mismatch** — please report it |
-| `21` | TELEGRAF_START | Telegraf did not start within the timeout, or its binary is missing or the wrong version | Usually an image problem |
+| `21` | TELEGRAF_START | Telegraf could not be started: the binary is missing, is not executable, reports the wrong version, or exited immediately after being spawned | Usually an image problem |
 | `22` | TELEGRAF_EXITED | Telegraf exited on its own while supervised | Read the captured Telegraf output |
 | `30` | INTERNAL | An invariant broke | Always a muninn bug — please report it |
 
@@ -48,6 +48,14 @@ muninn exits and lets the orchestrator decide.
 Telegraf exits unexpectedly (`22`) · the supervisor can no longer determine child
 status (`30`) · the health server fails permanently (`30`).
 
+The health server is genuinely supervised rather than merely started: its task
+is polled alongside Telegraf, and a listener that stops — an unrecoverable
+accept error, a panic in a handler, or simply returning without being asked to
+— takes muninn down with a message saying which. Running on without the
+endpoints an orchestrator uses to decide whether muninn is alive is the one
+outcome worth avoiding, because from outside it is indistinguishable from a
+hung process.
+
 ### Degraded — not fatal
 
 Collection continues; the problem is visible but does not stop the agent.
@@ -58,6 +66,11 @@ buffering · a single non-critical collection failing intermittently.
 Each of these appears in the logs, in `/status`, and in a `muninn_module_check_success`
 metric. Nothing is swallowed — but nothing that is still collecting gets torn
 down either.
+
+**Degraded is not permanent.** A failed self-check is retried on its module's
+interval, and when the last failing module succeeds muninn returns to `Ready`.
+A successful check is not repeated — Telegraf is already running it on the same
+schedule, and that is the path whose results reach the outputs.
 
 ### Why `Degraded` still reports ready
 
