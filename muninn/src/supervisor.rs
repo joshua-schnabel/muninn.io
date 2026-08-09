@@ -484,7 +484,10 @@ async fn check_image_updates_once(config: &Config, state: &HealthState) -> bool 
         }
     };
 
-    let succeeded = report.daemon_succeeded();
+    // Every selected container has to have a verdict, not merely the daemon
+    // having answered. The aggregate used to be `daemon_succeeded()`, so it
+    // reported success while every container carried a failure reason (F-11).
+    let succeeded = report.succeeded();
     state.record_module_check("image_updates", succeeded);
 
     match report.daemon_outcome {
@@ -494,15 +497,25 @@ async fn check_image_updates_once(config: &Config, state: &HealthState) -> bool 
                 .iter()
                 .filter(|c| matches!(c.outcome, Ok(true)))
                 .count();
-            let failed = report
-                .containers
-                .iter()
-                .filter(|c| c.outcome.is_err())
-                .count();
+            let (with_verdict, selected) = report.verdicts();
+            let failed = selected - with_verdict;
             info!(
                 containers_checked = count,
                 updates_available, failed, "image update check"
             );
+            if failed > 0 {
+                // The daemon answered, so this is not a deployment problem —
+                // it is some containers muninn could not answer for, and the
+                // per-container series name which and why.
+                warn!(
+                    failed,
+                    selected,
+                    "the image update check reached the Docker daemon but could not produce a \
+                     verdict for every container — the module reports failure rather than a \
+                     partial answer, and the per-container metrics carry the reason"
+                );
+                transition(state, State::Degraded);
+            }
         }
         Err(reason) => {
             warn!(
