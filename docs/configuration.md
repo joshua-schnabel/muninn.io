@@ -483,8 +483,25 @@ secret value inline, and that is deliberate: a token written into this file ends
 up in your configuration management, your backups and every `docker inspect`. A
 path does not.
 
-muninn requires the file to exist, be readable, and be non-empty. A trailing
-newline is stripped. Any of those failing stops startup with exit code 11.
+muninn requires the file to exist, be readable, be non-empty, and hold **at
+least 8 bytes**. A trailing newline is stripped. Any of those failing stops
+startup with exit code 11.
+
+**Why there is a minimum length.** muninn masks known secrets in the output
+Telegraf writes and in Telegraf's own configuration diagnostics, by matching the
+value literally. A value of three or four characters would match inside ordinary
+words — turning every log line into `***`, which is both unreadable and less
+safe, because an unread log defends nothing. So muninn cannot protect a
+credential that short, and refuses to hold one rather than carry a promise it
+cannot keep. Any credential worth having is longer than this.
+
+**Permissions.** `0600` is expected. A file readable by its group or by
+everything else still loads — a read-only bind mount can carry permissions you
+do not control, and a working token should not stop a deployment — but muninn
+says so on stderr, naming the key and the mode. It matters more here than it
+would in a distroless image: the runtime carries a shell and a package manager
+for the updates module, so "readable by anything else in the container" is a
+larger set than it sounds.
 
 **Error messages name the path and never the contents.** The value is wrapped in
 a type whose `Debug` and `Display` both render `***`, so no log line, error or

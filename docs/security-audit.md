@@ -24,11 +24,21 @@ Findings are numbered `M-nn` so they cannot be confused with huginn's `F-nn`.
 
 | | Severity | Area | Summary | Status |
 |---|---|---|---|---|
-| [M-01](#m-01) | Low | `muninn-core` | Secret file permissions are neither checked nor reported | **Fixed** — warns when a secret is readable beyond its owner |
+| [M-01](#m-01) | Low | `muninn-core` | Secret file permissions are neither checked nor reported | **Fixed** — warns when a secret is readable beyond its owner. The first version of the fix was discarded before an operator could see it; see the finding |
 
 One finding. That is not a claim that muninn is secure; it is what a source
 review of these surfaces produced, and the section below on what was checked and
 found sound is the more useful half of the document.
+
+**A later pass found two more**, both on surfaces this review looked at and
+called sound. `Redactor` skipped values shorter than eight bytes while loading
+accepted them, and `telegraf config check`'s output reached `MuninnError`
+through no redactor at all. Both are F-01 of
+[`release-1.0.md`](release-1.0.md), and the paragraph below headed *Telegraf's
+output is redacted before muninn re-emits it* was true about the child process
+and silently not true about the validator. That is the useful lesson of this
+document: "we looked and it holds" is worth recording precisely because it can
+be shown wrong later.
 
 ### M-01 — Secret file permissions are neither checked nor reported {#m-01}
 
@@ -56,13 +66,26 @@ container. It is a defence-in-depth gap, not a way in.
 world-readable. A warning rather than a refusal: a read-only bind mount can
 carry permissions the operator does not control, and refusing to start over a
 mode bit would take down a deployment whose token works perfectly. The check
-sits in the one place every secret already passes through, and names the path,
-never the contents.
+names the path, never the contents.
+
+**The first attempt at this fix did not work, and this document said it did.**
+The warning was emitted with `tracing::warn!` — but secrets are read during
+validation, which runs *before* the tracing subscriber exists, because the log
+level to initialise it with comes from the configuration being validated. The
+commands that read a configuration without running never initialise a subscriber
+at all. So the event was discarded on every path where an operator was meant to
+see it, the two tests asserted only that a loose mode is not fatal, and this
+page and the changelog both called it closed. Recorded as F-02 of
+[`release-1.0.md`](release-1.0.md) and fixed by returning the finding through
+the same channel as every other configuration warning, which the caller prints
+on stderr once it can. The test now asserts the diagnostic, not the absence of a
+failure.
 
 Unix only — mode bits are the check, and there is nothing equivalent to look at
-elsewhere. Which means the code path and its two tests are **compiled out on the
+elsewhere. Which means the code path and its tests are **compiled out on the
 maintainer's Windows machine and first exercised by CI on Linux**; that is a
-weaker verification than the rest of this document and is worth knowing.
+weaker verification than the rest of this document and is worth knowing. It is
+also how the first version of the fix passed review.
 
 ## Checked, and found sound
 
@@ -99,6 +122,13 @@ on a tmpfs, and is never persisted
 stderr pass through `Redactor`. This is the gap that type-level redaction cannot
 close: `Secret`'s `Debug` and `Display` protect everything muninn formats
 itself, and nothing at all about what a child process writes.
+
+*Amended:* this was true of the running child and not of `telegraf config
+check`, which is the same child saying the same kind of thing about the same
+file, and whose output went into `MuninnError` unfiltered. Closed as part of
+F-01; the redactor is now threaded through `check_config` too, and the
+configured minimum credential length is what makes the redactor able to act at
+all.
 `every_resolved_secret_is_redactable` walks a configuration with every
 credential set and fails if one is missing from the redactor, which is what stops
 a newly added credential from quietly falling outside it.
