@@ -249,6 +249,8 @@ checklist.
   is the set actually configured today:
   - `Format & Lint`
   - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
+  - `MSRV (rust-version in Cargo.toml)` — **added by the 1.0 review; needs to be
+    added to the required set by hand**, like every entry here
   - `Supply-Chain Security`
   - `Code Coverage (≥ 80%)`
   - `Semgrep SAST`
