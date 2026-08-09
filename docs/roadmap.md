@@ -24,6 +24,14 @@ survive every run. The `DOCKERHUB_TOKEN` needs the **Delete** scope, which
 [`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) already
 specifies.
 
+## Before 1.0
+
+[`release-1.0.md`](release-1.0.md) is the canonical list of what has to close
+before the interfaces in [`versioning.md`](versioning.md) are frozen — twenty-three
+findings from two review passes, each assigned to a pull request. The items below
+that appear there too are cross-referenced from it; this page stays the backlog,
+that one is the release gate.
+
 ## Next
 
 **Classify Ubuntu security updates by candidate version, not by printed origin.**
