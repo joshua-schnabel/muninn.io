@@ -418,7 +418,15 @@ fn update_check(hostfs: Option<&std::path::Path>, security_metric: bool) {
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let scratch = std::env::temp_dir();
 
-    let report = debian::check(hostfs, &scratch, muninn_modules::updates::APT_TIMEOUT);
+    // The second pass that separates the security subset runs only when there
+    // is a security series to publish — `--no-security-metric` is exactly the
+    // operator saying there is not.
+    let report = debian::check(
+        hostfs,
+        &scratch,
+        muninn_modules::updates::APT_TIMEOUT,
+        security_metric,
+    );
 
     if let Some(detail) = &report.detail {
         // Telegraf logs the plugin's stderr, so this is where an operator finds

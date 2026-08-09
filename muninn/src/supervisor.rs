@@ -367,8 +367,9 @@ async fn check_updates_once(config: &Config, state: &HealthState) -> bool {
     // seconds of CPU, and the reactor is also serving health checks. apt itself
     // is bounded and killed at `APT_TIMEOUT`, because a blocking task cannot be
     // cancelled and dropping the runtime waits for it.
+    let classify_security = config.modules.updates.security_only_metric;
     let report = tokio::task::spawn_blocking(move || {
-        updates::debian::check(&hostfs, &scratch, updates::APT_TIMEOUT)
+        updates::debian::check(&hostfs, &scratch, updates::APT_TIMEOUT, classify_security)
     })
     .await;
 
