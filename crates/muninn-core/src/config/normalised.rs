@@ -100,6 +100,9 @@ pub struct Prometheus {
     pub path: String,
     pub expiration_interval: ConfigDuration,
     pub basic_auth: Option<BasicAuth>,
+    /// Server-side TLS for this listener. Carried through as-is: these are
+    /// paths, not secrets, and the renderer is where they become Telegraf keys.
+    pub tls: model::ServerTlsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +154,7 @@ impl Config {
                 path: o.path.clone(),
                 expiration_interval: o.expiration_interval,
                 basic_auth,
+                tls: o.tls.clone(),
             })
         } else {
             None

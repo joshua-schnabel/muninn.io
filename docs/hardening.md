@@ -213,6 +213,15 @@ machine — mounted filesystems, network interfaces, running process counts — 
 `/status` reveals versions and enabled modules. Put both on a trusted network,
 set basic auth on the Prometheus output, or both.
 
+**If you set basic auth, set TLS with it.** `outputs.prometheus.tls` takes a
+`cert_file` and `key_file` for the listener, and optionally a `client_ca_file`
+for mutual TLS. Without it the password crosses the network in the clear on
+every scrape, and muninn warns when it is configured that way — this is the one
+place muninn *sends* a credential rather than receiving one, so a scrape
+interval's worth of exposure is not a rare event. The health port on `8080` has
+no TLS option and is not meant to carry one: it answers probes for an
+orchestrator that reaches it over the container network.
+
 `/status` deliberately carries no secrets and no configuration dump.
 
 **The health listener caps connections and times out a request head.** 256

@@ -370,6 +370,24 @@ outputs:
 
     # Optional HTTP basic auth. Both keys must be set together, and the password
     # is a file path for the same reason the InfluxDB token is.
+    #
+    # Without `tls` below, this password crosses the network in the clear on
+    # every scrape — muninn warns when you configure it that way. This is the
+    # one place muninn sends a credential rather than receiving one.
     basic_auth:
       username: null
       password_file: null
+
+    # Optional TLS for this listener. Server-side, and deliberately not the same
+    # shape as outputs.influxdb.tls: there muninn is a client and the keys say
+    # whom to trust; here muninn is the server and they say what it presents.
+    #
+    #   cert_file / key_file  the certificate this listener serves. Both or
+    #                         neither — with one, it would quietly stay
+    #                         plaintext while looking configured.
+    #   client_ca_file        mutual TLS: only clients holding a certificate
+    #                         signed by this CA may connect. Needs the two above.
+    tls:
+      cert_file: null
+      key_file: null
+      client_ca_file: null

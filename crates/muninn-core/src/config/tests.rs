@@ -706,6 +706,117 @@ fn a_token_too_short_to_redact_is_rejected_at_load() {
     assert!(msg.contains("shorter than 8 bytes"), "got: {msg}");
 }
 
+// ── The Prometheus listener's own TLS ───────────────────────────────────────
+// N-01: `outputs.influxdb` carries a full TLS surface *and* warns on plaintext
+// HTTP because the token goes out with every write. `outputs.prometheus` had
+// `basic_auth` and no TLS at all — the one place muninn *sends* a credential
+// rather than receiving one was the only one with no confidentiality option,
+// and nothing warned.
+
+fn prometheus_with(block: &str) -> String {
+    format!("outputs:\n  prometheus:\n    enabled: true\n{block}")
+}
+
+#[test]
+fn a_prometheus_certificate_without_its_key_is_rejected() {
+    let cert = token_file("---cert---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      cert_file: \"{}\"\n",
+            path_of(&cert)
+        ))),
+        "outputs.prometheus.tls.cert_file",
+    );
+}
+
+#[test]
+fn a_prometheus_key_without_its_certificate_is_rejected() {
+    let key = token_file("---key---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      key_file: \"{}\"\n",
+            path_of(&key)
+        ))),
+        "outputs.prometheus.tls.key_file",
+    );
+}
+
+/// Mutual TLS is a rule about who may connect *over* TLS. Without a server
+/// certificate Telegraf would ignore it, leaving an operator who asked for
+/// client authentication with an endpoint that authenticates nobody.
+#[test]
+fn a_client_ca_without_a_server_certificate_is_rejected() {
+    let ca = token_file("---ca---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      client_ca_file: \"{}\"\n",
+            path_of(&ca)
+        ))),
+        "outputs.prometheus.tls.client_ca_file",
+    );
+}
+
+#[test]
+fn a_complete_prometheus_tls_block_validates() {
+    let cert = token_file("---cert---");
+    let key = token_file("---key---");
+    let cfg = ok(&with(&prometheus_with(&format!(
+        "    tls:\n      cert_file: \"{}\"\n      key_file: \"{}\"\n",
+        path_of(&cert),
+        path_of(&key)
+    ))));
+    assert!(cfg.outputs.prometheus.tls.enabled());
+}
+
+#[test]
+fn a_prometheus_certificate_that_does_not_exist_is_rejected() {
+    let key = token_file("---key---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      cert_file: \"/nonexistent/muninn.crt\"\n      key_file: \"{}\"\n",
+            path_of(&key)
+        ))),
+        "outputs.prometheus.tls.cert_file",
+    );
+}
+
+/// The warning that did not exist. `outputs.influxdb` has warned about
+/// plaintext HTTP since the beginning; the endpoint muninn *sends* a password
+/// to had nothing, while `configuration.md` actively recommended setting basic
+/// auth.
+#[test]
+fn basic_auth_without_tls_warns_that_the_password_is_in_the_clear() {
+    let p = token_file("scrape-password-value");
+    let warnings = warnings_of(&with(&prometheus_with(&format!(
+        "    basic_auth:\n      username: scraper\n      password_file: \"{}\"\n",
+        path_of(&p)
+    ))));
+    assert!(
+        warnings.iter().any(|w| w.contains("cleartext")),
+        "no cleartext warning: {warnings:?}"
+    );
+}
+
+/// ...and stops warning once TLS is configured, or the warning would be noise
+/// an operator learns to ignore.
+#[test]
+fn basic_auth_over_tls_does_not_warn() {
+    let p = token_file("scrape-password-value");
+    let cert = token_file("---cert---");
+    let key = token_file("---key---");
+    let warnings = warnings_of(&with(&prometheus_with(&format!(
+        "    basic_auth:\n      username: scraper\n      password_file: \"{}\"\n    tls:\n      \
+         cert_file: \"{}\"\n      key_file: \"{}\"\n",
+        path_of(&p),
+        path_of(&cert),
+        path_of(&key)
+    ))));
+    assert!(
+        !warnings.iter().any(|w| w.contains("cleartext")),
+        "warned anyway: {warnings:?}"
+    );
+}
+
 /// The same rule on the other credential. Both are configured the same way and
 /// a rule that covers only one of them is the kind of gap that ships.
 #[test]
