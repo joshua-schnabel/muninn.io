@@ -168,23 +168,58 @@ fn validate(args: &Cli, with_telegraf: bool) -> muninn_core::Result<()> {
 
         // The scratch file holds resolved secrets, so it goes through the same
         // writer as the real one and is removed as soon as Telegraf has read it.
+        //
+        // A random name, not `telegraf.check.<pid>.conf`. A pid is guessable and
+        // reusable, so that name could be pre-placed — as a symlink, which the
+        // writer would then have followed, or simply to be read afterwards.
+        // `mkstemp` names it and `O_EXCL` means muninn creates it or fails
+        // (F-09).
         let _guard;
-        let path = match scratch_directory(&cfg.runtime.generated_config_path) {
-            Some(dir) => dir.join(format!("telegraf.check.{}.conf", std::process::id())),
+        let dir = match scratch_directory(&cfg.runtime.generated_config_path) {
+            Some(dir) => dir,
             None => {
                 _guard = tempfile::tempdir().map_err(|e| {
                     MuninnError::internal(format!("cannot create a scratch directory: {e}"))
                 })?;
-                _guard.path().join("telegraf.conf")
+                _guard.path().to_path_buf()
             }
         };
+        // `into_temp_path` drops the open handle and keeps the name and the
+        // delete-on-drop. The handle has to go: the writer below renames a fresh
+        // file onto this path, and on Windows a rename over an open file fails.
+        let scratch = tempfile::Builder::new()
+            .prefix(".muninn-check-")
+            .suffix(".conf")
+            .tempfile_in(&dir)
+            .map_err(|e| {
+                MuninnError::internal(format!(
+                    "cannot create a scratch file in '{}': {e}",
+                    dir.display()
+                ))
+            })?
+            .into_temp_path();
+        let path = scratch.to_path_buf();
         generated_config::write(&path, &rendered)?;
 
         let verdict = muninn_telegraf::validator::check_config(&binary, &path, &cfg.redactor());
+
         // Before the `?`: a rejected configuration is the expected outcome of
         // this command and must not leave a file holding a token behind.
-        let _ = std::fs::remove_file(&path);
+        //
+        // And a failure to remove it is an error rather than a shrug. It was
+        // `let _ = remove_file(...)`, which meant the one case worth hearing
+        // about — a credential still on disk — was the one case that said
+        // nothing. Reported even when Telegraf's own verdict is also an error,
+        // because the leftover file is the more urgent of the two.
+        let removed = scratch.close();
         verdict?;
+        removed.map_err(|e| {
+            MuninnError::internal(format!(
+                "the scratch configuration at '{}' could not be removed: {e}. It holds resolved \
+                 secrets — delete it by hand",
+                path.display()
+            ))
+        })?;
 
         println!("Telegraf accepted the generated configuration.");
     }
@@ -289,9 +324,17 @@ No blocking problems; the warnings above are worth reading."
 
 /// Query the local health endpoint, for a container `HEALTHCHECK`.
 ///
-/// Reads the configuration only to learn where to look — it does not validate
-/// beyond that, because a health check that fails on a configuration problem
-/// would report the container unhealthy for a reason a restart cannot fix.
+/// Reads the configuration only to learn where to look, and now genuinely so:
+/// it takes `health.listen` through a probe that validates nothing else, reads
+/// no secret and no TLS file, and ignores every other key.
+///
+/// That is the whole of F-08. The doc comment here always claimed as much,
+/// while the code called the full pipeline — so a configuration edited after
+/// startup, or a secret mount that went away, marked a **healthy running
+/// process** unhealthy. The container health check runs on a short interval
+/// with retries, so the orchestrator would then restart the container into the
+/// broken configuration: a diagnostic mismatch turned into an outage, which is
+/// exactly the failure this comment said it was avoiding.
 ///
 /// A raw request rather than an HTTP client: this runs on every health-check
 /// interval inside the container, and one endpoint on loopback does not justify
@@ -299,18 +342,25 @@ No blocking problems; the warnings above are worth reading."
 fn healthcheck(args: &Cli) -> muninn_core::Result<()> {
     use std::io::{Read as _, Write as _};
 
-    let overrides =
-        Overrides::from_env().merge_cli(args.log_level.clone(), args.log_format.clone());
-    let (cfg, _) = config::load_and_resolve(&args.config, &overrides)?;
+    let listen = config::loader::health_listen(&args.config)?;
+
+    // Port 0 means "any free port", which the running instance was given by the
+    // kernel and this process has no way to learn — a separate process cannot
+    // read another's ephemeral port out of a configuration file. Saying so is
+    // better than connecting to port 0 and reporting the container unhealthy
+    // for a reason that has nothing to do with its health (F-18).
+    if listen.port() == 0 {
+        return Err(MuninnError::runtime(format!(
+            "health.listen is '{listen}' — port 0 asks the kernel for any free port, so this \
+             command cannot know which one the running instance was given. `muninn healthcheck` \
+             needs a fixed port; the container's default is 8080"
+        )));
+    }
 
     let mut stream =
-        std::net::TcpStream::connect_timeout(&cfg.health.listen, std::time::Duration::from_secs(3))
-            .map_err(|e| {
-                MuninnError::runtime(format!(
-                    "cannot reach the health endpoint on {}: {e}",
-                    cfg.health.listen
-                ))
-            })?;
+        std::net::TcpStream::connect_timeout(&listen, std::time::Duration::from_secs(3)).map_err(
+            |e| MuninnError::runtime(format!("cannot reach the health endpoint on {listen}: {e}")),
+        )?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(3)))
         .ok();
@@ -448,6 +498,19 @@ fn run(args: &Cli) -> muninn_core::Result<()> {
                 cfg.health.listen
             ))
         })?;
+
+        // What the kernel actually gave us, which with port 0 is not what the
+        // configuration says. Recorded before anything else can fail, so it is
+        // on `/status` for the whole life of the process (F-18).
+        match listener.local_addr() {
+            Ok(bound) => {
+                tracing::info!(%bound, "health server listening");
+                health.update(|d| d.bound_listen = Some(bound.to_string()));
+            }
+            // Not fatal: the listener is bound, and not being able to name it
+            // costs a diagnostic rather than a capability.
+            Err(e) => tracing::warn!(error = %e, "cannot determine the bound health address"),
+        }
 
         // The server is stopped by dropping this sender, which happens when the
         // supervisor returns — so shutdown needs no separate signalling path.

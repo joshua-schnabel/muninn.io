@@ -189,7 +189,7 @@ pub struct HealthConfig {
     pub listen: String,
 }
 
-fn default_health_listen() -> String {
+pub(crate) fn default_health_listen() -> String {
     "0.0.0.0:8080".to_string()
 }
 

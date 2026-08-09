@@ -128,6 +128,15 @@ pub struct ModuleCheck {
 /// Everything `/status` and `/metrics` report beyond the state itself.
 #[derive(Debug, Clone, Default)]
 pub struct Details {
+    /// The address the health listener actually bound to.
+    ///
+    /// Not the configured one. `health.listen` may name port 0, which asks the
+    /// kernel for any free port — the configuration then says `:0` while the
+    /// process is answering on something else entirely, and nothing reported
+    /// which (F-18). The test harness and the integration stack both use port 0
+    /// to avoid fighting over ports, so this is a real deployment rather than a
+    /// hypothetical one.
+    pub bound_listen: Option<String>,
     pub telegraf_version: Option<String>,
     pub telegraf_pid: Option<u32>,
     /// Pre-formatted, e.g. "exit code 137". A `String` rather than the process

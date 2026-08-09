@@ -248,9 +248,19 @@ Must not collide with `outputs.prometheus.listen`. muninn checks, including the
 case where one address is a wildcard and the other is not: `0.0.0.0:8080` and
 `127.0.0.1:8080` cannot both bind.
 
-**Security:** `/status` carries versions, uptime, enabled modules and the last
-Telegraf exit — no secrets and no configuration dump. It is still information
-about your infrastructure; put the health port on a trusted network.
+**Port 0** asks the kernel for any free port. That is legitimate — the test
+harness and the integration stack use it so parallel runs do not fight — and
+`/status` reports the address actually bound, since the configured value says
+nothing useful in that case. But `muninn healthcheck` cannot use it: it is a
+separate process and has no way to learn which port the running instance was
+given, so it refuses with a message saying so rather than probing port 0. A
+container `HEALTHCHECK` therefore needs a fixed port; the shipped default is
+`8080`.
+
+**Security:** `/status` carries versions, uptime, enabled modules, the bound
+address and the last Telegraf exit — no secrets and no configuration dump. It is
+still information about your infrastructure; put the health port on a trusted
+network.
 
 ---
 

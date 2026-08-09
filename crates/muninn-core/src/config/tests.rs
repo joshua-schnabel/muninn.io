@@ -991,6 +991,64 @@ outputs:
     ));
 }
 
+// ── The healthcheck probe ───────────────────────────────────────────────────
+// `muninn healthcheck` needs one fact — where to connect — and must not depend
+// on anything else being true. It used to run the whole pipeline, so an edited
+// configuration or a vanished secret marked a healthy running process unhealthy
+// and the orchestrator restarted it into the breakage (F-08).
+
+fn probe_listen(yaml: &str) -> std::net::SocketAddr {
+    let f = token_file(yaml);
+    loader::health_listen(f.path()).expect("the probe should read this")
+}
+
+#[test]
+fn the_health_probe_reads_the_configured_address() {
+    assert_eq!(
+        probe_listen("version: 1\nhealth:\n  listen: \"127.0.0.1:9999\"\n").to_string(),
+        "127.0.0.1:9999"
+    );
+}
+
+#[test]
+fn the_health_probe_falls_back_to_the_documented_default() {
+    assert_eq!(
+        probe_listen("version: 1\nmodules:\n  cpu:\n    enabled: true\n").to_string(),
+        "0.0.0.0:8080"
+    );
+}
+
+/// The point of the probe: a configuration that the full loader would reject
+/// must still yield an address, because the *running* process is using the
+/// address it started with and its health does not depend on the file since.
+#[test]
+fn the_health_probe_ignores_everything_that_would_fail_validation() {
+    // No module enabled, an unknown key, and a secret path that does not exist
+    // — each fatal to `load_and_resolve`, none of them a fact about whether the
+    // running instance is answering.
+    let yaml = "version: 1
+health:
+  listen: \"127.0.0.1:9100\"
+nonsense_key: true
+outputs:
+  influxdb:
+    enabled: true
+    url: \"https://influx.example:8086\"
+    organization: o
+    bucket: b
+    token_file: \"/nonexistent/token\"
+";
+    assert_eq!(probe_listen(yaml).to_string(), "127.0.0.1:9100");
+}
+
+/// A file too broken to be YAML at all is the one thing that can still fail —
+/// there is nowhere to read an address from.
+#[test]
+fn the_health_probe_reports_a_file_that_is_not_yaml() {
+    let f = token_file("this: is: not: yaml\n\t- tab\n");
+    assert!(loader::health_listen(f.path()).is_err());
+}
+
 /// ...but one real port and one zero must still not be confused for a conflict.
 #[test]
 fn a_real_port_does_not_collide_with_port_zero() {
