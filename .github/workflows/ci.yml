@@ -1,9 +1,20 @@
 name: CI
 
+# The tag is this pipeline's *output*, not a second way into it.
+#
+# `tags: ["v*.*.*"]` used to be here, and `publish` creates the release tag as
+# its last step — so a push to main built and published the image, created the
+# tag, and the tag then re-entered this same workflow and built and published it
+# again. Two builds, two manifests, one moving `:x.y.z` tag; whichever run
+# finished last won. Meanwhile release.yml, fired by that tag, assembled the
+# SBOM and the release notes from whatever the tag resolved to at that moment.
+# Every gate stayed green because nothing compared the two.
+#
+# v0.3.0 shipped that way. Found in huginn.io, which has the same pipeline shape
+# and the same bug (joshua-schnabel/huginn.io#69).
 on:
   push:
     branches: ["main", "dev"]
-    tags: ["v*.*.*"]
   # Every PR, whatever its target branch — so every change is gated before merge.
   pull_request:
 
@@ -373,6 +384,22 @@ jobs:
           # --allow-unreleased: a release must name its version in the changelog.
           NEW="$(bash scripts/changelog-version.sh)"
           echo "CHANGELOG version: $NEW"
+
+          # The changelog and the manifest have to agree before anything is
+          # built from them. They are stamped by the same release job, but by
+          # two different edits — a branch where one landed and the other did
+          # not would otherwise publish an image whose `--version` disagrees
+          # with the tag, the release notes and the SBOM, with every gate green.
+          #
+          # The manifest is read the way changelog-version.sh reads it for its
+          # own fallback: the first `version` under [workspace.package], which
+          # every crate inherits.
+          CARGO="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "Cargo.toml version:  $CARGO"
+          if [ "$NEW" != "$CARGO" ]; then
+            echo "::error::CHANGELOG.md says $NEW and [workspace.package].version says $CARGO — run scripts/set-workspace-version.sh $NEW, which stamps the manifest and the lock file together"
+            exit 1
+          fi
 
           LAST=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
           if [ -z "$LAST" ]; then
@@ -774,20 +801,11 @@ jobs:
           fetch-depth: 0   # needed to read git history for version tagging
           persist-credentials: false
 
-      # `refs/tags/v*` is not covered by the branch ruleset, and the version gate
-      # is a no-op on a tag push — so without this a hand-pushed tag on any
-      # commit would publish an image and cut a release. The tag this pipeline
-      # creates itself always points at a commit on main, so the normal flow is
-      # unaffected.
-      - name: Refuse tags that are not on main
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
-            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
-            exit 1
-          fi
-          echo "OK: $GITHUB_REF_NAME is on main"
+      # The guard that used to sit here — "refuse tags that are not on main" —
+      # is gone with the tag trigger that made it necessary. A hand-pushed tag
+      # no longer starts this workflow at all, so it cannot publish an image.
+      # release.yml keeps its own copy of the same check, because a tag *does*
+      # start that one.
 
       - name: Download digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -841,9 +859,10 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             # main branch + version from CHANGELOG → :x.y.z
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false' }}
-            # Git tags (v1.2.3) → semver tags (fallback for manual tagging)
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            # No `type=semver` entries: they only ever applied on a tag run,
+            # and a tag no longer starts this workflow. A hand-pushed tag now
+            # publishes nothing, which is what CHANGELOG.md and docs/ci-cd.md
+            # have always told operators anyway.
           labels: |
             org.opencontainers.image.title=muninn.io
             org.opencontainers.image.description=Supervisor and configuration layer around Telegraf
@@ -868,11 +887,29 @@ jobs:
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${REPO}@sha256:%s " *)
 
+      # The digest of the manifest this run just created, captured here and
+      # carried to the git tag below.
+      #
+      # It is what makes "the release describes the bytes that shipped" a
+      # checkable claim rather than an assumption. A tag is mutable; a digest is
+      # not. release.yml refuses to build a Release unless the registry still
+      # resolves `:x.y.z` to this exact digest, and generates the SBOM from the
+      # digest rather than the tag.
       - name: Inspect manifest
+        id: manifest
         env:
           REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
           VERSION: ${{ steps.meta.outputs.version }}
-        run: docker buildx imagetools inspect "${REPO}:${VERSION}"
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${REPO}:${VERSION}"
+          digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}'             "${REPO}:${VERSION}" | jq -r '.digest // empty')"
+          if [ -z "$digest" ]; then
+            echo "::error::could not read the manifest digest for ${REPO}:${VERSION}"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "manifest digest: $digest"
 
       # ── Mirror the finished image to GitHub Container Registry ─────────────
       # `skopeo copy --all` copies the manifest list and every arch blob, so the
@@ -952,12 +989,18 @@ jobs:
         if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
           PUSH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG" -m "Release $TAG"
+          # Annotated with the digest, which is what release.yml checks the
+          # registry against before it claims anything about the artefact. An
+          # unannotated tag — one made by hand, or by a muninn older than this
+          # — makes release.yml stop and say so rather than describe bytes it
+          # cannot identify.
+          git tag "$TAG" -m "Release $TAG" -m "muninn-manifest-digest: $DIGEST"
 
           header='http.https://github.com/.extraheader'
           trap 'git config --local --unset-all "$header" 2>/dev/null || true' EXIT

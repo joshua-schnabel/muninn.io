@@ -204,9 +204,18 @@ back to if the dispatch cannot open its PR:
 3. On merge: the image is published, the tag is created, and the release notes
    are drawn from the changelog entry.
 
-A tag pointing at a commit that is not on `main` is refused: `refs/tags/v*` is not
-covered by branch protection, and the version gate is a no-op on a tag push, so
-without that check a hand-pushed tag on any commit would publish an image.
+**The tag is the pipeline's output, not a second way into it.** `ci.yml` runs on
+pushes to `dev` and `main` and on pull requests — not on tags. It used to run on
+tags too, and `publish` creates the tag as its last step, so a release built and
+published the image twice: once from the `main` push, once from the tag that push
+created. Two builds, two manifests, and one moving `:x.y.z` tag that ended up
+pointing at whichever finished last — while `release.yml`, fired by the same tag,
+assembled the SBOM and the notes from whatever was there at that moment. Every
+gate stayed green because nothing compared the two. v0.3.0 shipped that way.
+
+A hand-pushed tag therefore publishes nothing now. It still reaches `release.yml`,
+which refuses it twice over: the commit must be on `main`, and the tag must carry
+the `muninn-manifest-digest:` annotation that `publish` writes.
 
 ### Why the tag is pushed with `RELEASE_PAT`
 
