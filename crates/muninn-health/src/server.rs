@@ -159,6 +159,10 @@ async fn ready(AxumState(s): AxumState<Arc<ServerState>>) -> Response {
 #[derive(Serialize)]
 struct Status {
     muninn_version: &'static str,
+    /// Where the listener answering this request actually bound. With
+    /// `health.listen: "0.0.0.0:0"` the configured value says nothing useful.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bound_listen: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     telegraf_version: Option<String>,
     state: &'static str,
@@ -189,6 +193,7 @@ async fn status(AxumState(s): AxumState<Arc<ServerState>>) -> Json<Status> {
 
     Json(Status {
         muninn_version: s.muninn_version,
+        bound_listen: d.bound_listen.clone(),
         telegraf_version: d.telegraf_version.clone(),
         state: current.as_str(),
         ready: current.is_ready(),

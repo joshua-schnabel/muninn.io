@@ -94,6 +94,57 @@ pub fn from_str(text: &str, overrides: &Overrides) -> Result<(ConfigV1, Vec<Stri
     Ok((cfg, warnings))
 }
 
+/// Read only the health listener address, validating nothing else.
+///
+/// For `muninn healthcheck`, which needs one fact — where to connect — and must
+/// not depend on anything else being true.
+///
+/// It used to call the full pipeline, which validates every rule and reads
+/// every secret and TLS file. The container health check runs on a short
+/// interval with retries, so an edited configuration or a secret mount that
+/// went away marked a **healthy running process** unhealthy, and the
+/// orchestrator restarted it into the broken configuration — turning a
+/// diagnostic mismatch into an outage, which is precisely what the command's
+/// own documentation said it avoided (F-08).
+///
+/// So this probes the way [`check_version`] does, with a struct that does not
+/// deny unknown fields: keys added, removed or made invalid since the process
+/// started cannot affect the answer. The running instance's address is the only
+/// input, and a file that no longer parses as YAML at all is the only way this
+/// can fail.
+pub fn health_listen(path: impl AsRef<Path>) -> Result<std::net::SocketAddr> {
+    let path = path.as_ref();
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| MuninnError::config(format!("cannot read '{}': {e}", path.display())))?;
+
+    let probe: HealthProbe = serde_yaml_ng::from_str(&text)
+        .map_err(|e| MuninnError::config(format!("invalid YAML: {e}")))?;
+
+    let listen = probe
+        .health
+        .unwrap_or_default()
+        .listen
+        .unwrap_or_else(crate::config::model::default_health_listen);
+
+    listen.parse().map_err(|_| {
+        MuninnError::config(format!(
+            "health.listen '{listen}' must be an address and port, e.g. '0.0.0.0:8080'"
+        ))
+    })
+}
+
+/// Reads `health.listen` out of a file whose other keys are none of its
+/// business. See [`health_listen`].
+#[derive(Deserialize)]
+struct HealthProbe {
+    health: Option<HealthListenProbe>,
+}
+
+#[derive(Deserialize, Default)]
+struct HealthListenProbe {
+    listen: Option<String>,
+}
+
 /// Probe for `version` without parsing the rest.
 ///
 /// This struct deliberately does *not* deny unknown fields — it has to be able

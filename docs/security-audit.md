@@ -112,11 +112,22 @@ it would replace bytes it cannot render and silently point apt at a different
 file. There is no string that a shell ever sees.
 
 **The generated configuration is 0600 at creation.** Not `set_permissions` after
-the fact — the mode is on the `OpenOptions`, so the file is never briefly
-world-readable, and it is re-asserted for the case where the file already
-existed. Two tests cover both paths. It holds resolved secrets by design, lives
-on a tmpfs, and is never persisted
+the fact — the file is never briefly world-readable. It holds resolved secrets
+by design, lives on a tmpfs, and is never persisted
 ([ADR-0003](adr/0003-ephemeral-generated-config.md)).
+
+*Amended:* the mode was right and the *path* was not. The writer opened the
+target with `create(true).truncate(true)`, which follows a symlink — so anything
+able to place one where muninn was about to write could have redirected a file
+containing resolved credentials, and a reader could observe a half-written
+configuration. Not reachable in the shipped deployment, where `/run/muninn` is
+0700, but the path is configurable and `render-config --output` writes wherever
+it is told. Closed as F-09: the contents go to a fresh `mkstemp` file in the
+same directory and are renamed onto the target, which replaces a link rather
+than following it and is atomic. The same finding covered two other predictable
+paths — the `validate --with-telegraf` scratch file and the `check-runtime`
+write probe — both now `mkstemp` names, and a scratch file that cannot be
+removed is now an error rather than an ignored result.
 
 **Telegraf's output is redacted before muninn re-emits it.** Both stdout and
 stderr pass through `Redactor`. This is the gap that type-level redaction cannot

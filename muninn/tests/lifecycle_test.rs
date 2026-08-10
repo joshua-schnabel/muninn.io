@@ -681,14 +681,64 @@ fn the_healthcheck_command_reflects_readiness() {
             .unwrap_or(false)
     });
 
-    let _ = child.kill();
-    let _ = child.wait();
-
     assert!(
         became_ready,
         "healthcheck never reported ready:\n{}",
         log.text()
     );
+
+    // The finding (F-08): the command used to run the whole configuration
+    // pipeline, so a file edited after startup — or a secret mount that went
+    // away — reported a healthy, running process as unhealthy. The container
+    // `HEALTHCHECK` runs on a short interval with retries, so the orchestrator
+    // then restarts the container into the breakage.
+    //
+    // The running process is untouched here; only the file it started from is.
+    // Its health cannot depend on that.
+    let broken = std::fs::read_to_string(fx.path())
+        .unwrap()
+        .replace("token_file:", "token_file: \"/nonexistent/gone\" #")
+        + "\na_key_that_does_not_exist: true\n";
+    std::fs::write(fx.path(), broken).unwrap();
+
+    let out = muninn(&telegraf)
+        .arg("--config")
+        .arg(fx.path())
+        .arg("healthcheck")
+        .output()
+        .unwrap();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        out.status.success(),
+        "a configuration edited after startup made healthcheck report the running process \
+         unhealthy: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Port 0 asks the kernel for any free port, so a separate process cannot know
+/// which one the running instance got. Saying so beats connecting to port 0 and
+/// blaming the container's health for it (F-18).
+#[test]
+fn healthcheck_refuses_port_zero_with_a_reason() {
+    let telegraf = require_telegraf!();
+    let dir = tempfile::tempdir().unwrap();
+    let fx = fixture_with_health(free_port(), 0, &dir.path().join("telegraf.conf"));
+
+    let out = muninn(&telegraf)
+        .arg("--config")
+        .arg(fx.path())
+        .arg("healthcheck")
+        .output()
+        .unwrap();
+
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("port 0"), "unhelpful message: {err}");
+    assert!(err.contains("fixed port"), "no fix suggested: {err}");
 }
 
 // ---------------------------------------------------------------------------
