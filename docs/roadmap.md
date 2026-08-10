@@ -24,14 +24,15 @@ survive every run. The `DOCKERHUB_TOKEN` needs the **Delete** scope, which
 [`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) already
 specifies.
 
-## Next
+## Before 1.0
 
-**Classify Ubuntu security updates by candidate version, not by printed origin.**
-The security subset is a lower bound on Ubuntu today. Fixing it costs a second
-apt invocation and a second parser, and changes numbers that were measured — so
-it needs an amendment to
-[ADR-0009](adr/0009-updates-module-approach.md) and its own ground truth.
-[R8](risks.md).
+[`release-1.0.md`](release-1.0.md) is the canonical list of what has to close
+before the interfaces in [`versioning.md`](versioning.md) are frozen — twenty-three
+findings from two review passes, each assigned to a pull request. The items below
+that appear there too are cross-referenced from it; this page stays the backlog,
+that one is the release gate.
+
+## Next
 
 **Measure `image_updates` against an authenticated registry.** The module is
 verified against public images only. A private registry the host can already
