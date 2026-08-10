@@ -829,6 +829,30 @@ Not `absent(muninn_container_image_updates_update_available{container_name="x"})
 for "container x has no verdict" — that is also true while the container is
 starting, or is not enabled to be checked at all.
 
+### What "the module succeeded" means, on the health port
+
+`muninn_image_updates_check_success` above is Telegraf's, from `inputs.exec`,
+and answers "could the Docker daemon be reached and the container list read".
+
+On muninn's own health port there is a second aggregate,
+`muninn_module_check_success{module="image_updates"}`, and it answers a broader
+question: **the daemon answered *and* every selected container came away with a
+verdict**.
+
+It used to answer the narrower one, which meant it reported success while every
+selected container carried `distribution_query_failed`, `image_inspect_failed`
+or `budget_exceeded`. The per-container series were honest throughout; the
+aggregate was not, and its name reads as "the module is working". Changed by
+F-11 of the 1.0 review, to the same meaning `updates` gives its aggregate — the
+check produced the answer it exists to produce.
+
+**This is deliberately loud.** One container from a registry muninn cannot reach
+holds the module at `check_success=0`, and muninn at `degraded`, until it is
+fixed or excluded. That is the honest report: the module genuinely cannot answer
+for that container. `modules.image_updates.container_exclude` is how an operator
+says they know and have decided not to care — and a container excluded that way
+is not selected, so it cannot hold the aggregate down.
+
 ### What a `reason` means
 
 The daemon-level check (`muninn_image_updates`):

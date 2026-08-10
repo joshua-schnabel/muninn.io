@@ -175,8 +175,48 @@ pub struct Report {
 }
 
 impl Report {
+    /// Whether the daemon answered and the container list was readable.
+    ///
+    /// A narrower question than [`Self::succeeded`], and kept separate because
+    /// the two failures have different fixes: this one is about the socket and
+    /// the module's own configuration, that one can be about a single
+    /// container's registry.
     pub fn daemon_succeeded(&self) -> bool {
         self.daemon_outcome.is_ok()
+    }
+
+    /// Whether the check did its job: the daemon answered **and** every
+    /// selected container came away with a verdict.
+    ///
+    /// This is what `muninn_module_check_success{module="image_updates"}`
+    /// reports, and it used to be [`Self::daemon_succeeded`] — so the metric
+    /// said success while every selected container carried
+    /// `distribution_query_failed`, `image_inspect_failed` or
+    /// `budget_exceeded`. The per-container series were honest throughout; the
+    /// aggregate was not, and its name reads as "the module is working"
+    /// (F-11).
+    ///
+    /// Deliberately the same meaning the `updates` module's aggregate has —
+    /// "the check produced the answer it exists to produce" — so the two
+    /// modules cannot be read differently under one metric name.
+    ///
+    /// The cost was weighed and accepted: one container whose registry cannot
+    /// be reached holds the module at `check_success=0`, and muninn at
+    /// `Degraded`, until it is fixed or excluded. That is loud, and it is the
+    /// point — the module genuinely cannot answer for that container, and
+    /// `modules.image_updates.container_exclude` is how an operator says they
+    /// know.
+    pub fn succeeded(&self) -> bool {
+        self.daemon_outcome.is_ok() && self.containers.iter().all(|c| c.outcome.is_ok())
+    }
+
+    /// How many selected containers came away with a verdict, and how many were
+    /// selected. For the log line that explains a partial failure.
+    pub fn verdicts(&self) -> (usize, usize) {
+        (
+            self.containers.iter().filter(|c| c.outcome.is_ok()).count(),
+            self.containers.len(),
+        )
     }
 
     /// The influx line protocol Telegraf's `inputs.exec` parses. Follows the
@@ -784,6 +824,91 @@ mod tests {
             "one container's failure must not touch another's verdict"
         );
         assert!(report.daemon_succeeded());
+        assert!(
+            !report.succeeded(),
+            "one container without a verdict means the module did not do its job"
+        );
+        assert_eq!(report.verdicts(), (1, 2));
+    }
+
+    // ── What the aggregate means ────────────────────────────────────────────
+    //
+    // F-11: `muninn_module_check_success{module="image_updates"}` was
+    // `daemon_succeeded()`, so it reported success while every selected
+    // container carried a failure reason. The per-container series were honest
+    // throughout; the aggregate was not, and its name reads as "the module is
+    // working".
+
+    #[test]
+    fn the_aggregate_fails_when_no_container_got_a_verdict() {
+        let api = FakeApi::with(vec![
+            container("web", "nginx:1.25", "sha256:aaaa"),
+            container("db", "postgres:16", "sha256:bbbb"),
+        ])
+        .digest("sha256:aaaa", Ok(vec!["nginx@sha256:x".to_string()]))
+        .remote("nginx:1.25", Err("i/o timeout".to_string()))
+        .digest("sha256:bbbb", Ok(vec!["postgres@sha256:y".to_string()]))
+        .remote("postgres:16", Err("401 Unauthorized".to_string()));
+
+        let report = run(&api, GENEROUS, &[], &[]);
+        assert!(
+            report.daemon_succeeded(),
+            "the daemon answered — that is the narrower question"
+        );
+        assert!(
+            !report.succeeded(),
+            "every container failed; success here is what F-11 is about"
+        );
+        assert_eq!(report.verdicts(), (0, 2));
+    }
+
+    #[test]
+    fn the_aggregate_succeeds_when_every_container_got_a_verdict() {
+        let api = FakeApi::with(vec![
+            container("web", "nginx:1.25", "sha256:aaaa"),
+            container("db", "postgres:16", "sha256:bbbb"),
+        ])
+        .digest("sha256:aaaa", Ok(vec!["nginx@sha256:x".to_string()]))
+        .remote("nginx:1.25", Ok("sha256:different".to_string()))
+        .digest("sha256:bbbb", Ok(vec!["postgres@sha256:y".to_string()]))
+        .remote("postgres:16", Ok("sha256:y".to_string()));
+
+        let report = run(&api, GENEROUS, &[], &[]);
+        assert!(report.succeeded());
+        assert_eq!(report.verdicts(), (2, 2));
+    }
+
+    /// "Up to date" and "an update is available" are both verdicts. A module
+    /// that only counted the first would report failure on a host that needs
+    /// upgrading, which is the opposite of useful.
+    #[test]
+    fn an_available_update_is_a_verdict_not_a_failure() {
+        let api = FakeApi::with(vec![container("web", "nginx:1.25", "sha256:aaaa")])
+            .digest("sha256:aaaa", Ok(vec!["nginx@sha256:x".to_string()]))
+            .remote("nginx:1.25", Ok("sha256:newer".to_string()));
+
+        let report = run(&api, GENEROUS, &[], &[]);
+        assert_eq!(only(&report).outcome, Ok(true), "an update is available");
+        assert!(report.succeeded());
+    }
+
+    /// No containers at all is a successful check, not a vacuous one. A host
+    /// running nothing has nothing to report, and calling that a failure would
+    /// make an idle machine look broken.
+    #[test]
+    fn a_host_with_no_containers_is_a_success() {
+        let report = run(&FakeApi::with(vec![]), GENEROUS, &[], &[]);
+        assert!(report.succeeded());
+        assert_eq!(report.verdicts(), (0, 0));
+    }
+
+    /// An unreachable daemon fails both questions — the narrow one because it
+    /// did not answer, and the broad one because nothing could be checked.
+    #[test]
+    fn an_unreachable_daemon_fails_both_questions() {
+        let report = run(&FakeApi::unreachable(), GENEROUS, &[], &[]);
+        assert!(!report.daemon_succeeded());
+        assert!(!report.succeeded());
     }
 
     #[test]
