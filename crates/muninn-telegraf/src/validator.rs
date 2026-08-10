@@ -21,13 +21,24 @@ use std::path::Path;
 use std::process::Command;
 
 use muninn_core::error::{MuninnError, Result};
+use muninn_core::secret::Redactor;
 
 /// Check `config_path` with `binary`.
 ///
 /// A failure is [`MuninnError::TelegrafConfig`], which exits 20 — documented as
 /// a muninn bug or a version mismatch, never operator error. The operator never
 /// writes TOML.
-pub fn check_config(binary: &Path, config_path: &Path) -> Result<()> {
+///
+/// `redactor` scrubs Telegraf's own output before any of it reaches the error.
+/// The file being checked holds **resolved secrets** by design
+/// (`docs/adr/0003-ephemeral-generated-config.md`), so a plugin diagnostic that
+/// quotes the value it could not use would otherwise put that value in a
+/// `MuninnError` — which is printed to stderr and, in the supervisor's case,
+/// logged. `Secret`'s type-level redaction cannot reach text another process
+/// formatted; this is the same argument that put a redactor on the child's
+/// stdout and stderr, applied to the one other place Telegraf's words are
+/// re-emitted (F-01).
+pub fn check_config(binary: &Path, config_path: &Path, redactor: &Redactor) -> Result<()> {
     let output = Command::new(binary)
         .arg("config")
         .arg("check")
@@ -52,17 +63,22 @@ pub fn check_config(binary: &Path, config_path: &Path) -> Result<()> {
          This is a muninn bug or a Telegraf version mismatch — the configuration is generated, \
          not written by hand. Please report it, attaching the output of `muninn render-config` \
          (which redacts secrets).",
-        indent(&diagnostics(&output))
+        indent(&diagnostics(&output, redactor))
     )))
 }
 
-/// The useful part of Telegraf's output.
+/// The useful part of Telegraf's output, with known secrets removed.
 ///
 /// Telegraf reports configuration problems on stderr and logs an informational
 /// "Loading config" line there too. Both streams are considered so a build that
 /// changes where it writes does not turn a diagnosable failure into an empty
 /// message.
-fn diagnostics(output: &std::process::Output) -> String {
+///
+/// Redaction is per line rather than over the joined text so that a value
+/// spanning a line break cannot be reassembled by the join and then missed —
+/// and so the cheap "nothing to do" path in [`Redactor::apply`] is taken for
+/// each of the many lines that hold no secret.
+fn diagnostics(output: &std::process::Output, redactor: &Redactor) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
@@ -74,6 +90,7 @@ fn diagnostics(output: &std::process::Output) -> String {
         .filter(|l| !l.contains("I! Loading config"))
         .map(str::trim_end)
         .filter(|l| !l.is_empty())
+        .map(|l| redactor.apply(l).into_owned())
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -127,7 +144,7 @@ mod tests {
              2026-08-02T10:00:00Z E! error loading config: undefined but requested input: nope\n",
             "",
         );
-        let text = diagnostics(&o);
+        let text = diagnostics(&o, &Redactor::default());
         assert!(!text.contains("Loading config"), "chatter kept: {text}");
         assert!(
             text.contains("undefined but requested input"),
@@ -138,8 +155,55 @@ mod tests {
     /// A silent failure still has to produce something a human can act on.
     #[test]
     fn a_silent_failure_still_reports_the_exit_status() {
-        let text = diagnostics(&failed_output("", ""));
+        let text = diagnostics(&failed_output("", ""), &Redactor::default());
         assert!(text.contains("said nothing"), "got: {text}");
+    }
+
+    /// The finding this closes (F-01): the file `config check` reads holds
+    /// resolved secrets, so a plugin diagnostic quoting one would have gone
+    /// straight into the error muninn prints.
+    ///
+    /// Asserts the *value is absent* rather than that the mask is present —
+    /// asserting on `***` would pass for a format like `***(s3cret-token-value)`.
+    #[test]
+    fn a_secret_quoted_by_telegraf_never_reaches_the_error() {
+        let redactor = Redactor::new(["s3cret-token-value".to_string()]);
+        let o = failed_output(
+            "E! [outputs.influxdb_v2] token \"s3cret-token-value\" was rejected\n",
+            "",
+        );
+        let text = diagnostics(&o, &redactor);
+        assert!(!text.contains("s3cret-token-value"), "leaked: {text}");
+        assert!(text.contains("was rejected"), "lost the diagnosis: {text}");
+    }
+
+    /// A secret split across two of Telegraf's lines must not be reassembled
+    /// into the joined text and survive there. Redacting per line is what makes
+    /// this hold; redacting after the join would not.
+    #[test]
+    fn a_secret_on_each_of_two_lines_is_masked_on_both() {
+        let redactor = Redactor::new(["s3cret-token-value".to_string()]);
+        let o = failed_output(
+            "E! first mention s3cret-token-value\nE! second mention s3cret-token-value\n",
+            "",
+        );
+        let text = diagnostics(&o, &redactor);
+        assert!(!text.contains("s3cret-token-value"), "leaked: {text}");
+        assert_eq!(text.matches("***").count(), 2, "got: {text}");
+    }
+
+    /// Whole-path check: the redaction has to survive being wrapped in the
+    /// error's explanatory prose and indented, not merely happen upstream of it.
+    #[test]
+    fn the_error_a_caller_prints_carries_no_secret() {
+        let redactor = Redactor::new(["s3cret-token-value".to_string()]);
+        let o = failed_output("E! token s3cret-token-value rejected\n", "");
+        // Build the same message `check_config` builds, from the same parts.
+        let rendered = indent(&diagnostics(&o, &redactor));
+        assert!(
+            !rendered.contains("s3cret-token-value"),
+            "leaked: {rendered}"
+        );
     }
 
     #[test]
@@ -147,6 +211,7 @@ mod tests {
         let err = check_config(
             Path::new("/nonexistent/telegraf"),
             Path::new("/tmp/whatever.conf"),
+            &Redactor::default(),
         )
         .unwrap_err();
         assert_eq!(

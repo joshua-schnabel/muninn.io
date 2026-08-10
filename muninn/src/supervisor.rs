@@ -137,7 +137,11 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
 
     transition(&state, State::ValidatingTelegrafConfiguration);
     let validation_started = Instant::now();
-    validator::check_config(&binary, config_path)?;
+    // The file being checked holds resolved secrets, so Telegraf's complaints
+    // about it are scrubbed before they can reach the error — the same redactor
+    // the child's stdout and stderr go through below.
+    let redactor = config.redactor();
+    validator::check_config(&binary, config_path, &redactor)?;
     let validation = validation_started.elapsed();
     state.update(|d| d.telegraf_validation = Some(validation));
     info!("Telegraf accepted the generated configuration");
@@ -148,7 +152,7 @@ pub async fn run(config: Config, state: HealthState) -> Result<()> {
     // is about to read holds resolved secrets — so the child's output is scrubbed
     // of them first. `Secret`'s type-level redaction cannot reach text another
     // process formatted.
-    let mut telegraf = Telegraf::spawn(&binary, config_path, &host_env, config.redactor())?;
+    let mut telegraf = Telegraf::spawn(&binary, config_path, &host_env, redactor)?;
 
     // Readiness only after Telegraf is confirmed running. `config check`
     // initialises without starting, so up to this point nothing has proved the

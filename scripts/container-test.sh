@@ -112,9 +112,7 @@ else
 fi
 
 # Polled, not checked once: cpu_usage_* is a DELTA, so it needs two collection
-# cycles before it exists at all. Disk figures are absolute and appear on the
-# first flush — which is why a single check right after readiness sees disks and
-# concludes, wrongly, that CPU collection is broken.
+# cycles before it exists at all.
 if wait_for 30 bash -c 'curl -sf http://localhost:19273/metrics | grep -q "^cpu_usage_idle"'; then
     pass "Telegraf serves host CPU metrics on :9273"
 else
@@ -129,10 +127,19 @@ fi
 
 # The disks module reads the host through the mount, so a filesystem the
 # container does not have of its own is proof the prefix took effect.
-if curl -sf http://localhost:19273/metrics | grep -q 'disk_'; then
+#
+# Polled for the same reason as the CPU check above, though this one used to be
+# a single shot on the argument that disk figures are absolute and are therefore
+# already there once the delta-based CPU metric has appeared. That argument
+# assumes the two input plugins gather in step. They do not — they are gathered
+# independently and reach outputs.prometheus_client independently — and on
+# linux/arm64 inputs.disk's first statfs sweep across every /hostfs filesystem
+# landed after cpu_usage_idle's second cycle, so the shot fired into the gap and
+# reported a working mount as a missing one.
+if wait_for 30 bash -c 'curl -sf http://localhost:19273/metrics | grep -q "disk_"'; then
     pass "host disk metrics are collected through /hostfs"
 else
-    fail "no disk metrics — the host mount may not be in effect"
+    fail "no disk metrics within 30s — the host mount may not be in effect"
 fi
 
 # ── 2. Docker's own health check agrees ──────────────────────────────────────

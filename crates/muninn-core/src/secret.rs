@@ -54,8 +54,6 @@ impl Secret {
             },
         })?;
 
-        warn_if_readable_by_others(path, &display);
-
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             // Fail closed. An empty secret file is never intent — and treating
@@ -102,14 +100,24 @@ impl fmt::Display for Secret {
 /// redacted log line reads like every other place a secret is suppressed.
 pub const MASK: &str = "***";
 
-/// Values shorter than this are not redacted.
+/// The shortest credential muninn will accept, and the shortest it can redact.
 ///
-/// A short secret would match constantly — `abc` inside `abcdefg`, a two-letter
+/// One number for both, because they are the same fact seen from two sides. A
+/// short secret would match constantly — `abc` inside `abcdefg`, a two-letter
 /// value inside almost any word — and a log line shot through with `***` is
-/// less readable *and* less safe, because nobody reads it. Any credential worth
-/// protecting is longer than this; a shorter one is a configuration mistake the
-/// operator should hear about rather than a value to defend.
-const MIN_REDACTABLE_LEN: usize = 8;
+/// less readable *and* less safe, because nobody reads it. So [`Redactor`]
+/// cannot defend a value this short.
+///
+/// That used to be the end of it, and it left a hole: the redactor silently
+/// skipped short values while configuration loading accepted them without a
+/// word, so a valid four-character Basic Auth password reached Telegraf's
+/// output unprotected. The comment here already said such a value "is a
+/// configuration mistake the operator should hear about" — now
+/// [`validate_file`] is what makes them hear it.
+///
+/// The filter in [`Redactor::new`] stays as a backstop for values that never
+/// went through validation, such as [`Secret::from_value`].
+pub const MIN_SECRET_LEN: usize = 8;
 
 /// Removes known secret values from text muninn did not write.
 ///
@@ -148,7 +156,7 @@ impl Redactor {
     pub fn new(secrets: impl IntoIterator<Item = String>) -> Self {
         let mut values: Vec<String> = secrets
             .into_iter()
-            .filter(|s| s.len() >= MIN_REDACTABLE_LEN)
+            .filter(|s| s.len() >= MIN_SECRET_LEN)
             .collect();
         values.sort_by_key(|b| std::cmp::Reverse(b.len()));
         values.dedup();
@@ -186,13 +194,69 @@ impl fmt::Debug for Redactor {
     }
 }
 
-/// Warn when a secret file is readable by anyone but its owner.
+/// Check a configured secret file, returning warnings rather than logging them.
+///
+/// `field` is the configuration key, so a message can say which of several
+/// credentials it means without the operator having to match paths by eye.
+///
+/// Three outcomes, in the order an operator can act on them:
+///
+/// 1. **Unreadable, missing or empty** — an error from [`Secret::from_file`],
+///    naming the path.
+/// 2. **Shorter than [`MIN_SECRET_LEN`]** — an error. muninn cannot redact a
+///    value that short from Telegraf's output without turning every log line
+///    into `***`, so accepting one would mean carrying a credential it has
+///    quietly promised not to protect. Erroring here is the difference between
+///    a startup failure that names the key and a token appearing in a log
+///    weeks later.
+/// 3. **Readable beyond its owner** — a warning, pushed onto `warnings`.
+///
+/// The value itself is dropped immediately; this is a check, not a resolution.
+/// [`crate::config::normalised`] is still the one place secrets are read for
+/// use.
+///
+/// # Why a warning goes here and not through `tracing`
+///
+/// Validation runs *before* the tracing subscriber exists — the log level to
+/// initialise it with comes from the configuration being validated. Anything
+/// logged at this point goes nowhere at all, and the commands that read a
+/// configuration without running (`validate`, `render-config`, `check-runtime`)
+/// never initialise a subscriber in the first place. The M-01 permission check
+/// shipped as a `tracing::warn!` for exactly that reason and was therefore
+/// discarded on every path where an operator was meant to see it (F-02). The
+/// caller emits what this returns, on stderr, once it can.
+pub fn validate_file(path: &str, field: &str, warnings: &mut Vec<String>) -> Result<()> {
+    let secret = Secret::from_file(path)?;
+
+    // `len()` is bytes, and deliberately: the redactor matches bytes, so bytes
+    // are what decides whether it can. A short multi-byte passphrase counting
+    // as long enough is the safe direction of that approximation.
+    if secret.expose().len() < MIN_SECRET_LEN {
+        return Err(MuninnError::Secret {
+            path: path.to_string(),
+            message: format!(
+                "{field} holds a credential shorter than {MIN_SECRET_LEN} bytes. muninn masks \
+                 known secrets in Telegraf's output, and a value this short cannot be masked \
+                 without matching ordinary words in every log line — so it would travel \
+                 unprotected. Use a longer credential"
+            ),
+        });
+    }
+
+    if let Some(warning) = permission_warning(path, field) {
+        warnings.push(warning);
+    }
+
+    Ok(())
+}
+
+/// The warning for a secret file readable by anyone but its owner, if any.
 ///
 /// A warning, not a refusal. A read-only bind mount can carry permissions the
 /// operator does not control, and refusing to start over a mode bit would take
 /// down a deployment that is merely untidy — the token still works. What is not
 /// acceptable is saying nothing: the documentation prescribes `0600`, and until
-/// now nothing checked it or reported otherwise (M-01, docs/security-audit.md).
+/// M-01 nothing checked it or reported otherwise (docs/security-audit.md).
 ///
 /// It matters more here than it would in a distroless image. muninn's runtime
 /// carries a shell and a package manager because the updates module needs real
@@ -201,34 +265,29 @@ impl fmt::Debug for Redactor {
 ///
 /// Unix only: mode bits are the check, and there is nothing equivalent to look
 /// at elsewhere. The path is named, never the contents.
-///
-/// The parameter is `path_str` and not `display` on purpose: `%display` inside
-/// `tracing::warn!` resolves to `tracing::field::display`, the function, not to
-/// a local of that name, and the error it produces names a closure type rather
-/// than the collision. Because this whole function is `cfg(unix)`, a Windows
-/// machine compiles none of it and CI is the first thing to see it.
 #[cfg(unix)]
-fn warn_if_readable_by_others(path: &Path, path_str: &str) {
+fn permission_warning(path: &str, field: &str) -> Option<String> {
     use std::os::unix::fs::PermissionsExt as _;
 
-    // Best-effort throughout: the file was just read successfully, so a stat
-    // that fails says something odd about the filesystem rather than about the
-    // secret, and it is not a reason to hold up the start.
-    let Ok(meta) = std::fs::metadata(path) else {
-        return;
-    };
+    // Best-effort: the file was just read successfully, so a stat that fails
+    // says something odd about the filesystem rather than about the secret, and
+    // it is not a reason to hold up the start.
+    let meta = std::fs::metadata(path).ok()?;
     let mode = meta.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
-        tracing::warn!(
-            path = %path_str,
-            mode = format!("{mode:04o}"),
-            "secret file is readable beyond its owner; 0600 is expected"
-        );
-    }
+    (mode & 0o077 != 0).then(|| {
+        format!(
+            "{field} '{path}' is mode {mode:04o} — readable beyond its owner. 0600 is expected; \
+             muninn's runtime carries a shell and a package manager, so anything that achieves \
+             execution in this container can read it"
+        )
+    })
 }
 
+/// No mode bits to look at, so nothing to report.
 #[cfg(not(unix))]
-fn warn_if_readable_by_others(_path: &Path, _path_str: &str) {}
+fn permission_warning(_path: &str, _field: &str) -> Option<String> {
+    None
+}
 
 #[cfg(test)]
 mod tests {
@@ -453,37 +512,144 @@ mod tests {
         assert_eq!(out, "Redactor(1 values)");
     }
 
-    /// A secret file readable beyond its owner is warned about, not refused.
-    ///
-    /// The assertion is the *behaviour* — the secret still loads — because
-    /// refusing would take down a deployment whose token works. That the
-    /// warning is emitted is asserted by the tracing test below in spirit only;
-    /// what must never regress is that a loose mode does not become fatal.
-    #[cfg(unix)]
-    #[test]
-    fn a_world_readable_secret_still_loads() {
-        use std::io::Write as _;
-        use std::os::unix::fs::PermissionsExt as _;
+    // ── validate_file ───────────────────────────────────────────────────────
 
-        let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "s3cret").unwrap();
-        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
-
-        let s = Secret::from_file(f.path()).expect("a loose mode must not be fatal");
-        assert_eq!(s.expose(), "s3cret");
+    fn validated(content: &str) -> (Result<()>, Vec<String>) {
+        let f = file_with(content);
+        let mut warnings = Vec::new();
+        let r = validate_file(
+            &f.path().display().to_string(),
+            "outputs.influxdb.token_file",
+            &mut warnings,
+        );
+        (r, warnings)
     }
 
-    /// And the tight case keeps working unchanged.
+    #[test]
+    fn a_credential_of_usable_length_validates_quietly() {
+        let (result, warnings) = validated("s3cret-token-value");
+        assert!(result.is_ok(), "got: {:?}", result.err());
+        // On Windows there are no mode bits; on Unix `NamedTempFile` creates
+        // 0600. Either way there is nothing to say.
+        assert!(warnings.is_empty(), "unexpected: {warnings:?}");
+    }
+
+    /// The hole this closes (F-01): the redactor silently skipped values this
+    /// short while loading accepted them, so a short-but-valid credential
+    /// reached Telegraf's output with nothing defending it.
+    #[test]
+    fn a_credential_too_short_to_redact_is_refused() {
+        let (result, _) = validated("tok");
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("outputs.influxdb.token_file"), "got: {msg}");
+        assert!(msg.contains("shorter than 8 bytes"), "got: {msg}");
+        assert_eq!(err.exit_code(), crate::exit::SECRET);
+    }
+
+    /// Refusing must never quote the value it is refusing. The value here is
+    /// deliberately one that appears nowhere in the message's own wording —
+    /// `tok` would be found inside `token_file` and prove nothing.
+    #[test]
+    fn refusing_a_short_credential_does_not_print_it() {
+        let (result, _) = validated("zq7");
+        let msg = result.unwrap_err().to_string();
+        assert!(!msg.contains("zq7"), "leaked: {msg}");
+    }
+
+    /// Exactly at the boundary is accepted: the rule is "shorter than", and an
+    /// off-by-one here would reject a credential the redactor can defend.
+    #[test]
+    fn a_credential_of_exactly_the_minimum_length_is_accepted() {
+        assert_eq!(MIN_SECRET_LEN, 8);
+        let (result, _) = validated("12345678");
+        assert!(result.is_ok(), "got: {:?}", result.err());
+    }
+
+    #[test]
+    fn the_underlying_read_errors_still_surface() {
+        let mut warnings = Vec::new();
+        let err = validate_file(
+            "/nonexistent/muninn-token-xyz",
+            "outputs.influxdb.token_file",
+            &mut warnings,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
+    }
+
+    /// A secret file readable beyond its owner is warned about, not refused —
+    /// a read-only bind mount can carry permissions the operator does not
+    /// control, and a token that works should not stop a deployment.
+    ///
+    /// This asserts the *diagnostic*, which is what M-01 claimed and F-02
+    /// found was never true: the warning went through `tracing::warn!` and
+    /// validation runs before any subscriber exists, so it was discarded on
+    /// every path where an operator was meant to see it.
     #[cfg(unix)]
     #[test]
-    fn a_correctly_moded_secret_loads() {
+    fn a_secret_readable_beyond_its_owner_produces_a_warning_and_still_loads() {
         use std::io::Write as _;
         use std::os::unix::fs::PermissionsExt as _;
 
         let mut f = tempfile::NamedTempFile::new().unwrap();
-        writeln!(f, "s3cret").unwrap();
+        writeln!(f, "s3cret-token-value").unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let path = f.path().display().to_string();
+        let mut warnings = Vec::new();
+        validate_file(&path, "outputs.influxdb.token_file", &mut warnings)
+            .expect("a loose mode must not be fatal");
+
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        let w = &warnings[0];
+        assert!(w.contains("outputs.influxdb.token_file"), "got: {w}");
+        assert!(w.contains("0644"), "the mode is the actionable part: {w}");
+        assert!(w.contains(&path), "got: {w}");
+        assert!(!w.contains("s3cret-token-value"), "leaked: {w}");
+    }
+
+    /// And the tight case says nothing at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_correctly_moded_secret_produces_no_warning() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "s3cret-token-value").unwrap();
         std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        assert_eq!(Secret::from_file(f.path()).unwrap().expose(), "s3cret");
+        let mut warnings = Vec::new();
+        validate_file(
+            &f.path().display().to_string(),
+            "outputs.influxdb.token_file",
+            &mut warnings,
+        )
+        .unwrap();
+        assert!(warnings.is_empty(), "unexpected: {warnings:?}");
+    }
+
+    /// Group-readable is as much a finding as world-readable. `0640` in a mount
+    /// is the shape this most often takes, and checking only `o` would miss it.
+    #[cfg(unix)]
+    #[test]
+    fn group_readable_counts_too() {
+        use std::io::Write as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "s3cret-token-value").unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o640)).unwrap();
+
+        let mut warnings = Vec::new();
+        validate_file(
+            &f.path().display().to_string(),
+            "outputs.influxdb.token_file",
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(warnings[0].contains("0640"), "got: {}", warnings[0]);
     }
 }

@@ -180,7 +180,7 @@ fn validate(args: &Cli, with_telegraf: bool) -> muninn_core::Result<()> {
         };
         generated_config::write(&path, &rendered)?;
 
-        let verdict = muninn_telegraf::validator::check_config(&binary, &path);
+        let verdict = muninn_telegraf::validator::check_config(&binary, &path, &cfg.redactor());
         // Before the `?`: a rejected configuration is the expected outcome of
         // this command and must not leave a file holding a token behind.
         let _ = std::fs::remove_file(&path);

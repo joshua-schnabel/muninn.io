@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 
 use crate::config::model::*;
 use crate::error::{MuninnError, Result};
-use crate::secret::Secret;
+use crate::secret;
 
 /// Validate `cfg`, returning warnings on success.
 pub fn validate(cfg: &ConfigV1) -> Result<Vec<String>> {
@@ -424,8 +424,13 @@ fn validate_outputs(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
 
         // Read it now rather than at first write. A missing token discovered ten
         // minutes in looks like an InfluxDB outage; discovered here it names the
-        // path. The value is dropped immediately — this is a readability check.
-        Secret::from_file(&o.influxdb.token_file)?;
+        // path. The value is dropped immediately — this is a readability check,
+        // plus the length rule and the permission warning.
+        secret::validate_file(
+            &o.influxdb.token_file,
+            "outputs.influxdb.token_file",
+            warnings,
+        )?;
 
         validate_tls(&o.influxdb.tls, "outputs.influxdb.tls", warnings)?;
 
@@ -472,7 +477,7 @@ fn validate_outputs(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
                         "outputs.prometheus.basic_auth.username must not be empty".to_string(),
                     ));
                 }
-                Secret::from_file(p)?;
+                secret::validate_file(p, "outputs.prometheus.basic_auth.password_file", warnings)?;
             }
             (Some(_), None) => {
                 return Err(MuninnError::config(
