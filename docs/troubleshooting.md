@@ -142,6 +142,19 @@ credentials. This reason token covers everything that can go wrong there: rate
 limits, a registry that is down, and an expired or absent credential for a
 private image. They are not split apart today — [R9](risks.md).
 
+**It also takes the module down, and the container with it.** One container
+without a verdict now holds `muninn_module_check_success{module="image_updates"}`
+at 0 and muninn at `degraded`, because the aggregate means "every selected
+container was answered for" rather than "the daemon replied". That is intended
+and is the honest report — but if a single unreachable registry is a thing you
+have looked at and decided not to care about, say so with
+`modules.image_updates.container_exclude`. An excluded container is not
+selected, so it cannot hold the aggregate down.
+[`modules.md#image_updates`](modules.md#image_updates), F-11.
+
+Telegraf's own `muninn_image_updates_check_success` is unaffected: it answers
+whether the daemon could be reached, and it still does.
+
 The module is verified against public images only.
 [ADR-0013](adr/0013-image-updates-via-docker-api.md)
 
