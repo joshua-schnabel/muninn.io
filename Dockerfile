@@ -52,7 +52,7 @@ RUN set -eux; \
 # Pinned to the MSRV in Cargo.toml. CI runs floating stable, so a dependency
 # that raises the MSRV leaves CI green while *this* fails — which is the point:
 # the image is the real gate.
-FROM rust:1.96-slim@sha256:31ee7fc65186be7e0e0ccb3f2ca305f14e4739e7642a1ae65753aa5d7b874523 AS builder
+FROM rust:1.97-slim@sha256:3b2879047d42784ca9403ad20c51ed3df361a50f1df96f5777d39b4e33aa65cd AS builder
 
 WORKDIR /build
 
