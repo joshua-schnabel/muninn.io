@@ -235,6 +235,23 @@ semaphore permit taken before `accept`; the deadline is hyper's own
 SIGTERM arrives is finished rather than cut.
 `crates/muninn-health/src/serve.rs` carries the reasoning and the tests.
 
+**The permit is acquired inside the shutdown `select!`, and keep-alive is off.**
+Two corrections the 1.0 review found in that same code, both about the cap
+rather than the deadline:
+
+- Waiting for a permit *before* watching for shutdown meant that at capacity
+  nothing observed the stop signal until a connection finished. A peer holding
+  every permit could stretch the container's shutdown past its stop timeout,
+  with the process looking idle throughout.
+- The header deadline bounds one request head. It does nothing about a peer
+  sending a complete, small, perfectly valid request every few seconds on each
+  of 256 connections — which costs the peer almost nothing and holds every
+  permit, so real probes queue in the backlog. Disabling keep-alive is the
+  policy: each connection serves one request and closes, so a permit is freed
+  after every request. A scraper pays one extra TCP handshake per scrape, which
+  is not a price worth a starvation vector. Telegraf's `:9273` is a separate
+  listener and is unaffected.
+
 **`insecure_skip_verify`** on the InfluxDB output disables certificate
 verification entirely, so anyone able to intercept the connection can read your
 metrics and inject fabricated ones. If a certificate does not validate, fix the

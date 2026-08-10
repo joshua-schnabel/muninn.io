@@ -518,6 +518,23 @@ async fn check_image_updates_once(config: &Config, state: &HealthState) -> bool 
 }
 
 /// Wait for a stop signal, or for Telegraf to die first.
+///
+/// # When both happen at once
+///
+/// A container being stopped while Telegraf crashes in the same instant leaves
+/// two arms ready together, and the two answers are opposite: exit 0 with a
+/// clean `Stopped`, or exit 22 with `Failed`. `tokio::select!` picks a ready arm
+/// at random by default, so the same event could be reported either way from one
+/// run to the next — which is worse than either answer, because an orchestrator's
+/// restart policy is written against the code.
+///
+/// `biased` makes it a rule instead: **a stop signal wins.** muninn was asked to
+/// stop, and turning an operator's `docker stop` into a crash code would invite
+/// a restart into a container that was deliberately being taken down. The crash
+/// is not swallowed — the shutdown path already reaps the child, records the
+/// real exit in `/status`, and warns when it was not clean, so a Telegraf that
+/// died on the way out is visible in the logs and the diagnostics. Only the exit
+/// code says "you asked for this".
 async fn supervise(
     telegraf: &mut Telegraf,
     state: &HealthState,
@@ -525,27 +542,7 @@ async fn supervise(
     signals: &mut StopSignals,
 ) -> Result<()> {
     tokio::select! {
-        // Telegraf exited on its own. Whatever the code, muninn did not ask for
-        // this.
-        exit = telegraf.wait() => {
-            let exit = exit?;
-            state.update(|d| {
-                d.telegraf_pid = None;
-                d.last_telegraf_exit = Some(exit.describe());
-            });
-            transition(state, State::Failed);
-            error!(
-                pid = telegraf.pid(),
-                status = %exit.describe(),
-                "Telegraf exited unexpectedly — muninn is exiting so the orchestrator can restart the container"
-            );
-            Err(MuninnError::TelegrafExited(format!(
-                "Telegraf stopped with {}. muninn does not restart it internally, so a crash \
-                 is never invisible inside a seemingly-healthy container — see \
-                 docs/adr/0002-supervisor-no-restart-loop.md",
-                exit.describe()
-            )))
-        }
+        biased;
 
         signal = signals.wait() => {
             info!(signal, "stop signal received");
@@ -566,6 +563,28 @@ async fn supervise(
             }
             transition(state, State::Stopped);
             Ok(())
+        }
+
+        // Telegraf exited on its own. Whatever the code, muninn did not ask for
+        // this.
+        exit = telegraf.wait() => {
+            let exit = exit?;
+            state.update(|d| {
+                d.telegraf_pid = None;
+                d.last_telegraf_exit = Some(exit.describe());
+            });
+            transition(state, State::Failed);
+            error!(
+                pid = telegraf.pid(),
+                status = %exit.describe(),
+                "Telegraf exited unexpectedly — muninn is exiting so the orchestrator can restart the container"
+            );
+            Err(MuninnError::TelegrafExited(format!(
+                "Telegraf stopped with {}. muninn does not restart it internally, so a crash \
+                 is never invisible inside a seemingly-healthy container — see \
+                 docs/adr/0002-supervisor-no-restart-loop.md",
+                exit.describe()
+            )))
         }
     }
 }
@@ -596,12 +615,21 @@ async fn confirm_running(telegraf: &mut Telegraf) -> Result<()> {
 
     match telegraf.try_exit()? {
         None => Ok(()),
-        Some(exit) => Err(MuninnError::TelegrafStart(format!(
-            "Telegraf exited immediately after starting, with {}. The generated configuration \
-             passed `config check`, so this is something only visible at run time — a missing \
-             mount, an address already in use, or a permission it does not have",
-            exit.describe()
-        ))),
+        Some(exit) => {
+            // The one case where Telegraf's own last words *are* the diagnosis:
+            // the configuration passed `config check`, so whatever it said on
+            // the way down is all there is to go on. Drained before the error is
+            // built, so those lines are logged ahead of it rather than lost when
+            // the runtime unwinds (F-10).
+            telegraf.drain_output().await;
+            Err(MuninnError::TelegrafStart(format!(
+                "Telegraf exited immediately after starting, with {}. The generated \
+                 configuration passed `config check`, so this is something only visible at run \
+                 time — a missing mount, an address already in use, or a permission it does not \
+                 have",
+                exit.describe()
+            )))
+        }
     }
 }
 
