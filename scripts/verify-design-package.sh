@@ -236,7 +236,7 @@ def slugs(text):
         if not m:
             continue
         t = m.group(2)
-        t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'', t)   # [text](url) -> text
+        t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', t)  # [text](url) -> text
         t = t.replace('`', '').lower()
         t = re.sub(r'[^\w\s-]', '', t).replace(' ', '-')
         n = seen[t]
