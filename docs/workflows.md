@@ -30,12 +30,18 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
 2. **`test`** — `cargo test --workspace --locked` on stable **and** beta. Beta is
    a non-blocking canary. It fetches the pinned Telegraf binary first, without
    which the unix-only tests skip loudly.
-3. **`supply-chain`** — `cargo deny check`: advisories, licences, banned crates,
+3. **`msrv`** — `cargo check --workspace --all-targets --locked` on the floor
+   declared by `rust-version` in `Cargo.toml`, read from the manifest rather
+   than repeated in the workflow. Neither the stable/beta matrix nor the Docker
+   builder was ever compiling it. Resolver 3 is MSRV-aware and holds a
+   dependency back rather than demand a newer compiler, so a broken floor does
+   not announce itself — it quietly keeps the project on an older crate.
+4. **`supply-chain`** — `cargo deny check`: advisories, licences, banned crates,
    registry sources.
-4. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, workspace-aggregate
+5. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, workspace-aggregate
    line coverage. Uploads `lcov.info` and writes the percentage into the job
    summary, computed from the file's `LF`/`LH` records.
-5. **`reference`** — muninn's own gate, and the one that catches what no Rust
+6. **`reference`** — muninn's own gate, and the one that catches what no Rust
    test can see. It verifies that the pinned Telegraf still accepts
    `docs/reference/telegraf.reference.conf` (the anchor every snapshot is
    measured against — if it drifts, the snapshots still pass and the artefact is
@@ -44,34 +50,37 @@ Each job has one responsibility; later jobs depend on earlier ones via `needs`.
    `plugin.option` in [`modules.md`](modules.md) against the pinned
    `sample.conf` ([R5](risks.md)), and asserts the workflow's
    `TELEGRAF_VERSION` matches the Dockerfile's.
-6. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer and
+7. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer and
    strictly greater than the last `v*` tag. Enforces **only** in a release
    context and is a no-op pass otherwise. It must always *run*: a skipped `needs`
    job would skip `build` too.
-7. **`build`** (matrix, per architecture, **native** runner) — builds the image
+8. **`build`** (matrix, per architecture, **native** runner) — builds the image
    exactly once into `image.tar` and uploads it as an artefact.
-8. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
+9. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
    Security tab, a blocking pass on fixable CRITICAL/HIGH reading
    `.trivyignore.yaml`, and a CycloneDX SBOM kept for 90 days.
-9. **`integration`** (matrix, native runner) — the whole stack against a real
-   database, plus the container suite that proves the image runs under the full
-   hardening.
-10. **`updates`** (matrix) — the updates and image-updates modules against real
+10. **`integration`** (matrix, native runner) — the whole stack against a real
+    database, plus the container suite that proves the image runs under the full
+    hardening.
+11. **`updates`** (matrix) — the updates and image-updates modules against real
     host trees. Separate from `integration` because building the Debian and
     Ubuntu fixture trees is minutes of apt work that should not sit in front of
     the stack test.
-11. **`push`** (matrix, `if: push`) — needs `scan`, `integration` **and**
+12. **`push`** (matrix, `if: push`) — needs `scan`, `integration` **and**
     `updates`; skopeo copies the scanned tarball to a staging tag by digest.
     Skipped on PRs, so registry credentials are never reachable there.
-12. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
+13. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
     tags, and creates the git tag `vX.Y.Z`. It publishes **no new bytes**.
 
 **Gotchas**
 
-- `publish` is the only job in this file whose checkout keeps its credentials,
-  because it pushes the tag. It runs no cargo — see
-  [`ci-cd.md`](ci-cd.md#what-can-reach-a-credential).
+- **No checkout in this file keeps its credentials**, `publish` included. It
+  used to, on the argument that it pushes the tag and runs no cargo — but it
+  runs `download-artifact`, two `docker/login-action` steps and skopeo with the
+  token sitting in `.git/config`. The credential now reaches only the "Create
+  git tag" step, through git's `extraheader`, removed by a `trap` even when the
+  push fails. See [`ci-cd.md`](ci-cd.md#what-can-reach-a-credential).
 - The tag is pushed with `RELEASE_PAT`. With `GITHUB_TOKEN`, GitHub's recursion
   guard means `release.yml` never fires — which is exactly what happened to
   v0.1.0.

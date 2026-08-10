@@ -51,10 +51,16 @@ just as the Rust is. What is deliberate there:
 - **No workflow gives a token to third-party code.** `actions/checkout` writes
   its token into `.git/config` by default, and `cargo` executes `build.rs` and
   proc-macros from every dependency in the tree. Every checkout sets
-  `persist-credentials: false` except the two jobs that push (`ci.yml`
-  `publish`, `release.yml` `prepare-dev`), and neither of those runs `cargo`.
-  The release's test run is a separate job with `contents: read` for exactly
-  this reason.
+  `persist-credentials: false` except `release.yml`'s `prepare-dev`, which
+  pushes and runs nothing third-party. The release's test run is a separate job
+  with `contents: read` for exactly this reason.
+
+  `ci.yml`'s `publish` was the other exception until the 1.0 review, excused
+  because it runs no `cargo`. Cargo was never the whole risk: it also runs
+  `download-artifact`, `docker/login-action` twice and skopeo, all with the
+  token in `.git/config`. It now holds the credential for the single step that
+  pushes the tag, injected as a git `extraheader` — not a remote URL, which
+  would put it in argv — and removed by a `trap` including on failure.
 - **Credentials never go through argv.** A command line is world-readable on the
   runner through `/proc`. Registry credentials go to `skopeo login` on stdin and
   live in a `0600` auth file for the length of the step; API bodies and headers

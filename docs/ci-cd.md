@@ -87,11 +87,19 @@ shapes are worth knowing when editing a workflow here:
 **No job runs `cargo` with a write token.** `actions/checkout` persists its
 token into `.git/config`, and `cargo` executes build scripts from every
 dependency. Every checkout therefore sets `persist-credentials: false` except
-`ci.yml`'s `publish` and `release.yml`'s `prepare-dev`, which push and run no
-third-party code. `release.yml` is split into `test-report` (`contents: read`,
-runs `cargo`, uploads an artefact) and `github-release` (`contents: write`,
-downloads it) for exactly this reason — if you add a `cargo` step, it belongs in
-the first job.
+`release.yml`'s `prepare-dev`, which pushes and runs no third-party code.
+`release.yml` is split into `test-report` (`contents: read`, runs `cargo`,
+uploads an artefact) and `github-release` (`contents: write`, downloads it) for
+exactly this reason — if you add a `cargo` step, it belongs in the first job.
+
+**`ci.yml`'s `publish` used to be the second exception**, on the argument that
+it runs no cargo. It runs `download-artifact`, two `docker/login-action` steps
+and skopeo, which is third-party code with the token in `.git/config` beside it
+— so the argument was about the wrong thing, and the exception is gone (F-13).
+The credential now reaches only the step that pushes the tag, through git's
+`extraheader` rather than a remote URL, and a `trap` removes it on the way out
+including when the push fails. A URL is argv, and argv is world-readable on the
+runner and survives in `git remote -v` for whatever runs next.
 
 **Credentials go through stdin or a file, never argv.** `/proc/<pid>/cmdline` is
 readable by every process on the runner. `skopeo login --password-stdin` with
@@ -249,6 +257,8 @@ checklist.
   is the set actually configured today:
   - `Format & Lint`
   - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
+  - `MSRV (rust-version in Cargo.toml)` — **added by the 1.0 review; needs to be
+    added to the required set by hand**, like every entry here
   - `Supply-Chain Security`
   - `Code Coverage (≥ 80%)`
   - `Semgrep SAST`
