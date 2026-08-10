@@ -37,7 +37,13 @@ cp -a /usr/lib/os-release  "$DEST/rootfs/usr/lib/" 2>/dev/null || true
 cp -a /etc/os-release      "$DEST/rootfs/etc/"     2>/dev/null || true
 
 total=$(grep -c '^Inst ' "$DEST/ground-truth.txt" || echo 0)
-sec=$(grep '^Inst ' "$DEST/ground-truth.txt" | grep -c -- '-[Ss]ecurity' || echo 0)
+# By candidate origin, not by the one origin apt prints — see security-count.sh
+# and R8. The printed-origin count is kept beside it because the two differing
+# is the whole finding, and a fixture that recorded only the new number could
+# not show it.
+sec=$(awk '/^Inst /{print $2}' "$DEST/ground-truth.txt" | sort -u \
+    | sh "$(dirname "$0")/security-count.sh")
+sec_printed=$(grep '^Inst ' "$DEST/ground-truth.txt" | grep -c -- '-[Ss]ecurity' || echo 0)
 {
   echo "image=WSL Debian (real host)"
   echo "state=fresh-lists"
@@ -45,6 +51,7 @@ sec=$(grep '^Inst ' "$DEST/ground-truth.txt" | grep -c -- '-[Ss]ecurity' || echo
   echo "os=$(. /etc/os-release; echo "$ID $VERSION_ID")"
   echo "total=$total"
   echo "security=$sec"
+  echo "security_printed_origin=$sec_printed"
 } > "$DEST/meta.txt"
 cat "$DEST/meta.txt"
 echo "dpkg status: $(stat -c %s "$DEST/rootfs/var/lib/dpkg/status") bytes"

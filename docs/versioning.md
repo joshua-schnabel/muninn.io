@@ -37,8 +37,9 @@ May change in any release:
   carries it today: the updates module held it while it was still open whether
   the approach worked at all, and shed it once
   [`updates-evidence.md`](updates-evidence.md) settled that and the module
-  shipped against real hosts. Its one known limit is a documented lower bound
-  ([R8](risks.md)), not an unsettled design.
+  shipped against real hosts. The one limit it carried — a security subset that
+  was a lower bound on Ubuntu — is closed ([R8](risks.md)), and was a documented
+  limit rather than an unsettled design even while it stood.
 
 ## The metrics Telegraf emits
 

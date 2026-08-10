@@ -557,10 +557,17 @@ Measured against each host's own answer:
 Including from a container running a *different* distribution than the host,
 which is the normal case rather than the exotic one.
 
-The Ubuntu 24.04 zero is not an error and not a disagreement: the host's own apt
-says zero too, because the candidate versions now resolve through
-`noble-updates`. [The security subset is a lower bound on Ubuntu](#the-security-subset-is-a-lower-bound-on-ubuntu)
-explains why, and why the total is unaffected.
+Those figures were measured under the **previous** security rule, and the
+`ubuntu:24.04` row is why that rule is gone. Both columns read zero because both
+classified by the single origin apt prints, and the candidates had moved into
+`noble-updates`; the two agreed with each other while being wrong together. The
+totals are unaffected and still stand.
+
+[How the security subset is decided](#how-the-security-subset-is-decided) is the
+rule now, and the security column above does not describe it. What the two rules
+differ by is not written down here on purpose: it is whatever the archive says
+on the day, so cell S14 of `scripts/updates-test.sh` measures it against a live
+Ubuntu fixture instead.
 
 **Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
 the same mount CPU, memory and disk already need. No extra capabilities, no root,
@@ -600,27 +607,44 @@ muninn_updates_check_success == 0
 Not `absent(muninn_updates_pending)`, which also fires while the agent is
 starting.
 
-### The security subset is a lower bound on Ubuntu
+### How the security subset is decided
 
-An update counts as security when the origin apt prints for the candidate version
-names a `-security` suite — `Debian-Security:12/stable-security`,
-`Ubuntu:22.04/jammy-security`.
+An update counts as security when its **candidate version is available from a
+security origin** — a suite whose name ends in `-security`, which covers
+`bookworm-security`, `noble-security` and a third-party security suite with one
+rule.
 
-Ubuntu publishes security updates to `<release>-security` **and** copies them into
-`<release>-updates`. When apt resolves the candidate through the latter, the line
-reads `Ubuntu:24.04/noble-updates` and muninn does not count it as security. The
-same fixture measured a year apart shows it plainly: Ubuntu 24.04 reported 66
-pending / 34 security when first measured, and 66 pending / **0** security when
-rebuilt against today's archive. Same packages, different pocket.
+Note *available from*, not *resolved through*. The distinction is the whole of
+this section, and it used to be the other way round.
 
-The host's own `apt-get -s dist-upgrade` says exactly the same thing, so muninn is
-not diverging from the machine it describes. But it does mean:
+The `Inst` line apt prints names exactly one origin: the pocket it happened to
+resolve the candidate through. Ubuntu publishes a security update to
+`<release>-security` **and** copies it into `<release>-updates`, so when apt
+resolves through the latter that line reads `Ubuntu:24.04/noble-updates` — and
+classifying by it missed a genuine security update.
 
-- **Alert on the total.** `muninn_updates_pending{severity="all"}` is exact.
-- **Read the security series as "at least this many".** On an Ubuntu host, zero is
-  not evidence that nothing security-relevant is pending.
+That was measurable rather than theoretical. The same Ubuntu 24.04 fixture
+reported 66 pending / 34 security when first built, and 66 pending / **0**
+security when rebuilt against a later archive. Identical packages; the pocket
+holding the candidate had moved. A security count of zero was therefore not
+evidence that nothing security-relevant was pending, which is the one thing that
+number has to be.
 
-Tracked as [R8](risks.md), with what a more thorough classification would cost.
+muninn now runs a second pass with `apt-cache policy`, which prints *every*
+origin a version is available from, and asks whether any of them is a security
+suite. Ubuntu's own `apt-check` classifies the same way. It costs one more apt
+invocation per check, and is skipped entirely when `security_only_metric` is
+`false` — there is then no security series to publish.
+
+**If that second pass fails, the whole check fails.** A correct total beside a
+security count that might be wrong is worse than neither, and a missing series
+reads as zero on most dashboards — which is the shape of the problem this
+replaced.
+
+Recorded as [R8](risks.md), amended into
+[ADR-0009](adr/0009-updates-module-approach.md), and measured by cell S14 of
+`scripts/updates-test.sh`, which reports the gap between the two rules on a real
+Ubuntu fixture rather than asserting it away.
 
 ### What a `reason` means
 

@@ -10,6 +10,16 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+### Changed
+
+- **The security subset is classified by every origin the candidate is available from, not the one apt printed.** The `Inst` line names exactly one origin — whichever pocket apt resolved the candidate through. On Debian that is accurate; on Ubuntu it is a lower bound, because Ubuntu publishes a security update to `<release>-security` *and* copies it into `<release>-updates`. The same Ubuntu 24.04 fixture reported 66 pending / 34 security when it was first built and 66 pending / **0** security when rebuilt against a later archive — identical packages, and only the pocket holding the candidate had moved. A security count of zero was therefore not evidence that nothing security-relevant was pending, which is the one thing that number has to be.
+
+  muninn now runs a second pass with `apt-cache policy`, which prints every origin a version is available from, and asks whether any of them is a security suite — the way Ubuntu's own `apt-check` does it. It costs one more apt invocation per check and is skipped entirely when `modules.updates.security_only_metric` is false, since there is then no security series to publish. **A failure in that pass fails the whole check**: a correct total beside a security count that might be wrong is worse than neither, and a missing series reads as zero on most dashboards, which is the shape of the problem being fixed.
+
+  The numbers this changes were measured, so ADR-0009 carries a dated amendment rather than a quiet edit, and the fixture builders now record both counts — `security` and `security_printed_origin` — because the two differing *is* the finding. Cell S14 of `scripts/updates-test.sh` reports the gap on a real Ubuntu fixture rather than asserting it away. R8 closes; finding F-04 of `docs/release-1.0.md`.
+
+  The new ground truth is a second implementation of the same rule in awk, not an independent authority: it catches a mistake in muninn's parser or its apt invocation, and would not catch the rule itself being wrong. Validating against Ubuntu's `apt-check`, which cannot be installed into a fixture without changing the package state being measured, stays open.
+
 ### Added
 
 - **`outputs.prometheus.tls`, and a warning when basic auth goes without it.** `outputs.influxdb` carried a full TLS surface *and* warned when its URL was plaintext HTTP, because the token goes out with every write. `outputs.prometheus` carried `basic_auth` and no TLS keys at all, warned about nothing, and `docs/configuration.md` actively recommended setting basic auth — so the one place muninn *sends* a credential rather than receiving one was the only one with no confidentiality option, on a port meant to be published. The listener now takes `cert_file`, `key_file` and an optional `client_ca_file` for mutual TLS, and configuring `basic_auth` without them warns that the password crosses the network in the clear on every scrape.

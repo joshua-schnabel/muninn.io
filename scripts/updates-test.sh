@@ -425,6 +425,40 @@ S13() { # a failing module degrades muninn; it does not stop it
     rm -rf "$d"
 }
 
+S14() { # the finding itself, measured: Ubuntu's -updates pocket hides security
+    # R8, and why F-04 changed the rule. Ubuntu publishes a security update to
+    # `<release>-security` *and* copies it into `<release>-updates`; apt names
+    # only the pocket it resolved through. Classifying by the printed origin
+    # therefore under-reports, and could report zero on a host with security
+    # updates pending — a plausible false zero that suppresses an alert.
+    #
+    # The fixture records both numbers, so this cell can state the gap rather
+    # than assert it away. It does not require the gap to be non-zero: on any
+    # given day the archive may put every candidate in `-security`, and a test
+    # that demanded a difference would fail for a reason that is not a bug.
+    # What it does require is that the new count is never *lower* — a candidate
+    # apt resolved through `-security` is by definition available from it.
+    local d; d=$(fixture "$HOST_UBU24" ubu24-stale stale) || { fail S14 "fixture"; return; }
+    local want_sec printed out got_sec
+    want_sec=$(meta "$d" security)
+    printed=$(meta "$d" security_printed_origin)
+    out=$(check "$d")
+    got_sec=$(pending "$out" security)
+
+    if [ "$(field "$out" check_success)" != 1 ]; then
+        fail S14 "the check failed ($(reason "$out"))"
+    elif [ "$got_sec" != "$want_sec" ]; then
+        fail S14 "muninn says ${got_sec}, the host's own candidate-origin count says ${want_sec}"
+    elif [ "$want_sec" -lt "$printed" ]; then
+        fail S14 "candidate-origin ${want_sec} is below printed-origin ${printed} — impossible"
+    elif [ "$want_sec" -gt "$printed" ]; then
+        pass S14 "ubuntu:24.04: ${got_sec} security by candidate origin, ${printed} by the origin apt printed — $((want_sec - printed)) would have been missed"
+    else
+        pass S14 "ubuntu:24.04: ${got_sec} security, both rules agree on today's archive"
+    fi
+    rm -rf "$d"
+}
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -433,7 +467,7 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 CELLS=("$@")
-[ ${#CELLS[@]} -eq 0 ] && CELLS=(S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13)
+[ ${#CELLS[@]} -eq 0 ] && CELLS=(S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13 S14)
 
 echo "updates system tests against ${IMAGE}"
 echo "fixtures in ${WORK}"
