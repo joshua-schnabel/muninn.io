@@ -351,7 +351,6 @@ agent:
   hostname: "integration-failure-path"
 runtime:
   shutdown_grace_period: 8s
-  telegraf_start_timeout: 20s
   host_mount_prefix: /hostfs
 logging:
   format: json

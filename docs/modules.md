@@ -557,10 +557,17 @@ Measured against each host's own answer:
 Including from a container running a *different* distribution than the host,
 which is the normal case rather than the exotic one.
 
-The Ubuntu 24.04 zero is not an error and not a disagreement: the host's own apt
-says zero too, because the candidate versions now resolve through
-`noble-updates`. [The security subset is a lower bound on Ubuntu](#the-security-subset-is-a-lower-bound-on-ubuntu)
-explains why, and why the total is unaffected.
+Those figures were measured under the **previous** security rule, and the
+`ubuntu:24.04` row is why that rule is gone. Both columns read zero because both
+classified by the single origin apt prints, and the candidates had moved into
+`noble-updates`; the two agreed with each other while being wrong together. The
+totals are unaffected and still stand.
+
+[How the security subset is decided](#how-the-security-subset-is-decided) is the
+rule now, and the security column above does not describe it. What the two rules
+differ by is not written down here on purpose: it is whatever the archive says
+on the day, so cell S14 of `scripts/updates-test.sh` measures it against a live
+Ubuntu fixture instead.
 
 **Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
 the same mount CPU, memory and disk already need. No extra capabilities, no root,
@@ -600,27 +607,44 @@ muninn_updates_check_success == 0
 Not `absent(muninn_updates_pending)`, which also fires while the agent is
 starting.
 
-### The security subset is a lower bound on Ubuntu
+### How the security subset is decided
 
-An update counts as security when the origin apt prints for the candidate version
-names a `-security` suite — `Debian-Security:12/stable-security`,
-`Ubuntu:22.04/jammy-security`.
+An update counts as security when its **candidate version is available from a
+security origin** — a suite whose name ends in `-security`, which covers
+`bookworm-security`, `noble-security` and a third-party security suite with one
+rule.
 
-Ubuntu publishes security updates to `<release>-security` **and** copies them into
-`<release>-updates`. When apt resolves the candidate through the latter, the line
-reads `Ubuntu:24.04/noble-updates` and muninn does not count it as security. The
-same fixture measured a year apart shows it plainly: Ubuntu 24.04 reported 66
-pending / 34 security when first measured, and 66 pending / **0** security when
-rebuilt against today's archive. Same packages, different pocket.
+Note *available from*, not *resolved through*. The distinction is the whole of
+this section, and it used to be the other way round.
 
-The host's own `apt-get -s dist-upgrade` says exactly the same thing, so muninn is
-not diverging from the machine it describes. But it does mean:
+The `Inst` line apt prints names exactly one origin: the pocket it happened to
+resolve the candidate through. Ubuntu publishes a security update to
+`<release>-security` **and** copies it into `<release>-updates`, so when apt
+resolves through the latter that line reads `Ubuntu:24.04/noble-updates` — and
+classifying by it missed a genuine security update.
 
-- **Alert on the total.** `muninn_updates_pending{severity="all"}` is exact.
-- **Read the security series as "at least this many".** On an Ubuntu host, zero is
-  not evidence that nothing security-relevant is pending.
+That was measurable rather than theoretical. The same Ubuntu 24.04 fixture
+reported 66 pending / 34 security when first built, and 66 pending / **0**
+security when rebuilt against a later archive. Identical packages; the pocket
+holding the candidate had moved. A security count of zero was therefore not
+evidence that nothing security-relevant was pending, which is the one thing that
+number has to be.
 
-Tracked as [R8](risks.md), with what a more thorough classification would cost.
+muninn now runs a second pass with `apt-cache policy`, which prints *every*
+origin a version is available from, and asks whether any of them is a security
+suite. Ubuntu's own `apt-check` classifies the same way. It costs one more apt
+invocation per check, and is skipped entirely when `security_only_metric` is
+`false` — there is then no security series to publish.
+
+**If that second pass fails, the whole check fails.** A correct total beside a
+security count that might be wrong is worse than neither, and a missing series
+reads as zero on most dashboards — which is the shape of the problem this
+replaced.
+
+Recorded as [R8](risks.md), amended into
+[ADR-0009](adr/0009-updates-module-approach.md), and measured by cell S14 of
+`scripts/updates-test.sh`, which reports the gap between the two rules on a real
+Ubuntu fixture rather than asserting it away.
 
 ### What a `reason` means
 
@@ -638,7 +662,16 @@ path, or apt's own message — is on stderr, which Telegraf logs.
 | `host_not_debian_family` | the host is not Debian or Ubuntu | disable the module |
 | `scratch_unavailable` | nowhere writable for apt's cache | give the container its tmpfs |
 | `apt_failed` | apt refused — usually a host index format the image's apt does not understand | see stderr; report it |
+| `apt_timed_out` | apt did not finish in the time it was given and was killed — usually a stalled or very slow host mount, not a slow host | check the mount; a network filesystem under `/hostfs` is the common cause |
 | `parse_inconsistent` | more security updates than updates in total | a bug; please report it |
+
+`apt_timed_out` is deliberately not folded into `apt_failed`. apt exiting
+non-zero says something about the host's package state; apt never getting that
+far says something about the mount, and the two have different fixes. The
+deadline is muninn's own — Telegraf's `inputs.exec` timeout is set longer than
+it by construction, so the check always runs out of muninn's time first and
+still has a moment to report `check_success=0`. A helper Telegraf kills reports
+nothing at all.
 
 ### A failed check degrades muninn — it does not stop it
 
@@ -659,6 +692,17 @@ muninn_module_check_success{module="updates"} 0
 ```
 
 and `/status` reports `degraded` — ready, serving, one module down.
+
+**And it recovers.** A failed check is retried on the module's own interval
+until it succeeds; when the last failing module reports success, muninn returns
+to `ready`. A check that succeeded is not repeated here, because Telegraf is
+already running it on the same schedule and those results are the ones that
+reach the outputs — running it twice would parse the host's whole package index
+twice per interval to learn the same thing.
+
+The retry exists for the state rather than the metric. Without it, a mount that
+was briefly unavailable during startup left a container reporting `degraded` for
+its entire life, with nothing able to clear it.
 
 **Preconditions are the exception, and they are checked earlier.** A host tree
 that is not mounted at all, or a host that is not Debian-family, is not a failed
@@ -784,6 +828,30 @@ muninn_container_image_updates_update_available == 1
 Not `absent(muninn_container_image_updates_update_available{container_name="x"})`
 for "container x has no verdict" — that is also true while the container is
 starting, or is not enabled to be checked at all.
+
+### What "the module succeeded" means, on the health port
+
+`muninn_image_updates_check_success` above is Telegraf's, from `inputs.exec`,
+and answers "could the Docker daemon be reached and the container list read".
+
+On muninn's own health port there is a second aggregate,
+`muninn_module_check_success{module="image_updates"}`, and it answers a broader
+question: **the daemon answered *and* every selected container came away with a
+verdict**.
+
+It used to answer the narrower one, which meant it reported success while every
+selected container carried `distribution_query_failed`, `image_inspect_failed`
+or `budget_exceeded`. The per-container series were honest throughout; the
+aggregate was not, and its name reads as "the module is working". Changed by
+F-11 of the 1.0 review, to the same meaning `updates` gives its aggregate — the
+check produced the answer it exists to produce.
+
+**This is deliberately loud.** One container from a registry muninn cannot reach
+holds the module at `check_success=0`, and muninn at `degraded`, until it is
+fixed or excluded. That is the honest report: the module genuinely cannot answer
+for that container. `modules.image_updates.container_exclude` is how an operator
+says they know and have decided not to care — and a container excluded that way
+is not selected, so it cannot hold the aggregate down.
 
 ### What a `reason` means
 

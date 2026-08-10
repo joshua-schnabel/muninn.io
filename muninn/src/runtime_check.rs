@@ -328,11 +328,16 @@ fn check_runtime_directory(config: &Config, findings: &mut Vec<Finding>) {
         return;
     }
 
-    let probe = dir.join(".muninn-write-probe");
-    match std::fs::write(&probe, b"") {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
-        }
+    // A random name via `mkstemp`, not a fixed one. `.muninn-write-probe` was
+    // predictable, and `std::fs::write` on a predictable path truncates whatever
+    // is already there and follows a symlink — so a probe meant to answer "is
+    // this directory writable" could destroy a file instead. `mkstemp` is
+    // `O_EXCL`, so it creates or fails, and it removes itself on drop (F-09).
+    match tempfile::Builder::new()
+        .prefix(".muninn-write-probe-")
+        .tempfile_in(dir)
+    {
+        Ok(probe) => drop(probe),
         Err(e) => findings.push(Finding::error(
             "runtime.generated_config_path",
             format!("'{}' is not writable: {e}", dir.display()),

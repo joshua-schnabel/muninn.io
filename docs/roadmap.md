@@ -34,13 +34,6 @@ that one is the release gate.
 
 ## Next
 
-**Classify Ubuntu security updates by candidate version, not by printed origin.**
-The security subset is a lower bound on Ubuntu today. Fixing it costs a second
-apt invocation and a second parser, and changes numbers that were measured — so
-it needs an amendment to
-[ADR-0009](adr/0009-updates-module-approach.md) and its own ground truth.
-[R8](risks.md).
-
 **Measure `image_updates` against an authenticated registry.** The module is
 verified against public images only. A private registry the host can already
 pull from should work through the daemon's own stored credentials with no

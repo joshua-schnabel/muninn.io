@@ -102,7 +102,7 @@ jobs:
         with:
           toolchain: stable
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Cache cargo-llvm-cov
         id: cache-llvm-cov
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -425,6 +425,28 @@ jobs:
           git config user.signingkey "$KEYID"
           git config commit.gpgsign true
 
+      # The signing material outlives the one commit it exists for unless
+      # something removes it, and `always()` is the point: the case worth
+      # covering is the job that failed halfway, leaving a private key in the
+      # agent and a passphrase in a file on a runner that is about to be
+      # returned to the pool (F-13).
+      #
+      # It cannot move to *after* the commit in the ordinary sense — the commit
+      # happens inside the step below — so this is a cleanup rather than a
+      # narrowing. What runs between the import and the commit is this
+      # repository's own scripts and the `gh` CLI, not third-party actions;
+      # that is a materially smaller surface than ci.yml's publish job had, and
+      # it is the reason this is the lesser half of the finding.
+      - name: Remove the signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/gpg-pass" "$RUNNER_TEMP/gpg-wrap"
+          gpg --batch --quiet --list-secret-keys --with-colons 2>/dev/null \
+            | awk -F: '/^fpr:/ {print $10}' \
+            | while read -r fpr; do
+                gpg --batch --yes --delete-secret-and-public-key "$fpr" 2>/dev/null || true
+              done
+
       - name: Open housekeeping PR into dev
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
@@ -500,7 +522,18 @@ jobs:
 
           git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "chore: reopen changelog and bump version after v${V}"
-          git push -f origin "$BR"
+
+          # A lease rather than an unconditional force (F-13). This branch is
+          # reused across retries, so the force is wanted; discarding a
+          # maintainer's hand-repair of a stalled release is not, and an
+          # unconditional `-f` cannot tell the two apart.
+          remote_sha="$(git ls-remote origin "refs/heads/${BR}" | cut -f1)"
+          if [ -n "$remote_sha" ]; then
+            git push --force-with-lease="refs/heads/${BR}:${remote_sha}" \
+              origin "HEAD:refs/heads/${BR}"
+          else
+            git push origin "HEAD:refs/heads/${BR}"
+          fi
 
           if [ "$(gh pr list --head "$BR" --base dev --json number --jq length)" = "0" ]; then
             # The branch is pushed either way, so the work is never lost — see

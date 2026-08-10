@@ -34,8 +34,8 @@ pub const RUNTIME: u8 = 12;
 /// the operator never writes TOML.
 pub const TELEGRAF_CONFIG: u8 = 20;
 
-/// Telegraf did not reach a running state within `runtime.telegraf_start_timeout`,
-/// or the binary is missing or reports an unexpected version.
+/// Telegraf could not be started: the binary is missing, is not executable,
+/// reports an unexpected version, or exited immediately after being spawned.
 pub const TELEGRAF_START: u8 = 21;
 
 /// Telegraf exited on its own while muninn was supervising it. The container

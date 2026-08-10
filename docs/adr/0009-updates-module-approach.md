@@ -39,6 +39,60 @@ updates by the candidate version's origin suite.
 
 The runtime image is therefore **debian-slim**, not distroless.
 
+### Amendment, 2026-08-09 — classify by *every* origin, not the printed one
+
+The rule above said "the candidate version's origin suite", and the
+implementation read the origin apt prints on the `Inst` line:
+
+```text
+Inst libc6 [2.36-9+deb12u3] (2.36-9+deb12u7 Debian-Security:12/stable-security [amd64])
+```
+
+That names **one** origin — whichever pocket apt resolved the candidate
+through. On Debian it is accurate. On Ubuntu it is a lower bound, because
+Ubuntu publishes a security update to `<release>-security` *and* copies it into
+`<release>-updates`. When apt resolves through the latter, the line reads
+`Ubuntu:24.04/noble-updates` and a genuine security update is not counted.
+
+**Measured, not argued.** The Ubuntu 24.04 fixture reported 66 pending / 34
+security when it was first built, and 66 pending / **0** security when rebuilt
+against a later archive. The packages were identical; only the pocket holding
+the candidate had moved. A security count of zero on an Ubuntu host was
+therefore not evidence that nothing security-relevant was pending — which is
+the one thing that metric has to be, and is the failure mode
+[AGENTS.md §9](../../AGENTS.md) singles out as the project's sharpest rule.
+
+So the classification now asks a different question: **is this exact version
+available from any security origin**, rather than which pocket apt happened to
+name. `apt-cache policy` prints every origin a version is available from, and a
+second invocation with the same `Dir::` options answers it. Ubuntu's own
+`apt-check` classifies the same way.
+
+The costs are the ones [R8](../risks.md) predicted and accepted:
+
+- **A second apt invocation and a second parser.** It runs once per check, over
+  the pending packages only, and is skipped entirely when
+  `modules.updates.security_only_metric` is false — there is then no security
+  series to publish.
+- **Numbers that were measured have changed.** The Ubuntu cells of the evidence
+  below are superseded; see [`updates-evidence.md`](../updates-evidence.md) for
+  the dated record of both.
+- **A failure in the second pass fails the whole check.** Reporting a correct
+  total beside a security count that might be wrong is worse than reporting
+  neither, and a missing series reads as zero on most dashboards — the same
+  shape as the problem being fixed.
+
+The fixture builders record **both** counts, `security` and
+`security_printed_origin`, because the two differing is the finding and a
+ground truth that recorded only the new number could not show it. That ground
+truth is a second implementation of the same rule in awk, not an independent
+authority: it catches a mistake in muninn's parser or its apt invocation, and
+would not catch the rule itself being wrong. Validating against Ubuntu's
+`apt-check` — which cannot be installed into a fixture without changing the
+package state being measured — remains open.
+
+Closed as finding F-04 of the 1.0 release review.
+
 ## Evidence
 
 Twelve matrix cells, all passing. The counts are the host's own answer,

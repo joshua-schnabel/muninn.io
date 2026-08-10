@@ -211,7 +211,6 @@ fn omitted_sections_take_their_documented_defaults() {
     assert_eq!(cfg.agent.hostname, "");
     assert!(!cfg.agent.omit_hostname);
     assert_eq!(cfg.runtime.shutdown_grace_period.as_secs(), 20);
-    assert_eq!(cfg.runtime.telegraf_start_timeout.as_secs(), 15);
     assert_eq!(
         cfg.runtime.generated_config_path,
         "/run/muninn/telegraf.conf"
@@ -295,10 +294,6 @@ fn zero_durations_are_rejected_by_name() {
         (
             "runtime:\n  shutdown_grace_period: 0s\n",
             "runtime.shutdown_grace_period",
-        ),
-        (
-            "runtime:\n  telegraf_start_timeout: 0s\n",
-            "runtime.telegraf_start_timeout",
         ),
     ] {
         rejects(&with(block), key);
@@ -711,6 +706,117 @@ fn a_token_too_short_to_redact_is_rejected_at_load() {
     assert!(msg.contains("shorter than 8 bytes"), "got: {msg}");
 }
 
+// ── The Prometheus listener's own TLS ───────────────────────────────────────
+// N-01: `outputs.influxdb` carries a full TLS surface *and* warns on plaintext
+// HTTP because the token goes out with every write. `outputs.prometheus` had
+// `basic_auth` and no TLS at all — the one place muninn *sends* a credential
+// rather than receiving one was the only one with no confidentiality option,
+// and nothing warned.
+
+fn prometheus_with(block: &str) -> String {
+    format!("outputs:\n  prometheus:\n    enabled: true\n{block}")
+}
+
+#[test]
+fn a_prometheus_certificate_without_its_key_is_rejected() {
+    let cert = token_file("---cert---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      cert_file: \"{}\"\n",
+            path_of(&cert)
+        ))),
+        "outputs.prometheus.tls.cert_file",
+    );
+}
+
+#[test]
+fn a_prometheus_key_without_its_certificate_is_rejected() {
+    let key = token_file("---key---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      key_file: \"{}\"\n",
+            path_of(&key)
+        ))),
+        "outputs.prometheus.tls.key_file",
+    );
+}
+
+/// Mutual TLS is a rule about who may connect *over* TLS. Without a server
+/// certificate Telegraf would ignore it, leaving an operator who asked for
+/// client authentication with an endpoint that authenticates nobody.
+#[test]
+fn a_client_ca_without_a_server_certificate_is_rejected() {
+    let ca = token_file("---ca---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      client_ca_file: \"{}\"\n",
+            path_of(&ca)
+        ))),
+        "outputs.prometheus.tls.client_ca_file",
+    );
+}
+
+#[test]
+fn a_complete_prometheus_tls_block_validates() {
+    let cert = token_file("---cert---");
+    let key = token_file("---key---");
+    let cfg = ok(&with(&prometheus_with(&format!(
+        "    tls:\n      cert_file: \"{}\"\n      key_file: \"{}\"\n",
+        path_of(&cert),
+        path_of(&key)
+    ))));
+    assert!(cfg.outputs.prometheus.tls.enabled());
+}
+
+#[test]
+fn a_prometheus_certificate_that_does_not_exist_is_rejected() {
+    let key = token_file("---key---");
+    rejects(
+        &with(&prometheus_with(&format!(
+            "    tls:\n      cert_file: \"/nonexistent/muninn.crt\"\n      key_file: \"{}\"\n",
+            path_of(&key)
+        ))),
+        "outputs.prometheus.tls.cert_file",
+    );
+}
+
+/// The warning that did not exist. `outputs.influxdb` has warned about
+/// plaintext HTTP since the beginning; the endpoint muninn *sends* a password
+/// to had nothing, while `configuration.md` actively recommended setting basic
+/// auth.
+#[test]
+fn basic_auth_without_tls_warns_that_the_password_is_in_the_clear() {
+    let p = token_file("scrape-password-value");
+    let warnings = warnings_of(&with(&prometheus_with(&format!(
+        "    basic_auth:\n      username: scraper\n      password_file: \"{}\"\n",
+        path_of(&p)
+    ))));
+    assert!(
+        warnings.iter().any(|w| w.contains("cleartext")),
+        "no cleartext warning: {warnings:?}"
+    );
+}
+
+/// ...and stops warning once TLS is configured, or the warning would be noise
+/// an operator learns to ignore.
+#[test]
+fn basic_auth_over_tls_does_not_warn() {
+    let p = token_file("scrape-password-value");
+    let cert = token_file("---cert---");
+    let key = token_file("---key---");
+    let warnings = warnings_of(&with(&prometheus_with(&format!(
+        "    basic_auth:\n      username: scraper\n      password_file: \"{}\"\n    tls:\n      \
+         cert_file: \"{}\"\n      key_file: \"{}\"\n",
+        path_of(&p),
+        path_of(&cert),
+        path_of(&key)
+    ))));
+    assert!(
+        !warnings.iter().any(|w| w.contains("cleartext")),
+        "warned anyway: {warnings:?}"
+    );
+}
+
 /// The same rule on the other credential. Both are configured the same way and
 /// a rule that covers only one of them is the kind of gap that ships.
 #[test]
@@ -994,6 +1100,64 @@ outputs:
     listen: \"0.0.0.0:0\"
 ",
     ));
+}
+
+// ── The healthcheck probe ───────────────────────────────────────────────────
+// `muninn healthcheck` needs one fact — where to connect — and must not depend
+// on anything else being true. It used to run the whole pipeline, so an edited
+// configuration or a vanished secret marked a healthy running process unhealthy
+// and the orchestrator restarted it into the breakage (F-08).
+
+fn probe_listen(yaml: &str) -> std::net::SocketAddr {
+    let f = token_file(yaml);
+    loader::health_listen(f.path()).expect("the probe should read this")
+}
+
+#[test]
+fn the_health_probe_reads_the_configured_address() {
+    assert_eq!(
+        probe_listen("version: 1\nhealth:\n  listen: \"127.0.0.1:9999\"\n").to_string(),
+        "127.0.0.1:9999"
+    );
+}
+
+#[test]
+fn the_health_probe_falls_back_to_the_documented_default() {
+    assert_eq!(
+        probe_listen("version: 1\nmodules:\n  cpu:\n    enabled: true\n").to_string(),
+        "0.0.0.0:8080"
+    );
+}
+
+/// The point of the probe: a configuration that the full loader would reject
+/// must still yield an address, because the *running* process is using the
+/// address it started with and its health does not depend on the file since.
+#[test]
+fn the_health_probe_ignores_everything_that_would_fail_validation() {
+    // No module enabled, an unknown key, and a secret path that does not exist
+    // — each fatal to `load_and_resolve`, none of them a fact about whether the
+    // running instance is answering.
+    let yaml = "version: 1
+health:
+  listen: \"127.0.0.1:9100\"
+nonsense_key: true
+outputs:
+  influxdb:
+    enabled: true
+    url: \"https://influx.example:8086\"
+    organization: o
+    bucket: b
+    token_file: \"/nonexistent/token\"
+";
+    assert_eq!(probe_listen(yaml).to_string(), "127.0.0.1:9100");
+}
+
+/// A file too broken to be YAML at all is the one thing that can still fail —
+/// there is nowhere to read an address from.
+#[test]
+fn the_health_probe_reports_a_file_that_is_not_yaml() {
+    let f = token_file("this: is: not: yaml\n\t- tab\n");
+    assert!(loader::health_listen(f.path()).is_err());
 }
 
 /// ...but one real port and one zero must still not be confused for a conflict.

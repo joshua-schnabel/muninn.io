@@ -40,7 +40,6 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct Runtime {
     pub shutdown_grace_period: ConfigDuration,
-    pub telegraf_start_timeout: ConfigDuration,
     pub generated_config_path: String,
     /// `None` means "running directly on the host, no prefix applies" — the
     /// empty string from the YAML, turned into something the type system can
@@ -101,6 +100,9 @@ pub struct Prometheus {
     pub path: String,
     pub expiration_interval: ConfigDuration,
     pub basic_auth: Option<BasicAuth>,
+    /// Server-side TLS for this listener. Carried through as-is: these are
+    /// paths, not secrets, and the renderer is where they become Telegraf keys.
+    pub tls: model::ServerTlsConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +154,7 @@ impl Config {
                 path: o.path.clone(),
                 expiration_interval: o.expiration_interval,
                 basic_auth,
+                tls: o.tls.clone(),
             })
         } else {
             None
@@ -161,7 +164,6 @@ impl Config {
             agent: cfg.agent,
             runtime: Runtime {
                 shutdown_grace_period: cfg.runtime.shutdown_grace_period,
-                telegraf_start_timeout: cfg.runtime.telegraf_start_timeout,
                 generated_config_path: cfg.runtime.generated_config_path,
                 host_mount_prefix: normalise_prefix(cfg.runtime.host_mount_prefix),
             },
@@ -235,7 +237,6 @@ impl From<RuntimeConfig> for Runtime {
     fn from(raw: RuntimeConfig) -> Self {
         Runtime {
             shutdown_grace_period: raw.shutdown_grace_period,
-            telegraf_start_timeout: raw.telegraf_start_timeout,
             generated_config_path: raw.generated_config_path,
             host_mount_prefix: normalise_prefix(raw.host_mount_prefix),
         }

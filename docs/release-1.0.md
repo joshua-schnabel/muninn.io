@@ -101,7 +101,9 @@ correct the two documents that call M-01 closed.
 
 The configuration reference says the value is how long Telegraf may take to come
 up before muninn exits with code 21
-([`configuration.md`](configuration.md#runtimetelegraf_start_timeout)). The
+([`configuration.md`](configuration.md); the link is to the page rather than to
+the key's section, because removing that section is what closed this finding).
+The
 implementation sleeps for at most half a second and treats a process that is
 merely still alive as ready ([`supervisor.rs`](../muninn/src/supervisor.rs)).
 Longer values have no effect. A failure after that window becomes an operational

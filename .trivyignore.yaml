@@ -26,6 +26,14 @@
 #
 # Recheck at each expiry: `docker run --rm aquasec/trivy image --input image.tar`
 # after a Telegraf bump, and delete the entry the moment upstream ships a fix.
+#
+# Rechecked 2026-08-09 (the 1.0 review). Telegraf 1.39.2, published 2026-07-20,
+# is still the newest upstream release — so there is still no version carrying
+# the fixes, and every reachability argument below is unchanged. The expiry
+# dates are deliberately **not** extended: the point of an expiry is that it
+# forces this question, and moving it because the answer was "no change" would
+# turn it into a formality. When 2026-11-03 passes, the scan blocks and the
+# question gets asked again, with a newer Telegraf to ask it about.
 
 vulnerabilities:
   - id: CVE-2026-49980

@@ -219,9 +219,24 @@ jobs:
 
           git add CHANGELOG.md Cargo.toml Cargo.lock
           git commit -m "release: v${N}"
-          # Force, so re-running after a failed attempt reuses the branch rather
-          # than wedging on it. The branch belongs to this workflow alone.
-          git push -f origin "$BR"
+
+          # Forced, so re-running after a failed attempt reuses the branch
+          # rather than wedging on it — but with a lease rather than
+          # unconditionally (F-13). "The branch belongs to this workflow alone"
+          # is a convention, not a guarantee: a maintainer fixing up a stalled
+          # release by hand is exactly the person whose work an unconditional
+          # `-f` would discard, and it would do so silently.
+          #
+          # The lease is the remote's current tip, read a moment ago. If it
+          # moves between the read and the push, the server rejects it and this
+          # job fails loudly instead of overwriting.
+          remote_sha="$(git ls-remote origin "refs/heads/${BR}" | cut -f1)"
+          if [ -n "$remote_sha" ]; then
+            git push --force-with-lease="refs/heads/${BR}:${remote_sha}" \
+              origin "HEAD:refs/heads/${BR}"
+          else
+            git push origin "HEAD:refs/heads/${BR}"
+          fi
 
           if [ "$(gh pr list --head "$BR" --base main --json number --jq length)" = "0" ]; then
             # The branch is pushed either way, so the work is never lost — see the
