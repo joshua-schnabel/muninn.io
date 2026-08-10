@@ -355,7 +355,6 @@ agent:
   hostname: "image-updates-test"
 runtime:
   shutdown_grace_period: 8s
-  telegraf_start_timeout: 20s
 logging:
   format: json
   level: info

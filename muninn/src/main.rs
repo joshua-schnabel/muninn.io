@@ -368,7 +368,7 @@ fn update_check(hostfs: Option<&std::path::Path>, security_metric: bool) {
     // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let scratch = std::env::temp_dir();
 
-    let report = debian::check(hostfs, &scratch);
+    let report = debian::check(hostfs, &scratch, muninn_modules::updates::APT_TIMEOUT);
 
     if let Some(detail) = &report.detail {
         // Telegraf logs the plugin's stderr, so this is where an operator finds
@@ -456,19 +456,58 @@ fn run(args: &Cli) -> muninn_core::Result<()> {
             health: health.clone(),
             muninn_version: env!("CARGO_PKG_VERSION"),
         };
-        let server = tokio::spawn(async move {
-            let _ = muninn_health::serve_on(listener, server_state, async {
+        let mut server = tokio::spawn(async move {
+            muninn_health::serve_on(listener, server_state, async {
                 let _ = stop_rx.await;
             })
-            .await;
+            .await
         });
 
-        let result = supervisor::run(cfg, health).await;
+        // The health server is supervised, not merely spawned.
+        //
+        // Its result and its join result were both discarded, so a listener
+        // that died — an accept loop error it could not recover from, a panic
+        // in a handler — left muninn running and reporting nothing, while
+        // `docs/supervision.md` promised a permanently failed health server
+        // exits. An orchestrator polling `/health/ready` then sees connection
+        // refused and restarts the container, which is the right outcome
+        // reached by the wrong route: muninn should say why (F-05).
+        let result = tokio::select! {
+            r = supervisor::run(cfg, health) => r,
+            joined = &mut server => {
+                return Err(health_server_died(joined));
+            }
+        };
 
         drop(stop_tx);
         let _ = server.await;
         result
     })
+}
+
+/// Turn the health task ending early into the error muninn exits on.
+///
+/// Three ways it can end before the supervisor asks it to, and they are worth
+/// distinguishing because only one of them is a muninn bug:
+///
+/// - the serve loop returned an I/O error — the listener is gone;
+/// - the task panicked — a bug in a handler;
+/// - `Ok(())`, meaning it observed a shutdown nobody signalled.
+///
+/// All three exit [`muninn_core::exit::INTERNAL`], which is the code
+/// `docs/supervision.md` documents for a health server that will not come back.
+fn health_server_died(joined: Result<std::io::Result<()>, tokio::task::JoinError>) -> MuninnError {
+    let detail = match joined {
+        Ok(Err(e)) => format!("the listener stopped with an error: {e}"),
+        Ok(Ok(())) => "the listener stopped without being asked to".to_string(),
+        Err(e) if e.is_panic() => "a request handler panicked".to_string(),
+        Err(e) => format!("the health task ended unexpectedly: {e}"),
+    };
+    MuninnError::internal(format!(
+        "the health server is gone while muninn is still supervising Telegraf — {detail}. \
+         muninn exits rather than run on without the endpoints an orchestrator uses to \
+         decide whether it is alive"
+    ))
 }
 
 fn join(items: &[&str]) -> String {

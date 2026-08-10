@@ -211,7 +211,6 @@ fn omitted_sections_take_their_documented_defaults() {
     assert_eq!(cfg.agent.hostname, "");
     assert!(!cfg.agent.omit_hostname);
     assert_eq!(cfg.runtime.shutdown_grace_period.as_secs(), 20);
-    assert_eq!(cfg.runtime.telegraf_start_timeout.as_secs(), 15);
     assert_eq!(
         cfg.runtime.generated_config_path,
         "/run/muninn/telegraf.conf"
@@ -295,10 +294,6 @@ fn zero_durations_are_rejected_by_name() {
         (
             "runtime:\n  shutdown_grace_period: 0s\n",
             "runtime.shutdown_grace_period",
-        ),
-        (
-            "runtime:\n  telegraf_start_timeout: 0s\n",
-            "runtime.telegraf_start_timeout",
         ),
     ] {
         rejects(&with(block), key);

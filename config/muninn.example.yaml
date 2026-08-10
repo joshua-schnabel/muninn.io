@@ -60,11 +60,6 @@ runtime:
   # muninn finishes.
   shutdown_grace_period: 20s
 
-  # How long Telegraf may take to come up before muninn gives up and exits with
-  # code 21. Generous enough for a loaded host, short enough that a broken
-  # deploy fails fast rather than hanging in "starting".
-  telegraf_start_timeout: 15s
-
   # Where the generated Telegraf configuration is written. This file is
   # ephemeral: it is rewritten from scratch on every start and must live on a
   # tmpfs, never on a persistent volume. It contains the resolved secret values

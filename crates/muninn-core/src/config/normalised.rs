@@ -40,7 +40,6 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct Runtime {
     pub shutdown_grace_period: ConfigDuration,
-    pub telegraf_start_timeout: ConfigDuration,
     pub generated_config_path: String,
     /// `None` means "running directly on the host, no prefix applies" — the
     /// empty string from the YAML, turned into something the type system can
@@ -161,7 +160,6 @@ impl Config {
             agent: cfg.agent,
             runtime: Runtime {
                 shutdown_grace_period: cfg.runtime.shutdown_grace_period,
-                telegraf_start_timeout: cfg.runtime.telegraf_start_timeout,
                 generated_config_path: cfg.runtime.generated_config_path,
                 host_mount_prefix: normalise_prefix(cfg.runtime.host_mount_prefix),
             },
@@ -235,7 +233,6 @@ impl From<RuntimeConfig> for Runtime {
     fn from(raw: RuntimeConfig) -> Self {
         Runtime {
             shutdown_grace_period: raw.shutdown_grace_period,
-            telegraf_start_timeout: raw.telegraf_start_timeout,
             generated_config_path: raw.generated_config_path,
             host_mount_prefix: normalise_prefix(raw.host_mount_prefix),
         }

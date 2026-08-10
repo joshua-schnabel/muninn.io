@@ -96,8 +96,6 @@ impl Default for AgentConfig {
 pub struct RuntimeConfig {
     #[serde(default = "default_grace")]
     pub shutdown_grace_period: ConfigDuration,
-    #[serde(default = "default_start_timeout")]
-    pub telegraf_start_timeout: ConfigDuration,
     #[serde(default = "default_generated_config_path")]
     pub generated_config_path: String,
     /// Where the host filesystem is mounted. `""` means "running directly on the
@@ -108,9 +106,6 @@ pub struct RuntimeConfig {
 
 fn default_grace() -> ConfigDuration {
     ConfigDuration::from_secs(20)
-}
-fn default_start_timeout() -> ConfigDuration {
-    ConfigDuration::from_secs(15)
 }
 fn default_generated_config_path() -> String {
     "/run/muninn/telegraf.conf".to_string()
@@ -123,7 +118,6 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             shutdown_grace_period: default_grace(),
-            telegraf_start_timeout: default_start_timeout(),
             generated_config_path: default_generated_config_path(),
             host_mount_prefix: default_host_mount_prefix(),
         }

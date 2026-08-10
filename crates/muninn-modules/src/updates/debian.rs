@@ -28,8 +28,8 @@
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use crate::unix_now as now;
 
@@ -53,6 +53,13 @@ pub enum Reason {
     HostNotDebianFamily,
     ScratchUnavailable,
     AptFailed,
+    /// apt did not finish inside the time it was given and was killed.
+    ///
+    /// Distinct from [`Reason::AptFailed`], which is apt answering with a
+    /// non-zero status: that says something about the host's package state,
+    /// this says apt never got that far. Added by F-06 of the 1.0 review,
+    /// alongside the deadline that makes it reachable.
+    AptTimedOut,
     ParseInconsistent,
 }
 
@@ -69,12 +76,13 @@ impl Reason {
             Reason::HostNotDebianFamily => "host_not_debian_family",
             Reason::ScratchUnavailable => "scratch_unavailable",
             Reason::AptFailed => "apt_failed",
+            Reason::AptTimedOut => "apt_timed_out",
             Reason::ParseInconsistent => "parse_inconsistent",
         }
     }
 
     /// Every reason, for the test that keeps the tokens unique and stable.
-    pub const ALL: [Reason; 11] = [
+    pub const ALL: [Reason; 12] = [
         Reason::HostfsNotMounted,
         Reason::DpkgStatusUnreadable,
         Reason::DpkgStatusEmpty,
@@ -85,6 +93,7 @@ impl Reason {
         Reason::HostNotDebianFamily,
         Reason::ScratchUnavailable,
         Reason::AptFailed,
+        Reason::AptTimedOut,
         Reason::ParseInconsistent,
     ];
 }
@@ -209,7 +218,12 @@ impl HostPaths {
 /// apt genuinely writes to even in simulation. It is a parameter rather than a
 /// constant because the documented deployment has a read-only root filesystem
 /// with exactly one writable tmpfs, and that tmpfs is not always `/tmp`.
-pub fn check(hostfs: &Path, scratch_base: &Path) -> Report {
+///
+/// `limit` bounds apt itself: it is killed if it overruns, and the report says
+/// [`Reason::AptTimedOut`] rather than a count. apt reads a mount muninn does
+/// not control, so the wait is not muninn's to assume is finite — see
+/// [`run_apt_bounded`].
+pub fn check(hostfs: &Path, scratch_base: &Path, limit: Duration) -> Report {
     let paths = HostPaths::under(hostfs);
 
     if let Err(report) = preconditions(hostfs, &paths) {
@@ -231,8 +245,23 @@ pub fn check(hostfs: &Path, scratch_base: &Path) -> Report {
         }
     };
 
-    let output = match run_apt(&paths, scratch.path()) {
-        Ok(o) => o,
+    let output = match run_apt_bounded(&paths, scratch.path(), limit) {
+        Ok(Some(o)) => o,
+        Ok(None) => {
+            // Killed, not merely given up on. Reporting the failure rather than
+            // a count is the project's sharpest rule: `0 updates` from a check
+            // that never finished is worse than no metric, because an alert
+            // cannot tell them apart afterwards.
+            return Report::failed(
+                Reason::AptTimedOut,
+                format!(
+                    "apt-get -s dist-upgrade did not finish within {}s and was killed. It reads \
+                     the host's package index through the mount, so a stalled or very slow mount \
+                     looks like this",
+                    limit.as_secs()
+                ),
+            );
+        }
         Err(e) => {
             return Report::failed(
                 Reason::AptFailed,
@@ -460,12 +489,113 @@ fn has_package_index(lists: &Path) -> bool {
         .any(|e| e.file_name().to_string_lossy().contains("_Packages"))
 }
 
+/// How often the deadline below is checked while apt runs.
+///
+/// A poll rather than a blocking wait with a timeout, because `std` has no
+/// such wait. 50 ms is far below any deadline worth setting and costs nothing
+/// against a process that takes seconds.
+const APT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Run apt with a deadline, killing it if it overruns.
+///
+/// `Ok(None)` means the deadline passed and the process was killed.
+///
+/// # Why this is not `Command::output()`
+///
+/// `output()` waits forever. apt reads the host's entire package index from a
+/// mount muninn does not control; a stuck NFS mount or a wedged filesystem
+/// makes that wait unbounded. That wait used to sit on muninn's startup path
+/// *before* the supervisor began multiplexing signals, so a `docker stop`
+/// landing on a host in that state was answered by nothing until apt returned,
+/// and the container was killed at the end of its grace period instead of
+/// stopping (F-06).
+///
+/// Stopping *waiting* is not enough on its own, which is why this kills. A
+/// `spawn_blocking` task cannot be cancelled, and dropping the Tokio runtime
+/// waits for blocking tasks to finish — so abandoning the wait would move the
+/// same hang from the signal handler to process exit.
+fn run_apt_bounded(
+    paths: &HostPaths,
+    cache: &Path,
+    limit: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    run_bounded(apt_command(paths, cache), limit)
+}
+
+/// Run `command` to completion, or kill it at `limit`.
+///
+/// Split out from [`run_apt_bounded`] so the deadline can be tested against a
+/// process that is deliberately slow, without needing apt or a host tree. The
+/// behaviour under test is the timing and the kill, neither of which is
+/// specific to apt.
+fn run_bounded(
+    mut command: Command,
+    limit: Duration,
+) -> std::io::Result<Option<std::process::Output>> {
+    use std::io::Read as _;
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Both pipes are drained on their own threads. apt's simulated output is
+    // small on every host measured for ADR-0009, but "small" is a property of
+    // the host's package list rather than of this code, and a full pipe buffer
+    // with nobody reading is a deadlock that would first appear on the busiest
+    // machine — the one it is least welcome on.
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = Instant::now() + limit;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break Some(status),
+            None if Instant::now() >= deadline => {
+                // SIGKILL rather than SIGTERM: this is a simulation that writes
+                // nothing outside its own scratch cache, so there is nothing to
+                // let it flush, and a process already ignoring the clock is not
+                // one to ask politely twice.
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            None => std::thread::sleep(APT_POLL_INTERVAL),
+        }
+    };
+
+    // Joined either way, so neither thread outlives the call. After a kill the
+    // pipes are closed, so both return promptly.
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+
+    Ok(status.map(|status| std::process::Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
 /// The simulated upgrade, with every writable apt directory redirected.
 ///
 /// The option list is the spike's, unchanged. It is the part of this module that
 /// was measured against four distributions, and the exact agreement recorded in
 /// ADR-0009 belongs to these arguments rather than to the code around them.
-fn run_apt(paths: &HostPaths, cache: &Path) -> std::io::Result<std::process::Output> {
+fn apt_command(paths: &HostPaths, cache: &Path) -> Command {
     // Built as an OsString rather than formatted: a path that is not valid UTF-8
     // must reach apt unchanged, and `format!` would replace what it cannot
     // render — silently pointing apt at a different file.
@@ -476,8 +606,8 @@ fn run_apt(paths: &HostPaths, cache: &Path) -> std::io::Result<std::process::Out
         s
     };
 
-    Command::new("apt-get")
-        .arg("-s")
+    let mut cmd = Command::new("apt-get");
+    cmd.arg("-s")
         .arg("dist-upgrade")
         .arg("-o")
         .arg(opt("Dir::State::status", &paths.dpkg_status))
@@ -536,8 +666,8 @@ fn run_apt(paths: &HostPaths, cache: &Path) -> std::io::Result<std::process::Out
         // helper honest when it is run by hand on a developer's machine.
         .env("LC_ALL", "C")
         .env("LANG", "C")
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .output()
+        .env("DEBIAN_FRONTEND", "noninteractive");
+    cmd
 }
 
 /// Count what apt would install or upgrade.
@@ -1065,11 +1195,63 @@ Conf libc6 (2.36-9+deb12u7 Debian-Security:12/stable-security [amd64])
     /// a successful check. The measured numbers are the system tests' job
     /// (`scripts/updates-test.sh`), because only a real host tree has a truth to
     /// compare against.
+    /// A process that outlives its deadline is killed, and the call returns.
+    ///
+    /// The property that matters is not the message but the *bound*: apt reads
+    /// the host's package index through a mount muninn does not control, and
+    /// this used to be an unbounded `output()` on the startup path (F-06). The
+    /// assertion is therefore on elapsed time — if the kill did not happen, the
+    /// test would sit here for thirty seconds rather than fail.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_overruns_its_deadline_is_killed() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+
+        let started = Instant::now();
+        let result = run_bounded(cmd, Duration::from_millis(300)).unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(result.is_none(), "an overrun must not look like an answer");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "took {elapsed:?} — the deadline did not stop it"
+        );
+    }
+
+    /// And a process that finishes in time is not disturbed: its output comes
+    /// back whole. A deadline that truncated normal output would be worse than
+    /// none, because the parser would then be reading a partial answer.
+    #[cfg(unix)]
+    #[test]
+    fn a_process_that_finishes_in_time_returns_all_of_its_output() {
+        let mut cmd = Command::new("printf");
+        cmd.arg("Inst one\nInst two\n");
+
+        let output = run_bounded(cmd, Duration::from_secs(10))
+            .unwrap()
+            .expect("finished well inside the deadline");
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "Inst one\nInst two\n"
+        );
+    }
+
+    /// `apt_timed_out` is its own reason and not folded into `apt_failed`: one
+    /// says the host's package state could not be resolved, the other says apt
+    /// never got that far, and the fix differs.
+    #[test]
+    fn a_timeout_is_a_distinct_reason_from_a_failure() {
+        assert_ne!(Reason::AptTimedOut.as_str(), Reason::AptFailed.as_str());
+        assert_eq!(Reason::AptTimedOut.as_str(), "apt_timed_out");
+    }
+
     #[test]
     fn a_check_either_counts_or_reports_why_not() {
         let host = host_fixture();
         let scratch = tempfile::tempdir().unwrap();
-        let report = check(host.path(), scratch.path());
+        let report = check(host.path(), scratch.path(), crate::updates::APT_TIMEOUT);
         let line = report.line_protocol(true);
 
         match report.outcome {
