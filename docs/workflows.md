@@ -9,7 +9,7 @@ The pipeline's rationale and the repository settings it needs are
 
 | Workflow | Trigger | Purpose |
 |---|---|---|
-| `ci.yml` | every PR · push to `dev`/`main` · `v*.*.*` tags | Quality gates, build-once image, publish to Docker Hub + ghcr |
+| `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr, create the release tag |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |

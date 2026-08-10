@@ -135,10 +135,12 @@ the work that happens after it is missing.
 ## Rules and gotchas
 
 - **Never hand-push a `v*` tag.** Tags are created only by the pipeline, after
-  every gate has passed. `refs/tags/v*` is not covered by branch protection and
-  the version gate is a no-op on a tag push, so `release.yml` and `publish` both
-  refuse a tag that does not point at a commit on `main` — that check is the only
-  thing standing between a hand-pushed tag and a Release around every gate.
+  every gate has passed. `refs/tags/v*` is not covered by branch protection, so
+  three things stand in the way of a hand-pushed one: `ci.yml` does not trigger
+  on tags at all, so no image is built or published; `release.yml` refuses a tag
+  that does not point at a commit on `main`; and it refuses one that does not
+  carry the `muninn-manifest-digest:` annotation `publish` writes, because a
+  Release has to name the bytes it describes.
 - **The version lives in `CHANGELOG.md` and nowhere else you touch.**
 - **First release ever:** with no existing tag, the gate only checks that the
   version is valid SemVer — there is nothing to be greater than.
