@@ -10,8 +10,11 @@ name: Release
 #      ## [Unreleased] block, fixes the compare links, and bumps Cargo.toml to
 #      the released version. It never pushes to main or dev directly.
 #
-# Tags are only ever created by publish after every gate passed. A hand-pushed
-# tag would make a Release without those gates — so don't push v* tags by hand.
+# Tags are only ever created by publish after every gate passed, and publish
+# annotates each one with the manifest digest it produced. A hand-pushed tag
+# carries no such annotation and is refused here — so don't push v* tags by
+# hand. (It no longer starts ci.yml either: the tag is that pipeline's output,
+# not a second way into it.)
 #
 # NOTE: prepare-dev needs a RELEASE_PAT secret (a PAT or fine-grained token with
 # contents:write + pull-requests:write on this repo). A PR opened with the
@@ -27,7 +30,9 @@ name: Release
 #
 # workflow_dispatch is the way back in when that happens — and the way to rebuild
 # a Release whose run failed halfway. It takes an existing tag and does the same
-# work the tag push would have done. It creates nothing: `gh release view` makes
+# work the tag push would have done. For a tag that predates the digest
+# annotation it also takes the digest, because a Release has to name the bytes
+# it describes and this workflow will not guess. It creates nothing: `gh release view` makes
 # creation idempotent, and every step reads the tag rather than the branch it was
 # started from.
 
@@ -39,6 +44,13 @@ on:
       tag:
         description: "Existing tag to build the release for, e.g. v0.1.0"
         required: true
+        type: string
+      digest:
+        description: >-
+          Manifest digest to release, sha256:... — only needed for a tag that
+          carries no `muninn-manifest-digest:` annotation, i.e. one made by hand
+          or by a muninn from before the annotation existed.
+        required: false
         type: string
 
 jobs:
@@ -208,6 +220,76 @@ jobs:
           fi
           echo "OK: $TAG is on main"
 
+      # ── The bytes this release is about ───────────────────────────────────
+      # `publish` annotates the tag with the digest of the manifest it created,
+      # and this refuses to go on unless the registry still resolves `:x.y.z` to
+      # that exact digest.
+      #
+      # Without it, everything below described whatever the *mutable tag* poin
+      # ted at when this job happened to run. That was not hypothetical: ci.yml
+      # used to trigger on tags as well as branches, so publishing v0.3.0 built
+      # and pushed the image twice — once from the main push, once from the tag
+      # that push created — and this workflow, fired by the same tag, assembled
+      # the notes and the SBOM from whichever build had landed first. The tag
+      # trigger is gone, but a digest that can be checked is what makes it
+      # *provable* rather than merely likely, and it costs one registry lookup.
+      #
+      # Fail-closed on purpose. An unannotated tag means either a hand-pushed
+      # one, which must not produce a Release at all, or a tag from before this
+      # existed — and the dispatch input is the deliberate way to say which
+      # bytes an operator means.
+      - name: Resolve and verify the released digest
+        id: digest
+        env:
+          DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
+          TAG: ${{ needs.resolve.outputs.tag }}
+          V: ${{ needs.resolve.outputs.version }}
+          OVERRIDE: ${{ inputs.digest }}
+        run: |
+          set -euo pipefail
+
+          # The annotation, if the tag has one. `%(contents)` is empty for a
+          # lightweight tag, which is itself a signal: publish always annotates.
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          annotated="$(git for-each-ref "refs/tags/${TAG}" --format='%(contents)' \
+            | sed -n 's/^muninn-manifest-digest: *//p' | head -1)"
+
+          expected="${OVERRIDE:-$annotated}"
+          if [ -z "$expected" ]; then
+            echo "::error::${TAG} carries no muninn-manifest-digest annotation and no digest input was given. A Release must name the bytes it describes; re-run this workflow with the digest, or let ci.yml cut the tag."
+            exit 1
+          fi
+          case "$expected" in
+            sha256:*) ;;
+            *) echo "::error::'$expected' is not a sha256: digest"; exit 1 ;;
+          esac
+          if [ -n "$OVERRIDE" ] && [ -n "$annotated" ] && [ "$OVERRIDE" != "$annotated" ]; then
+            echo "::error::the digest input ($OVERRIDE) contradicts the tag's annotation ($annotated)"
+            exit 1
+          fi
+
+          # What the moving tag points at now. Retried, because a mirror can lag
+          # a moment behind a push — but a mismatch is never retried away.
+          actual=""
+          for i in 1 2 3; do
+            actual="$(docker buildx imagetools inspect --format '{{json .Manifest}}' \
+              "docker.io/${DH_REPO}:${V}" 2>/dev/null | jq -r '.digest // empty')" || true
+            [ -n "$actual" ] && break
+            echo "attempt $i: manifest for ${DH_REPO}:${V} not visible yet, retrying in 10s"
+            sleep 10
+          done
+          if [ -z "$actual" ]; then
+            echo "::error::${DH_REPO}:${V} does not resolve to a manifest — nothing to release"
+            exit 1
+          fi
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::${DH_REPO}:${V} resolves to ${actual}, but ${TAG} says the release is ${expected}. The tag has been moved or the image rebuilt; refusing to describe bytes that are not the ones published."
+            exit 1
+          fi
+
+          echo "digest=$expected" >> "$GITHUB_OUTPUT"
+          echo "verified: ${DH_REPO}:${V} is ${expected}"
+
       # The Telegraf version the release notes quote. Read from the Dockerfile
       # rather than repeated here: it is the authority everywhere else in this
       # repository, and a second copy is a second thing to keep in step.
@@ -235,8 +317,9 @@ jobs:
           DH_REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
           GHCR_REPO: ghcr.io/${{ github.repository_owner }}/muninn.io
           V: ${{ needs.resolve.outputs.version }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
         run: |
-          echo "Releasing v$V"
+          echo "Releasing v$V at $DIGEST"
 
           # Notes = the lines under `## [X.Y.Z]` up to the next `## [` heading.
           # Regex-free substring match: a dynamic awk regex with \[ \] is
@@ -247,14 +330,20 @@ jobs:
             f { print }
           ' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then
-            echo "No CHANGELOG section for $V; using an autogenerated note."
-            echo "Release v$V" > notes.md
+            # Fail, do not invent. This used to write "Release v$V" and carry
+            # on, so a release whose changelog section was missing, misspelt or
+            # left under `## [Unreleased]` shipped with notes that said nothing
+            # — and nothing anywhere reported a problem. The version gate
+            # already refuses to build a version the changelog does not name;
+            # this is the same rule at the other end of the pipeline.
+            echo "::error::CHANGELOG.md has no '## [$V]' section. The release notes would be empty, and an empty release is worse than a failed one — add the section and re-run."
+            exit 1
           fi
 
-          # Container images: the multi-arch manifest was published (and its
-          # ghcr mirror created) before the tag existed — ci.yml tags last.
-          # The digest is fetched from the public registry; best-effort, a
-          # registry hiccup must not block the release.
+          # Container images. The digest is the one the step above verified
+          # against the registry, not a fresh lookup: two lookups a minute apart
+          # can disagree, and the whole point is that the notes name the bytes
+          # that were checked.
           {
             echo ""
             echo "## Container images"
@@ -270,22 +359,16 @@ jobs:
             echo "Run it non-root, read-only, with all capabilities dropped — see"
             echo "[\`docs/hardening.md\`](https://github.com/${GITHUB_REPOSITORY}/blob/v${V}/docs/hardening.md)."
           } >> notes.md
-          DIGEST=""
-          for i in 1 2 3; do
-            DIGEST="$(docker buildx imagetools inspect --format '{{json .Manifest}}' \
-              "docker.io/${DH_REPO}:${V}" 2>/dev/null | jq -r '.digest // empty')" || true
-            [ -n "$DIGEST" ] && break
-            echo "attempt $i: manifest for ${DH_REPO}:${V} not yet visible, retrying in 10s"
-            sleep 10
-          done
-          if [ -n "$DIGEST" ]; then
-            {
-              echo ""
-              echo "Manifest digest: \`docker.io/${DH_REPO}@${DIGEST}\` — [all tags](https://hub.docker.com/r/${DH_REPO}/tags)"
-            } >> notes.md
-          else
-            echo "::warning::could not resolve the manifest digest for ${DH_REPO}:${V}; the notes omit it"
-          fi
+          {
+            echo ""
+            echo "Manifest digest: \`docker.io/${DH_REPO}@${DIGEST}\` — [all tags](https://hub.docker.com/r/${DH_REPO}/tags)"
+            echo ""
+            echo "Pull by digest to get exactly these bytes:"
+            echo ""
+            echo '```bash'
+            echo "docker pull ${DH_REPO}@${DIGEST}"
+            echo '```'
+          } >> notes.md
 
           # Test summary from the report step above, when there is one. Its
           # absence is already a warning annotation on the test-report job; the
@@ -317,14 +400,19 @@ jobs:
 
       # ── SBOM for the published image ──────────────────────────────────────
       # ci.yml already produced one per architecture from the build artefact and
-      # kept it for 90 days. This one is generated from the *published* multi-arch
-      # tag, so the file attached to a release describes the image someone
-      # actually pulls, and outlives the CI artefact's retention.
+      # kept it for 90 days. This one is generated from the published image, so
+      # the file attached to a release describes what someone actually pulls,
+      # and outlives the CI artefact's retention.
+      #
+      # By digest, not by tag. A tag is a pointer that can move between this
+      # step and the one that verified it; the digest is the bytes. An SBOM that
+      # named a tag would document whatever that tag meant at scan time, which
+      # is precisely the ambiguity the step above exists to remove.
       - name: Generate SBOM for the released image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: image
-          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/muninn:${{ needs.resolve.outputs.version }}
+          image-ref: ${{ vars.DOCKERHUB_USERNAME }}/muninn@${{ steps.digest.outputs.digest }}
           format: cyclonedx
           output: sbom.cdx.json
           exit-code: "0"

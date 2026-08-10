@@ -11,16 +11,20 @@ builds for `linux/amd64` and `linux/arm64` and passes its tests under the full
 hardening, the whole path from YAML to a running Telegraf is exercised end to
 end, and the pipeline builds, scans, tests and publishes it.
 
-**`0.1.0` is out** — on `jschnabel/muninn`, mirrored to
-`ghcr.io/joshua-schnabel/muninn.io`. Pushes to `dev` keep publishing the
-pre-release tags `0.1.0-dev` and `dev` alongside it. The next version is cut the
-same way this one was: name it in `CHANGELOG.md` and open a `dev → main` pull
-request; the version gate reads the changelog, and `publish` tags the release
-from it.
+Releases go to `jschnabel/muninn`, mirrored to
+`ghcr.io/joshua-schnabel/muninn.io`. Pushes to `dev` publish a pre-release tag
+alongside them. `CHANGELOG.md` is the record of what has shipped and the version
+gate's authority — the next version is cut by naming it there and opening a
+`dev → main` pull request, and `publish` tags the release from it.
+[`releasing.md`](releasing.md) is the runbook.
 
-One thing is still wrong there: the `publish` job's staging-tag cleanup gets
-`HTTP 403` from Docker Hub, so `staging-linux-amd64` and `staging-linux-arm64`
-survive every run. The `DOCKERHUB_TOKEN` needs the **Delete** scope, which
+**The staging-tag cleanup may still be failing, and a green run does not tell
+you.** The `publish` job's Docker Hub `DELETE` was reported returning `HTTP 403`,
+leaving `staging-linux-amd64` and `staging-linux-arm64` behind on every run. The
+step is deliberately best-effort and exits zero whatever the status, so the
+pipeline stays green either way — which means this is not something CI will
+report resolved. Check the tag list on Docker Hub; if they are still there, the
+`DOCKERHUB_TOKEN` needs the **Delete** scope, which
 [`ci-cd.md`](ci-cd.md#repository-settings--maintainer-by-hand) already
 specifies.
 
@@ -34,6 +38,17 @@ that one is the release gate.
 
 ## Next
 
+**Validate the Ubuntu security classification against `apt-check`.** The
+classification itself is fixed — it asks `apt-cache policy` which origins the
+candidate version is available from, rather than reading the one origin apt
+prints ([ADR-0009](adr/0009-updates-module-approach.md), [R8](risks.md)). What
+is still open is the *ground truth*: it is a second implementation of the same
+rule in awk, so if the rule is wrong both are wrong together. Ubuntu's own
+`/usr/lib/update-notifier/apt-check` is the independent authority, and it cannot
+be installed into a fixture without changing the package state being measured.
+Somewhere between "build the fixture, then install it" and "run apt-check in a
+sibling container against the exported rootfs".
+
 **Measure `image_updates` against an authenticated registry.** The module is
 verified against public images only. A private registry the host can already
 pull from should work through the daemon's own stored credentials with no
@@ -43,13 +58,15 @@ an expired credential looks like — all of it lands in
 `scripts/image-updates-test.sh` before any reason token is split.
 [R9](risks.md), [ADR-0013](adr/0013-image-updates-via-docker-api.md).
 
-**Six suppressed image findings expire 2026-11-03.** One gRPC-Go finding and five rclone
-findings, all in Go modules vendored into the Telegraf binary, all unreachable
-from any configuration muninn can generate, and none carried by a Telegraf
-release — 1.39.2 is the newest and still vendors the affected rclone. Four of
-the five rclone entries were added on 2026-08-06, when Trivy began reporting
-them against an image nothing had changed. When the dates pass the image scan blocks again — which is the point,
-so re-check upstream before then. [`hardening.md`](hardening.md).
+**Six suppressed image findings expire 2026-11-03.** One gRPC-Go finding and
+five rclone findings, all in Go modules vendored into the Telegraf binary, all
+unreachable from any configuration muninn can generate, and none carried by a
+Telegraf release. Four of the five rclone entries were added on 2026-08-06, when
+Trivy began reporting them against an image nothing had changed. Rechecked
+2026-08-09: still no newer Telegraf release, so the dates were deliberately not
+extended — an expiry that moves because the answer was "no change" is not an
+expiry. When they pass the image scan blocks again, which is the point.
+[`hardening.md`](hardening.md), and `.trivyignore.yaml` is the authority.
 
 **A bounded restart, if operational experience asks for it.** Off by default, at
 most three attempts, exponential backoff — the room

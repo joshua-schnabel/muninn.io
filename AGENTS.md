@@ -15,7 +15,14 @@ complete Telegraf configuration, has Telegraf verify that configuration, starts
 Telegraf as a child process, and then supervises it and serves health endpoints.
 It ships as one hardened, multi-arch container holding both binaries.
 
-Telegraf is the telemetry engine. muninn never touches a metric.
+Telegraf is the telemetry engine. muninn never touches a *host* metric — it does
+not collect, transform or forward one. The two exceptions are the ones it
+generates about the host's own state: `updates` and `image_updates` produce
+influx line protocol that Telegraf reads back through `inputs.exec`, because
+Telegraf has no plugin for either ([ADR-0009](docs/adr/0009-updates-module-approach.md),
+[ADR-0013](docs/adr/0013-image-updates-via-docker-api.md)). muninn's own
+operational metrics are a separate surface on the health port
+([`docs/self-metrics.md`](docs/self-metrics.md)).
 
 **Status: released. `0.1.0` is the first cut version; `dev` keeps publishing
 pre-release images alongside it.**
@@ -81,7 +88,7 @@ Cargo workspace; one bounded responsibility per crate:
 | `muninn/` | Binary: CLI, logging init, startup sequence, supervisor wiring |
 | `crates/muninn-core/` | Config model, loading, validation, secrets, durations, errors, exit codes |
 | `crates/muninn-telegraf/` | Typed Telegraf model, TOML renderer, `config check` validator, child process, version check |
-| `crates/muninn-modules/` | `MonitoringModule` trait, eleven modules, two outputs |
+| `crates/muninn-modules/` | `MonitoringModule` trait, twelve modules, two outputs |
 | `crates/muninn-health/` | Liveness, readiness, status, self-metrics |
 
 Dependencies point one way: `muninn` → everything; `muninn-modules` →
@@ -281,6 +288,7 @@ explicitly and flagged in the PR.
 | Architecture, startup, state machine | [`docs/architecture.md`](docs/architecture.md) |
 | Config reference (every key) | [`docs/configuration.md`](docs/configuration.md) |
 | Module reference | [`docs/modules.md`](docs/modules.md) |
+| muninn's own metrics | [`docs/self-metrics.md`](docs/self-metrics.md) |
 | How the TOML is generated | [`docs/telegraf-rendering.md`](docs/telegraf-rendering.md) |
 | Signals, exit codes, diagnosis | [`docs/supervision.md`](docs/supervision.md) |
 | What to mount and why | [`docs/host-mounts.md`](docs/host-mounts.md) |

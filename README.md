@@ -59,12 +59,16 @@ names the key that is wrong.
 [`config/muninn.example.yaml`](config/muninn.example.yaml) and delete what you do
 not need.
 
-**2. Run it.**
+**2. Run it.** `<version>` throughout this repository's examples means a released
+tag — pick one from [the releases page](https://github.com/joshua-schnabel/muninn.io/releases)
+or [`CHANGELOG.md`](CHANGELOG.md). Pin it rather than tracking `latest`: the
+image carries a pinned Telegraf, and knowing which one you are running is the
+point.
 
 ```yaml
 services:
   muninn:
-    image: jschnabel/muninn:0.1.0
+    image: jschnabel/muninn:<version>
     restart: unless-stopped
     stop_grace_period: 30s
     hostname: web-01.example.internal

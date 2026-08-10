@@ -55,7 +55,11 @@ fn main() -> ExitCode {
     let args = Cli::parse();
 
     match dispatch(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+        // Through the constant, not `ExitCode::SUCCESS`. `exit::OK` was
+        // declared as part of the exit-code contract and referenced by nothing,
+        // so the module that calls itself "the single source of truth the code
+        // uses" was not the source of this one (N-05).
+        Ok(()) => ExitCode::from(muninn_core::exit::OK),
         Err(e) => {
             // Errors are printed rather than logged: they can occur before the
             // subscriber exists, and a startup failure should reach stderr the

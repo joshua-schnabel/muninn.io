@@ -33,7 +33,7 @@ Validate without starting anything:
 
 ```bash
 docker run --rm -v ./muninn.yaml:/etc/muninn/muninn.yaml:ro \
-  jschnabel/muninn:0.1.1 validate
+  jschnabel/muninn:<version> validate
 ```
 
 ## Exit code 11 (SECRET)
@@ -67,7 +67,7 @@ See what was generated (secrets are redacted):
 
 ```bash
 docker run --rm -v ./muninn.yaml:/etc/muninn/muninn.yaml:ro \
-  jschnabel/muninn:0.1.1 render-config
+  jschnabel/muninn:<version> render-config
 ```
 
 The generated file itself lives on a tmpfs, is root-only and is never persisted,

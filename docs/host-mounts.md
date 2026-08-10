@@ -115,7 +115,7 @@ for working configurations, and [ADR-0010](adr/0010-docker-socket.md) and
 ```yaml
 services:
   muninn:
-    image: ghcr.io/joshua-schnabel/muninn.io:0.1.0
+    image: ghcr.io/joshua-schnabel/muninn.io:<version>
     restart: unless-stopped
 
     # Docker's default stop timeout is 10s, which would kill the container

@@ -46,7 +46,7 @@ is gone. See [ADR-0012](adr/0012-self-metrics-on-health-server.md).
 | `muninn` | CLI, logging setup, startup sequence, supervisor wiring |
 | `muninn-core` | Config model, loading, validation, secrets, durations, errors, exit codes |
 | `muninn-telegraf` | Typed Telegraf model, TOML renderer, `config check` validator, child process, version check |
-| `muninn-modules` | The `MonitoringModule` trait, eleven modules, two outputs |
+| `muninn-modules` | The `MonitoringModule` trait, twelve modules, two outputs |
 | `muninn-health` | Liveness, readiness, status, self-metrics |
 
 Dependencies point one way: `muninn` → everything; `muninn-modules` →

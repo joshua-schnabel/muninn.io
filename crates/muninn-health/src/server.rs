@@ -26,7 +26,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
-use tracing::{info, warn};
 
 use crate::state::HealthState;
 
@@ -46,29 +45,12 @@ pub fn router(state: ServerState) -> Router {
         .with_state(Arc::new(state))
 }
 
-/// Serve until `shutdown` resolves.
-///
-/// Binding is fallible and reported, not fatal to the caller's decision: the
-/// supervisor decides what a failed health listener means. Returning an error
-/// rather than exiting keeps that decision in one place.
-pub async fn serve(
-    listen: SocketAddr,
-    state: ServerState,
-    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
-) -> std::io::Result<()> {
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .inspect_err(|e| {
-            warn!(%listen, error = %e, "could not bind the health listener");
-        })?;
-
-    // The bound address, not the configured one: with port 0 they differ, and
-    // the tests need to know where to connect.
-    let bound = listener.local_addr().unwrap_or(listen);
-    info!(%bound, "health server listening");
-
-    crate::serve::serve_with_limits(listener, router(state), shutdown).await
-}
+// `serve(listen, state, shutdown)` — bind and serve in one call — lived here
+// and was used only by its own test. Production has always used `bind` and
+// `serve_on` separately, because binding before spawning is what turns a port
+// collision into a startup failure rather than a log line from a task nobody is
+// watching. Removed as dead surface (N-05); the tests below use the same two
+// calls the binary does, which is what they should have been exercising.
 
 /// Bind and return the address, so a caller that needs to know the port (a test,
 /// or a `listen: 0` deployment) can learn it before serving starts.
@@ -169,7 +151,6 @@ struct Status {
     ready: bool,
     uptime_seconds: u64,
     telegraf: TelegrafStatus,
-    telegraf_restarts: u64,
     modules: Vec<String>,
     outputs: Vec<String>,
     module_checks: Vec<ModuleCheckStatus>,
@@ -204,7 +185,6 @@ async fn status(AxumState(s): AxumState<Arc<ServerState>>) -> Json<Status> {
             version: d.telegraf_version.clone(),
             last_exit: d.last_telegraf_exit.clone(),
         },
-        telegraf_restarts: s.health.telegraf_restarts(),
         modules: d.modules.clone(),
         outputs: d.outputs.clone(),
         module_checks: d
@@ -420,15 +400,18 @@ mod tests {
 
     /// A port already in use must be reported rather than panicking — the
     /// supervisor decides what a failed listener means.
+    ///
+    /// Through `bind`, which is what the binary calls. It used to go through a
+    /// `serve` helper that bound and served in one step and had no other
+    /// caller, so this test was the only thing keeping that function alive
+    /// while asserting about a code path production never took (N-05).
     #[tokio::test]
     async fn binding_an_occupied_port_reports_an_error() {
         let held = bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
         let addr = held.local_addr().unwrap();
-        let state = ServerState {
-            health: HealthState::new(),
-            muninn_version: "0.1.0",
-        };
-        let result = serve(addr, state, std::future::pending::<()>()).await;
-        assert!(result.is_err(), "a second bind on {addr} should fail");
+        assert!(
+            bind(addr).await.is_err(),
+            "a second bind on {addr} should fail"
+        );
     }
 }

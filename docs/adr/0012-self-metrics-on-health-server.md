@@ -11,6 +11,24 @@ The obvious home is the Prometheus output that already exists — Telegraf is
 serving `:9273/metrics`, and adding a few families there costs nothing and gives
 operators one endpoint.
 
+## Amendment, 2026-08-09
+
+**The list of families in this record is not the reference.** It omitted
+`muninn_state` and carried `muninn_telegraf_restarts_total`, which was removed
+because it could only ever be zero — muninn has no internal restart loop
+([ADR-0002](0002-supervisor-no-restart-loop.md)), so nothing incremented it, and
+a counter that cannot move invites an alert rule that cannot fire.
+
+An ADR records a decision at a moment; a reference has to stay current, and this
+one had drifted while `versioning.md` was promising the names were stable. The
+canonical list is now [`self-metrics.md`](../self-metrics.md), which is checked
+against the renderer by a test rather than maintained by hand. Finding F-17 of
+the 1.0 review.
+
+The decision below stands unchanged: these metrics belong on muninn's health
+port and not on Telegraf's, because the moment they matter most is the moment
+Telegraf's endpoint is gone.
+
 ## Decision
 
 muninn serves its own metrics from its own HTTP server, on the health port,

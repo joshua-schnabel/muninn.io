@@ -18,10 +18,6 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-# anyhow only at the binary boundary, where an error is about to be printed to a
-# human and its type no longer matters. Library crates use typed errors.
-anyhow = { workspace = true }
-
 # tempfile is a runtime dependency, not only a test one: `validate
 # --with-telegraf` renders to a scratch file for Telegraf to judge.
 tempfile = { workspace = true }
