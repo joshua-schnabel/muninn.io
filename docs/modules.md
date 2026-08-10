@@ -557,12 +557,17 @@ Measured against each host's own answer:
 Including from a container running a *different* distribution than the host,
 which is the normal case rather than the exotic one.
 
-The Ubuntu 24.04 zero was measured before the classification changed, and it is
-the measurement that forced the change: the host's own apt said zero too,
-because the candidate versions resolve through `noble-updates`.
-[How the security subset is decided](#how-the-security-subset-is-decided)
-explains what that number would be today, and why the total was never
-affected.
+Those figures were measured under the **previous** security rule, and the
+`ubuntu:24.04` row is why that rule is gone. Both columns read zero because both
+classified by the single origin apt prints, and the candidates had moved into
+`noble-updates`; the two agreed with each other while being wrong together. The
+totals are unaffected and still stand.
+
+[How the security subset is decided](#how-the-security-subset-is-decided) is the
+rule now, and the security column above does not describe it. What the two rules
+differ by is not written down here on purpose: it is whatever the archive says
+on the day, so cell S14 of `scripts/updates-test.sh` measures it against a live
+Ubuntu fixture instead.
 
 **Requires** the host mount (`/:/hostfs:ro` plus `runtime.host_mount_prefix`) —
 the same mount CPU, memory and disk already need. No extra capabilities, no root,

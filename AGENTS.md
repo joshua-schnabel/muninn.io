@@ -284,6 +284,7 @@ explicitly and flagged in the PR.
 | Topic | Read |
 |---|---|
 | What is still open | [`docs/roadmap.md`](docs/roadmap.md) |
+| What must close before 1.0 | [`docs/release-1.0.md`](docs/release-1.0.md) |
 | Architecture, startup, state machine | [`docs/architecture.md`](docs/architecture.md) |
 | Config reference (every key) | [`docs/configuration.md`](docs/configuration.md) |
 | Module reference | [`docs/modules.md`](docs/modules.md) |
