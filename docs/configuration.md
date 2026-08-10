@@ -451,6 +451,10 @@ outputs:
     basic_auth:
       username: null
       password_file: null
+    tls:
+      cert_file: null
+      key_file: null
+      client_ca_file: null
 ```
 
 | Key | Type | Required | Default | Notes |
@@ -461,16 +465,38 @@ outputs:
 | `expiration_interval` | duration | no | `60s` | See below |
 | `basic_auth.username` | string | no | `null` | Both keys or neither |
 | `basic_auth.password_file` | path | no | `null` | See [Secret files](#secret-files) |
+| `tls.cert_file` | path | no | `null` | The certificate this listener presents. Needs `key_file` |
+| `tls.key_file` | path | no | `null` | Needs `cert_file` |
+| `tls.client_ca_file` | path | no | `null` | Enables mutual TLS. Needs the two above |
 
 **`expiration_interval`** is how long a metric stays served after it was last
 collected. Shorter than your scrape interval and Prometheus sees gaps; much
 longer and a disappeared host keeps serving its last known value as though it
 were current. Two to three collection intervals is a reasonable band.
 
-**Security:** the endpoint is unauthenticated unless `basic_auth` is set. Host
-metrics reveal a fair amount about a machine — mounted filesystems, network
-interfaces, running process counts. Put it on a trusted network, or set basic
-auth, or both.
+**`tls` is not the same shape as `outputs.influxdb.tls`, and the difference
+matters.** That one configures muninn as a TLS *client*: whom to trust, which
+certificate to present, whether to skip verification. This one configures a
+*server*: `cert_file` and `key_file` are the certificate this listener presents,
+and `client_ca_file` restricts who may connect to clients holding a certificate
+signed by that CA. There is nothing to skip verifying, because muninn is not
+verifying anyone here unless mutual TLS is asked for.
+
+Set `cert_file` and `key_file` together or neither — with only one, the listener
+would quietly serve plaintext while looking configured, so muninn refuses. Set
+`client_ca_file` only alongside them, for the same reason: without a server
+certificate there is no TLS for the client authentication to happen inside, and
+Telegraf would ignore it.
+
+**Security:** the endpoint is unauthenticated and unencrypted unless you say
+otherwise. Host metrics reveal a fair amount about a machine — mounted
+filesystems, network interfaces, running process counts.
+
+**`basic_auth` without `tls` sends the password in the clear on every scrape**,
+and muninn warns when you configure it that way. It is the one place muninn
+*sends* a credential rather than receiving one, so "put it on a trusted network"
+is a weaker answer here than it sounds — a scrape is not a rare event. Set both,
+or accept explicitly that the credential is not protected.
 
 ---
 

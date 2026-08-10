@@ -10,6 +10,14 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+### Added
+
+- **`outputs.prometheus.tls`, and a warning when basic auth goes without it.** `outputs.influxdb` carried a full TLS surface *and* warned when its URL was plaintext HTTP, because the token goes out with every write. `outputs.prometheus` carried `basic_auth` and no TLS keys at all, warned about nothing, and `docs/configuration.md` actively recommended setting basic auth — so the one place muninn *sends* a credential rather than receiving one was the only one with no confidentiality option, on a port meant to be published. The listener now takes `cert_file`, `key_file` and an optional `client_ca_file` for mutual TLS, and configuring `basic_auth` without them warns that the password crosses the network in the clear on every scrape.
+
+  It is **not** the same struct as `outputs.influxdb.tls`, deliberately. That one configures muninn as a TLS client — whom to trust, what to present, whether to skip verification. This one configures a server, and Telegraf spells the CA option `tls_allowed_cacerts` for exactly that reason: it means "client certificates I will accept", not "who I trust". Reusing the client struct would have given operators three keys whose meaning changed depending on which output they sat under. The option names were checked against the pinned Telegraf release's own `sample.conf` rather than mirrored from the InfluxDB side.
+
+  The `basic_auth` rendering branch also shipped with **no tests at all** — the output tests covered urls, redaction, TLS omission, the listener and ordering, and none of them ever set it, while the shipped example leaves both keys null so it was absent from the reference configuration too. The first execution of that code was an operator's. Both branches are covered now. Finding N-01 of `docs/release-1.0.md`.
+
 ### Removed
 
 - **`runtime.telegraf_start_timeout`.** It was documented as how long Telegraf may take to come up before muninn exits 21, and was only ever a cap on a fixed 500 ms settle window — so every value above that did nothing, and a value below it shortened a window that is not the operator's to tune. There is no honest configurable deadline to put in its place: muninn has no measurable readiness signal from Telegraf, because `config check` initialises without starting and the running process announces nothing muninn observes. What muninn *can* measure is whether the child died immediately, which wants a settle window rather than a deadline, so the window is now a constant with its reason beside it. **A configuration that still sets the key fails to load with exit 10**, naming it — `deny_unknown_fields` is the project's rule and a key that does nothing is worse than one that is gone. Finding F-03 of `docs/release-1.0.md`.

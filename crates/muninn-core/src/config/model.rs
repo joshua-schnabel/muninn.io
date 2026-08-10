@@ -494,6 +494,43 @@ pub struct TlsConfig {
     pub insecure_skip_verify: bool,
 }
 
+/// TLS for the Prometheus listener.
+///
+/// **Not [`TlsConfig`], and the difference is the point.** That one configures
+/// muninn as a TLS *client* talking to InfluxDB: `ca_file` is who to trust,
+/// `cert_file`/`key_file` are the certificate muninn presents, and
+/// `insecure_skip_verify` turns verification off. This one configures a
+/// *server*: `cert_file`/`key_file` are the certificate the listener presents,
+/// and `client_ca_file` is who is allowed to connect. There is nothing to skip
+/// verifying, because muninn is not verifying anyone unless mutual TLS is asked
+/// for.
+///
+/// Reusing the client struct would have given operators three keys whose
+/// meaning silently changed depending on which output they were under. It maps
+/// to Telegraf's `tls_cert`, `tls_key` and `tls_allowed_cacerts` — verified
+/// against the pinned release's `sample.conf`, where the CA option is
+/// deliberately spelled differently for the same reason.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerTlsConfig {
+    /// The certificate this listener presents. Needs [`Self::key_file`].
+    #[serde(default)]
+    pub cert_file: Option<String>,
+    #[serde(default)]
+    pub key_file: Option<String>,
+    /// Enables mutual TLS: only clients presenting a certificate signed by this
+    /// CA may connect. Omit it and any client may, over TLS.
+    #[serde(default)]
+    pub client_ca_file: Option<String>,
+}
+
+impl ServerTlsConfig {
+    /// Whether the listener will actually serve HTTPS.
+    pub fn enabled(&self) -> bool {
+        self.cert_file.is_some() && self.key_file.is_some()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InfluxdbOutput {
@@ -555,6 +592,8 @@ pub struct PrometheusOutput {
     pub expiration_interval: ConfigDuration,
     #[serde(default)]
     pub basic_auth: BasicAuthConfig,
+    #[serde(default)]
+    pub tls: ServerTlsConfig,
 }
 
 fn default_prometheus_listen() -> String {
@@ -575,6 +614,7 @@ impl Default for PrometheusOutput {
             path: default_prometheus_path(),
             expiration_interval: default_expiration(),
             basic_auth: BasicAuthConfig::default(),
+            tls: ServerTlsConfig::default(),
         }
     }
 }
