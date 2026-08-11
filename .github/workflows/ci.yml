@@ -1,9 +1,20 @@
 name: CI
 
+# The tag is this pipeline's *output*, not a second way into it.
+#
+# `tags: ["v*.*.*"]` used to be here, and `publish` creates the release tag as
+# its last step — so a push to main built and published the image, created the
+# tag, and the tag then re-entered this same workflow and built and published it
+# again. Two builds, two manifests, one moving `:x.y.z` tag; whichever run
+# finished last won. Meanwhile release.yml, fired by that tag, assembled the
+# SBOM and the release notes from whatever the tag resolved to at that moment.
+# Every gate stayed green because nothing compared the two.
+#
+# v0.3.0 shipped that way. Found in huginn.io, which has the same pipeline shape
+# and the same bug (joshua-schnabel/huginn.io#69).
 on:
   push:
     branches: ["main", "dev"]
-    tags: ["v*.*.*"]
   # Every PR, whatever its target branch — so every change is gated before merge.
   pull_request:
 
@@ -79,7 +90,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
@@ -105,7 +116,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # The unix-only tests — signals, permissions, reaping — are the ones that
       # matter most here and are silently absent on the maintainer's Windows
@@ -128,6 +139,59 @@ jobs:
           MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
         run: cargo test --workspace --locked
 
+  # ── Gate 2b: the declared MSRV actually compiles ──────────────────────────
+  # `rust-version` in Cargo.toml is the supported floor, and until now nothing
+  # compiled with it. The Docker builder sits above it deliberately — Dependabot
+  # moves that tag and doing so is an update, not an MSRV change — and the
+  # matrix above runs floating stable and beta, which are the *current* and
+  # *forward* compatibility questions. The floor was neither (F-12).
+  #
+  # Resolver 3 is MSRV-aware and will hold a dependency back rather than require
+  # a newer compiler, so a broken floor does not announce itself: it silently
+  # keeps the project on an older crate. That is how a project stays on the
+  # release before a CVE fix, which is the trap Cargo.toml's own comment
+  # describes.
+  #
+  # The version is read from the manifest rather than written here. A number
+  # repeated in a workflow is one that goes stale the morning someone raises the
+  # floor, and nothing fails when it does.
+  msrv:
+    name: MSRV (rust-version in Cargo.toml)
+    runs-on: ubuntu-latest
+    needs: check
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the declared floor
+        id: msrv
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^rust-version *= *"\([0-9.]*\)".*/\1/p' Cargo.toml | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::no rust-version in Cargo.toml — this job reads the manifest rather than repeating the number" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "MSRV floor: $version"
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # `--locked`, because the committed lockfile is what ships. Resolving
+      # afresh here would let the floor pass against a dependency set nobody
+      # builds.
+      #
+      # Tests as well as the library: `--all-targets` is what catches a floor
+      # broken by a test-only dependency or by syntax in a test, which is still
+      # a broken floor for anyone building from source.
+      - name: cargo check on the floor
+        run: cargo check --workspace --all-targets --locked
+
   # ── Gate 3: Supply-chain security (cargo-deny) ────────────────────────────
   # cargo-deny is a superset of cargo-audit: advisories, licenses, banned
   # crates and registry sources in one pass.
@@ -143,7 +207,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Uncached on purpose, but pinned. The freshness that matters comes from
       # the *advisory database*, which cargo-deny fetches at run time — not from
       # the tool binary. Pinning the version therefore costs nothing in coverage
@@ -173,7 +237,7 @@ jobs:
         with:
           toolchain: stable
           components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Cache the cargo-llvm-cov binary (pinned) so it is compiled from source
       # once, not every run.
       - name: Cache cargo-llvm-cov
@@ -320,6 +384,22 @@ jobs:
           # --allow-unreleased: a release must name its version in the changelog.
           NEW="$(bash scripts/changelog-version.sh)"
           echo "CHANGELOG version: $NEW"
+
+          # The changelog and the manifest have to agree before anything is
+          # built from them. They are stamped by the same release job, but by
+          # two different edits — a branch where one landed and the other did
+          # not would otherwise publish an image whose `--version` disagrees
+          # with the tag, the release notes and the SBOM, with every gate green.
+          #
+          # The manifest is read the way changelog-version.sh reads it for its
+          # own fallback: the first `version` under [workspace.package], which
+          # every crate inherits.
+          CARGO="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "Cargo.toml version:  $CARGO"
+          if [ "$NEW" != "$CARGO" ]; then
+            echo "::error::CHANGELOG.md says $NEW and [workspace.package].version says $CARGO — run scripts/set-workspace-version.sh $NEW, which stamps the manifest and the lock file together"
+            exit 1
+          fi
 
           LAST=$(git tag -l 'v*' --sort=-v:refname | head -1 | sed 's/^v//')
           if [ -z "$LAST" ]; then
@@ -693,10 +773,16 @@ jobs:
       contents: write
       packages: write
     steps:
-      # The one checkout in this file that keeps its credentials: the last step
-      # runs `git push origin "$TAG"`. Nothing between here and there executes
-      # third-party code — no cargo, no build — so the token stays inside a job
-      # that only runs skopeo, jq and git.
+      # `persist-credentials: false` here too, and that is a change: this
+      # checkout used to keep the token, on the argument that "nothing between
+      # here and there executes third-party code". That was not true of this
+      # job (F-13). Between the checkout and the tag push it runs
+      # `download-artifact`, two `docker/login-action` steps, skopeo, and this
+      # repository's own `changelog-version.sh` — any of which would have run
+      # with a `RELEASE_PAT` sitting in `.git/config`.
+      #
+      # The credential is now supplied to the one step that pushes, and removed
+      # again when it returns. See "Create git tag" at the end of this job.
       #
       # RELEASE_PAT rather than the built-in token, because of what has to happen
       # after the push: GitHub does not start a workflow from an event that
@@ -713,22 +799,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # needed to read git history for version tagging
-          token: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
-      # `refs/tags/v*` is not covered by the branch ruleset, and the version gate
-      # is a no-op on a tag push — so without this a hand-pushed tag on any
-      # commit would publish an image and cut a release. The tag this pipeline
-      # creates itself always points at a commit on main, so the normal flow is
-      # unaffected.
-      - name: Refuse tags that are not on main
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          git fetch --no-tags origin main
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
-            echo "::error::tag $GITHUB_REF_NAME does not point at a commit on main"
-            exit 1
-          fi
-          echo "OK: $GITHUB_REF_NAME is on main"
+      # The guard that used to sit here — "refuse tags that are not on main" —
+      # is gone with the tag trigger that made it necessary. A hand-pushed tag
+      # no longer starts this workflow at all, so it cannot publish an image.
+      # release.yml keeps its own copy of the same check, because a tag *does*
+      # start that one.
 
       - name: Download digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -782,9 +859,10 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             # main branch + version from CHANGELOG → :x.y.z
             type=raw,value=${{ steps.version.outputs.version }},enable=${{ github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false' }}
-            # Git tags (v1.2.3) → semver tags (fallback for manual tagging)
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/') }}
+            # No `type=semver` entries: they only ever applied on a tag run,
+            # and a tag no longer starts this workflow. A hand-pushed tag now
+            # publishes nothing, which is what CHANGELOG.md and docs/ci-cd.md
+            # have always told operators anyway.
           labels: |
             org.opencontainers.image.title=muninn.io
             org.opencontainers.image.description=Supervisor and configuration layer around Telegraf
@@ -809,11 +887,29 @@ jobs:
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${REPO}@sha256:%s " *)
 
+      # The digest of the manifest this run just created, captured here and
+      # carried to the git tag below.
+      #
+      # It is what makes "the release describes the bytes that shipped" a
+      # checkable claim rather than an assumption. A tag is mutable; a digest is
+      # not. release.yml refuses to build a Release unless the registry still
+      # resolves `:x.y.z` to this exact digest, and generates the SBOM from the
+      # digest rather than the tag.
       - name: Inspect manifest
+        id: manifest
         env:
           REPO: ${{ vars.DOCKERHUB_USERNAME }}/muninn
           VERSION: ${{ steps.meta.outputs.version }}
-        run: docker buildx imagetools inspect "${REPO}:${VERSION}"
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${REPO}:${VERSION}"
+          digest="$(docker buildx imagetools inspect --format '{{json .Manifest}}'             "${REPO}:${VERSION}" | jq -r '.digest // empty')"
+          if [ -z "$digest" ]; then
+            echo "::error::could not read the manifest digest for ${REPO}:${VERSION}"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "manifest digest: $digest"
 
       # ── Mirror the finished image to GitHub Container Registry ─────────────
       # `skopeo copy --all` copies the manifest list and every arch blob, so the
@@ -880,12 +976,38 @@ jobs:
           done
 
       # ── Create git tag on main (if new version) ───────────────────────────
+      # The only step in this job that holds the push credential, and it holds
+      # it for one command (F-13).
+      #
+      # Through git's `extraheader` rather than a token in the remote URL: a URL
+      # is argv, and argv is readable by anything else on the machine and lands
+      # in `git remote -v` for whatever runs next. The header is written into
+      # the local config, used, and removed on the way out — including when the
+      # push fails, which is the case where a leftover credential would
+      # otherwise sit in a workspace nobody looks at again.
       - name: Create git tag
         if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+          PUSH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$TAG" -m "Release $TAG"
-          git push origin "$TAG"
+          # Annotated with the digest, which is what release.yml checks the
+          # registry against before it claims anything about the artefact. An
+          # unannotated tag — one made by hand, or by a muninn older than this
+          # — makes release.yml stop and say so rather than describe bytes it
+          # cannot identify.
+          git tag "$TAG" -m "Release $TAG" -m "muninn-manifest-digest: $DIGEST"
+
+          header='http.https://github.com/.extraheader'
+          trap 'git config --local --unset-all "$header" 2>/dev/null || true' EXIT
+
+          # Base64 on stdin, not as an argument, for the same reason the Docker
+          # Hub steps above pass their credentials through a config file.
+          basic="$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
+          git config --local "$header" "AUTHORIZATION: basic ${basic}"
+
+          git push "https://github.com/${GITHUB_REPOSITORY}" "refs/tags/${TAG}"

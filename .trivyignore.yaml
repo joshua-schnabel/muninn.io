@@ -11,12 +11,13 @@
 #      deployment, not merely that it is inconvenient. "Not fixed upstream yet"
 #      alone is not a reason to ship it silently.
 #
-# Both entries below are Go modules vendored into the **Telegraf binary**, not
+# Every entry below is a Go module vendored into the **Telegraf binary**, not
 # muninn's own dependencies — `cargo deny` covers those, and it is clean.
 # Telegraf is pinned by SHA-256 per architecture (ADR-0011) and 1.39.2 is the
-# newest upstream release as of 2026-08-03, so there is no version to move to.
+# newest upstream release, so there is no version to move to — see the dated
+# recheck below.
 #
-# The reachability argument is the same for both, and it is stronger here than
+# The reachability argument is the same for all six, and it is stronger here than
 # it would be in most projects: muninn **generates the entire Telegraf
 # configuration**. There are no free-form TOML blocks (ADR-0004), so an operator
 # cannot enable a plugin muninn does not model. The complete set muninn can ever
@@ -26,6 +27,14 @@
 #
 # Recheck at each expiry: `docker run --rm aquasec/trivy image --input image.tar`
 # after a Telegraf bump, and delete the entry the moment upstream ships a fix.
+#
+# Rechecked 2026-08-09 (the 1.0 review). Telegraf 1.39.2, published 2026-07-20,
+# is still the newest upstream release — so there is still no version carrying
+# the fixes, and every reachability argument below is unchanged. The expiry
+# dates are deliberately **not** extended: the point of an expiry is that it
+# forces this question, and moving it because the answer was "no change" would
+# turn it into a formality. When 2026-11-03 passes, the scan blocks and the
+# question gets asked again, with a newer Telegraf to ask it about.
 
 vulnerabilities:
   - id: CVE-2026-49980

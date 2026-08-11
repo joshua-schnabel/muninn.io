@@ -75,12 +75,32 @@ impl From<std::process::ExitStatus> for Exit {
     }
 }
 
+/// How long the output forwarders may take to drain once the child has exited.
+///
+/// The child's pipes close when it dies, so both readers see EOF and finish
+/// almost at once; this bounds the pathological case rather than the normal
+/// one. Short, because muninn is on its way out and the diagnostic is worth
+/// waiting for only as long as it takes to arrive.
+const OUTPUT_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A running Telegraf.
 #[derive(Debug)]
 pub struct Telegraf {
     child: Child,
     pid: u32,
+    /// Kept for the `Debug` impl and for the spawn log line, not read
+    /// otherwise. The accessor that returned it was never called (N-05).
+    #[allow(dead_code, reason = "carried for Debug output")]
     binary: PathBuf,
+    /// The stdout and stderr forwarders, kept so they can be drained.
+    ///
+    /// They used to be spawned and dropped. Nothing then connected the child's
+    /// exit to its output having been read, so the reaped-child path could
+    /// return, the supervisor could return, and the Tokio runtime could be
+    /// dropped while the last lines were still in a pipe. Those lines are
+    /// precisely the ones worth having: `docs/troubleshooting.md` tells
+    /// operators to read what Telegraf said immediately before it died (F-10).
+    forwarders: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Telegraf {
@@ -136,8 +156,13 @@ impl Telegraf {
         // Telegraf's own output is re-emitted through muninn's logger, tagged
         // with its source, so one stream leaves the container and JSON logging
         // stays parseable end to end rather than interleaved with plain text.
-        forward(child.stdout.take(), "stdout", redactor.clone());
-        forward(child.stderr.take(), "stderr", redactor);
+        let forwarders = [
+            forward(child.stdout.take(), "stdout", redactor.clone()),
+            forward(child.stderr.take(), "stderr", redactor),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
 
         info!(pid, binary = %binary.display(), "Telegraf started");
 
@@ -145,15 +170,38 @@ impl Telegraf {
             child,
             pid,
             binary: binary.to_path_buf(),
+            forwarders,
         })
+    }
+
+    /// Wait for everything Telegraf wrote to have been logged.
+    ///
+    /// Called on every path that observes the child ending, before the caller
+    /// is told about it. The reader tasks finish on their own once the pipes
+    /// close — which the child's exit does — so this normally returns
+    /// immediately; the bound is for the case where one does not, and a
+    /// diagnostic is not worth hanging the shutdown for.
+    ///
+    /// Public because the supervisor also needs it on the path where the child
+    /// exited *before* it was ever confirmed running: that is the case where
+    /// Telegraf's last words are the entire diagnosis.
+    pub async fn drain_output(&mut self) {
+        let deadline = std::time::Instant::now() + OUTPUT_DRAIN_TIMEOUT;
+        for handle in std::mem::take(&mut self.forwarders) {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if tokio::time::timeout(remaining, handle).await.is_err() {
+                warn!(
+                    pid = self.pid,
+                    "Telegraf's output was still being read when the drain deadline passed; \
+                     the last lines may be missing"
+                );
+                break;
+            }
+        }
     }
 
     pub fn pid(&self) -> u32 {
         self.pid
-    }
-
-    pub fn binary(&self) -> &Path {
-        &self.binary
     }
 
     /// Wait for Telegraf to exit.
@@ -163,6 +211,10 @@ impl Telegraf {
             .wait()
             .await
             .map_err(|e| MuninnError::internal(format!("cannot wait for Telegraf: {e}")))?;
+        // Before returning, not after: the caller's next move is to report the
+        // exit and unwind, and anything still in a pipe at that point is lost
+        // when the runtime is dropped.
+        self.drain_output().await;
         Ok(Exit::from(status))
     }
 
@@ -202,15 +254,17 @@ impl Telegraf {
             warn!(pid = self.pid, error = %e, "could not signal Telegraf");
         }
 
-        match tokio::time::timeout(grace, self.child.wait()).await {
+        let exit = match tokio::time::timeout(grace, self.child.wait()).await {
             Ok(Ok(status)) => {
                 let exit = Exit::from(status);
                 info!(pid = self.pid, status = %exit.describe(), "Telegraf stopped");
-                Ok(exit)
+                exit
             }
-            Ok(Err(e)) => Err(MuninnError::internal(format!(
-                "cannot wait for Telegraf: {e}"
-            ))),
+            Ok(Err(e)) => {
+                return Err(MuninnError::internal(format!(
+                    "cannot wait for Telegraf: {e}"
+                )));
+            }
             Err(_) => {
                 warn!(
                     pid = self.pid,
@@ -221,9 +275,16 @@ impl Telegraf {
                 let status = self.child.wait().await.map_err(|e| {
                     MuninnError::internal(format!("cannot reap Telegraf after killing it: {e}"))
                 })?;
-                Ok(Exit::from(status))
+                Exit::from(status)
             }
-        }
+        };
+
+        // What Telegraf logs while flushing on SIGTERM is the record of whether
+        // the shutdown flush worked — the thing an operator looks for after a
+        // restart that lost metrics. It arrives last, so it is the first thing
+        // an undrained pipe loses.
+        self.drain_output().await;
+        Ok(exit)
     }
 
     /// Send the platform's "please stop" signal.
@@ -274,12 +335,16 @@ impl Telegraf {
 ///
 /// Whether Telegraf ever quotes a configuration value in a diagnostic is a
 /// property of Telegraf. This does not depend on the answer.
-fn forward<R>(stream: Option<R>, source: &'static str, redactor: Redactor)
+fn forward<R>(
+    stream: Option<R>,
+    source: &'static str,
+    redactor: Redactor,
+) -> Option<tokio::task::JoinHandle<()>>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let Some(stream) = stream else { return };
-    tokio::spawn(async move {
+    let stream = stream?;
+    Some(tokio::spawn(async move {
         let mut lines = BufReader::new(stream).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             if line.trim().is_empty() {
@@ -298,7 +363,7 @@ where
                 info!(source, "{line}");
             }
         }
-    });
+    }))
 }
 
 #[cfg(test)]
@@ -350,6 +415,98 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.exit_code(), muninn_core::exit::TELEGRAF_START);
         assert!(err.to_string().contains("nonexistent"), "got: {err}");
+    }
+
+    /// A real child, and the property F-10 is about: the exit is not reported
+    /// until everything the child wrote has been read.
+    ///
+    /// The forwarders used to be spawned with their handles dropped, so nothing
+    /// connected the child's output to `wait()` returning. `wait()` could
+    /// return, the supervisor could return, and the runtime could be dropped
+    /// with the last lines still in a pipe — the lines
+    /// `docs/troubleshooting.md` tells operators to read after a crash.
+    ///
+    /// Making that deterministic needs the pipe to outlive the child, which is
+    /// what the background subshell does: it inherits stdout, so EOF does not
+    /// arrive until a second after the child itself has exited. The old code
+    /// returned from `wait()` immediately; this one cannot return before the
+    /// reader has seen EOF, and the elapsed time is the proof.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_exit_is_not_reported_until_the_output_has_been_read() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("(sleep 1; echo last-words) & echo early; exit 3")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh should be runnable on unix");
+
+        let forwarders = [
+            forward(child.stdout.take(), "stdout", Redactor::default()),
+            forward(child.stderr.take(), "stderr", Redactor::default()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let mut telegraf = Telegraf {
+            child,
+            pid: 0,
+            binary: PathBuf::from("sh"),
+            forwarders,
+        };
+
+        let started = std::time::Instant::now();
+        let exit = telegraf.wait().await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(exit, Exit::Code(3));
+        assert!(
+            elapsed >= std::time::Duration::from_millis(500),
+            "wait() returned after {elapsed:?} — it did not wait for the output"
+        );
+        assert!(
+            telegraf.forwarders.is_empty(),
+            "the forwarders were not drained"
+        );
+    }
+
+    /// And the drain is bounded. A pipe held open by something that never
+    /// closes it must not hold muninn's exit: the child here leaves a subshell
+    /// alive far longer than `OUTPUT_DRAIN_TIMEOUT`, and `wait()` still returns.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pipe_that_never_closes_does_not_hold_the_exit() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("(sleep 30) & exit 0")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("sh should be runnable on unix");
+
+        let forwarders = [
+            forward(child.stdout.take(), "stdout", Redactor::default()),
+            forward(child.stderr.take(), "stderr", Redactor::default()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        let mut telegraf = Telegraf {
+            child,
+            pid: 0,
+            binary: PathBuf::from("sh"),
+            forwarders,
+        };
+
+        let started = std::time::Instant::now();
+        telegraf.wait().await.unwrap();
+        assert!(
+            started.elapsed() < OUTPUT_DRAIN_TIMEOUT * 3,
+            "the drain deadline did not apply"
+        );
     }
 
     /// The property, at the level that matters: a secret Telegraf printed does

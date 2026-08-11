@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 
 use crate::config::model::*;
 use crate::error::{MuninnError, Result};
-use crate::secret::Secret;
+use crate::secret;
 
 /// Validate `cfg`, returning warnings on success.
 pub fn validate(cfg: &ConfigV1) -> Result<Vec<String>> {
@@ -88,11 +88,6 @@ fn validate_runtime(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
         cfg.runtime.shutdown_grace_period,
         "runtime.shutdown_grace_period",
     )?;
-    require_positive(
-        cfg.runtime.telegraf_start_timeout,
-        "runtime.telegraf_start_timeout",
-    )?;
-
     // A relative path would be resolved against whatever directory the process
     // happens to start in, which in a container is not something the operator
     // controls or can predict.
@@ -424,8 +419,13 @@ fn validate_outputs(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
 
         // Read it now rather than at first write. A missing token discovered ten
         // minutes in looks like an InfluxDB outage; discovered here it names the
-        // path. The value is dropped immediately — this is a readability check.
-        Secret::from_file(&o.influxdb.token_file)?;
+        // path. The value is dropped immediately — this is a readability check,
+        // plus the length rule and the permission warning.
+        secret::validate_file(
+            &o.influxdb.token_file,
+            "outputs.influxdb.token_file",
+            warnings,
+        )?;
 
         validate_tls(&o.influxdb.tls, "outputs.influxdb.tls", warnings)?;
 
@@ -472,7 +472,7 @@ fn validate_outputs(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
                         "outputs.prometheus.basic_auth.username must not be empty".to_string(),
                     ));
                 }
-                Secret::from_file(p)?;
+                secret::validate_file(p, "outputs.prometheus.basic_auth.password_file", warnings)?;
             }
             (Some(_), None) => {
                 return Err(MuninnError::config(
@@ -489,6 +489,81 @@ fn validate_outputs(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
                 ));
             }
             (None, None) => {}
+        }
+
+        validate_server_tls(&o.prometheus.tls, "outputs.prometheus.tls")?;
+
+        // The asymmetry this closes: `outputs.influxdb` warns when its URL is
+        // plaintext HTTP, because the token goes out with every write. The
+        // Prometheus listener is the *other* place muninn handles a credential,
+        // and it had no such warning — while being the only one muninn sends
+        // rather than receives, on a port meant to be published. An operator
+        // following the advice to "set basic auth" was being told to put a
+        // password on the wire in the clear on every scrape.
+        if auth.username.is_some() && !o.prometheus.tls.enabled() {
+            warnings.push(
+                "outputs.prometheus.basic_auth is set but outputs.prometheus.tls is not — the \
+                 password is sent in cleartext on every scrape, and anyone on the path can read \
+                 it. Set outputs.prometheus.tls.cert_file and key_file, or keep the endpoint on \
+                 a trusted network and accept that the credential is not protected"
+                    .to_string(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// The listener's own TLS, which is not the client-side kind [`validate_tls`]
+/// checks. See `ServerTlsConfig` for why they are separate types.
+fn validate_server_tls(tls: &ServerTlsConfig, prefix: &str) -> Result<()> {
+    // A certificate without its key cannot be served, and a key without its
+    // certificate is meaningless. Either way the listener would silently stay
+    // plaintext, which is the failure worth refusing: an operator who
+    // configured TLS would believe they had it.
+    match (&tls.cert_file, &tls.key_file) {
+        (Some(_), None) => {
+            return Err(MuninnError::config(format!(
+                "{prefix}.cert_file is set but key_file is not — a listener needs both, and \
+                 with only one it would serve plaintext"
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(MuninnError::config(format!(
+                "{prefix}.key_file is set but cert_file is not — a listener needs both, and \
+                 with only one it would serve plaintext"
+            )));
+        }
+        _ => {}
+    }
+
+    // Mutual TLS is a rule about who may connect *over* TLS. Without a server
+    // certificate there is no TLS to be mutual about, and Telegraf would ignore
+    // the setting — leaving an operator who asked for client authentication
+    // with an endpoint that authenticates nobody.
+    if tls.client_ca_file.is_some() && !tls.enabled() {
+        return Err(MuninnError::config(format!(
+            "{prefix}.client_ca_file is set but cert_file and key_file are not — mutual TLS \
+             needs the listener to serve TLS first"
+        )));
+    }
+
+    for (path, key) in [
+        (&tls.cert_file, "cert_file"),
+        (&tls.key_file, "key_file"),
+        (&tls.client_ca_file, "client_ca_file"),
+    ] {
+        if let Some(p) = path {
+            if p.is_empty() {
+                return Err(MuninnError::config(format!(
+                    "{prefix}.{key} must not be empty (omit it instead)"
+                )));
+            }
+            if !std::path::Path::new(p).exists() {
+                return Err(MuninnError::runtime(format!(
+                    "{prefix}.{key} '{p}' does not exist"
+                )));
+            }
         }
     }
 

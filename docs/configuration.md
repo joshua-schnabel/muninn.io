@@ -161,18 +161,6 @@ It should stay below the orchestrator's own stop timeout — **Docker's default 
 10 seconds**, so the 20s default here needs `stop_grace_period: 30s` in compose,
 or Docker kills the container mid-flush and the grace period never applies.
 
-### `runtime.telegraf_start_timeout`
-
-| | |
-|---|---|
-| Type | duration |
-| Required | no |
-| Default | `15s` |
-
-How long Telegraf may take to come up before muninn gives up and exits with code
-21. Generous enough for a loaded host, short enough that a broken deploy fails
-fast rather than hanging in "starting" indefinitely.
-
 ### `runtime.generated_config_path`
 
 | | |
@@ -260,9 +248,19 @@ Must not collide with `outputs.prometheus.listen`. muninn checks, including the
 case where one address is a wildcard and the other is not: `0.0.0.0:8080` and
 `127.0.0.1:8080` cannot both bind.
 
-**Security:** `/status` carries versions, uptime, enabled modules and the last
-Telegraf exit — no secrets and no configuration dump. It is still information
-about your infrastructure; put the health port on a trusted network.
+**Port 0** asks the kernel for any free port. That is legitimate — the test
+harness and the integration stack use it so parallel runs do not fight — and
+`/status` reports the address actually bound, since the configured value says
+nothing useful in that case. But `muninn healthcheck` cannot use it: it is a
+separate process and has no way to learn which port the running instance was
+given, so it refuses with a message saying so rather than probing port 0. A
+container `HEALTHCHECK` therefore needs a fixed port; the shipped default is
+`8080`.
+
+**Security:** `/status` carries versions, uptime, enabled modules, the bound
+address and the last Telegraf exit — no secrets and no configuration dump. It is
+still information about your infrastructure; put the health port on a trusted
+network.
 
 ---
 
@@ -453,6 +451,10 @@ outputs:
     basic_auth:
       username: null
       password_file: null
+    tls:
+      cert_file: null
+      key_file: null
+      client_ca_file: null
 ```
 
 | Key | Type | Required | Default | Notes |
@@ -463,16 +465,38 @@ outputs:
 | `expiration_interval` | duration | no | `60s` | See below |
 | `basic_auth.username` | string | no | `null` | Both keys or neither |
 | `basic_auth.password_file` | path | no | `null` | See [Secret files](#secret-files) |
+| `tls.cert_file` | path | no | `null` | The certificate this listener presents. Needs `key_file` |
+| `tls.key_file` | path | no | `null` | Needs `cert_file` |
+| `tls.client_ca_file` | path | no | `null` | Enables mutual TLS. Needs the two above |
 
 **`expiration_interval`** is how long a metric stays served after it was last
 collected. Shorter than your scrape interval and Prometheus sees gaps; much
 longer and a disappeared host keeps serving its last known value as though it
 were current. Two to three collection intervals is a reasonable band.
 
-**Security:** the endpoint is unauthenticated unless `basic_auth` is set. Host
-metrics reveal a fair amount about a machine — mounted filesystems, network
-interfaces, running process counts. Put it on a trusted network, or set basic
-auth, or both.
+**`tls` is not the same shape as `outputs.influxdb.tls`, and the difference
+matters.** That one configures muninn as a TLS *client*: whom to trust, which
+certificate to present, whether to skip verification. This one configures a
+*server*: `cert_file` and `key_file` are the certificate this listener presents,
+and `client_ca_file` restricts who may connect to clients holding a certificate
+signed by that CA. There is nothing to skip verifying, because muninn is not
+verifying anyone here unless mutual TLS is asked for.
+
+Set `cert_file` and `key_file` together or neither — with only one, the listener
+would quietly serve plaintext while looking configured, so muninn refuses. Set
+`client_ca_file` only alongside them, for the same reason: without a server
+certificate there is no TLS for the client authentication to happen inside, and
+Telegraf would ignore it.
+
+**Security:** the endpoint is unauthenticated and unencrypted unless you say
+otherwise. Host metrics reveal a fair amount about a machine — mounted
+filesystems, network interfaces, running process counts.
+
+**`basic_auth` without `tls` sends the password in the clear on every scrape**,
+and muninn warns when you configure it that way. It is the one place muninn
+*sends* a credential rather than receiving one, so "put it on a trusted network"
+is a weaker answer here than it sounds — a scrape is not a rare event. Set both,
+or accept explicitly that the credential is not protected.
 
 ---
 
@@ -483,8 +507,25 @@ secret value inline, and that is deliberate: a token written into this file ends
 up in your configuration management, your backups and every `docker inspect`. A
 path does not.
 
-muninn requires the file to exist, be readable, and be non-empty. A trailing
-newline is stripped. Any of those failing stops startup with exit code 11.
+muninn requires the file to exist, be readable, be non-empty, and hold **at
+least 8 bytes**. A trailing newline is stripped. Any of those failing stops
+startup with exit code 11.
+
+**Why there is a minimum length.** muninn masks known secrets in the output
+Telegraf writes and in Telegraf's own configuration diagnostics, by matching the
+value literally. A value of three or four characters would match inside ordinary
+words — turning every log line into `***`, which is both unreadable and less
+safe, because an unread log defends nothing. So muninn cannot protect a
+credential that short, and refuses to hold one rather than carry a promise it
+cannot keep. Any credential worth having is longer than this.
+
+**Permissions.** `0600` is expected. A file readable by its group or by
+everything else still loads — a read-only bind mount can carry permissions you
+do not control, and a working token should not stop a deployment — but muninn
+says so on stderr, naming the key and the mode. It matters more here than it
+would in a distroless image: the runtime carries a shell and a package manager
+for the updates module, so "readable by anything else in the container" is a
+larger set than it sounds.
 
 **Error messages name the path and never the contents.** The value is wrapped in
 a type whose `Debug` and `Display` both render `***`, so no log line, error or

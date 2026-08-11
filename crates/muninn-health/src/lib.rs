@@ -35,5 +35,5 @@ mod serve;
 pub mod server;
 pub mod state;
 
-pub use server::{ServerState, bind, serve, serve_on};
+pub use server::{ServerState, bind, serve_on};
 pub use state::{Details, HealthState, ModuleCheck, State};

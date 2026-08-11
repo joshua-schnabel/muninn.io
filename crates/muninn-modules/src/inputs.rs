@@ -2,8 +2,8 @@
 //!
 //! Each is a thin, declarative mapping from muninn's options onto a Telegraf
 //! plugin. They are kept in one file rather than one file each because reading
-//! them side by side is how you notice an inconsistency — nine files of twenty
-//! lines would hide exactly the kind of drift this layer has to avoid.
+//! them side by side is how you notice an inconsistency — a dozen files of
+//! twenty lines would hide exactly the kind of drift this layer has to avoid.
 //!
 //! Ranks decide the order plugins appear in the generated file. They are spaced
 //! by ten so a module can be inserted between two others without renumbering.
@@ -46,7 +46,7 @@ const RANK_DISKIO: u16 = 70;
 const RANK_NET: u16 = 80;
 const RANK_DOCKER: u16 = 90;
 /// The updates module renders from [`crate::updates`], but its rank belongs with
-/// the others so the uniqueness test below can see all ten at once.
+/// the others so the uniqueness test below can see them all at once.
 pub(crate) const RANK_UPDATES: u16 = 100;
 /// The image_updates module renders from [`crate::image_updates`]; same reason
 /// as `RANK_UPDATES` for keeping the constant here rather than there.
@@ -366,19 +366,19 @@ mod tests {
         assert_eq!(load.plugin, system.plugin);
     }
 
-    /// No MVP module may require a Linux capability: the hardening baseline
-    /// drops them all, so a module that needed one would silently not work.
-    #[test]
-    fn no_module_requires_a_capability() {
-        let cfg = crate::tests::config_with(|_| {});
-        for module in crate::all_modules() {
-            assert!(
-                module.requirements(&cfg).capabilities.is_empty(),
-                "{} requires a capability, which the hardening baseline drops",
-                module.id()
-            );
-        }
-    }
+    // The capability requirement is gone with the field it asserted about.
+    //
+    // `Requirements::capabilities` was declared, populated by nothing, and — the
+    // reason it had to go — read by nothing: `runtime_check::check_modules`
+    // handles host paths, absolute paths, endpoints and the Debian-family
+    // constraint, and ignored it silently. A future module declaring a
+    // capability would have been accepted with no check at all, which is worse
+    // than no field, because the field reads as a guarantee (N-04).
+    //
+    // The rule it stood for still holds and is enforced where it belongs: the
+    // hardening baseline drops every capability, and the container tests run in
+    // that posture. A module that needed one would fail there, against a real
+    // container, rather than pass a self-assertion here.
 
     /// The Docker socket must not be declared as a host path: it is a separate,
     /// deliberate grant, and folding it into the mount prefix would make it look

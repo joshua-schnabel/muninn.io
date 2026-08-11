@@ -87,11 +87,19 @@ shapes are worth knowing when editing a workflow here:
 **No job runs `cargo` with a write token.** `actions/checkout` persists its
 token into `.git/config`, and `cargo` executes build scripts from every
 dependency. Every checkout therefore sets `persist-credentials: false` except
-`ci.yml`'s `publish` and `release.yml`'s `prepare-dev`, which push and run no
-third-party code. `release.yml` is split into `test-report` (`contents: read`,
-runs `cargo`, uploads an artefact) and `github-release` (`contents: write`,
-downloads it) for exactly this reason — if you add a `cargo` step, it belongs in
-the first job.
+`release.yml`'s `prepare-dev`, which pushes and runs no third-party code.
+`release.yml` is split into `test-report` (`contents: read`, runs `cargo`,
+uploads an artefact) and `github-release` (`contents: write`, downloads it) for
+exactly this reason — if you add a `cargo` step, it belongs in the first job.
+
+**`ci.yml`'s `publish` used to be the second exception**, on the argument that
+it runs no cargo. It runs `download-artifact`, two `docker/login-action` steps
+and skopeo, which is third-party code with the token in `.git/config` beside it
+— so the argument was about the wrong thing, and the exception is gone (F-13).
+The credential now reaches only the step that pushes the tag, through git's
+`extraheader` rather than a remote URL, and a `trap` removes it on the way out
+including when the push fails. A URL is argv, and argv is world-readable on the
+runner and survives in `git remote -v` for whatever runs next.
 
 **Credentials go through stdin or a file, never argv.** `/proc/<pid>/cmdline` is
 readable by every process on the runner. `skopeo login --password-stdin` with
@@ -147,9 +155,11 @@ does not, so a suppressed finding still reaches the Security tab. Every entry
 needs an expiry date and a reason the code is unreachable in muninn's generated
 configuration — not merely "not fixed upstream yet".
 
-Two entries today, both Go modules vendored into the Telegraf binary rather than
+Every entry is a Go module vendored into the Telegraf binary rather than one of
 muninn's own dependencies. The reasoning, and the table of what they are, is in
-[`hardening.md`](hardening.md#the-two-suppressed-findings-and-why).
+[`hardening.md`](hardening.md#the-suppressed-findings-and-why) — the file itself
+is the authority, because a count repeated here is wrong the next time one is
+added, and this one was.
 
 ## Architectures
 
@@ -194,9 +204,18 @@ back to if the dispatch cannot open its PR:
 3. On merge: the image is published, the tag is created, and the release notes
    are drawn from the changelog entry.
 
-A tag pointing at a commit that is not on `main` is refused: `refs/tags/v*` is not
-covered by branch protection, and the version gate is a no-op on a tag push, so
-without that check a hand-pushed tag on any commit would publish an image.
+**The tag is the pipeline's output, not a second way into it.** `ci.yml` runs on
+pushes to `dev` and `main` and on pull requests — not on tags. It used to run on
+tags too, and `publish` creates the tag as its last step, so a release built and
+published the image twice: once from the `main` push, once from the tag that push
+created. Two builds, two manifests, and one moving `:x.y.z` tag that ended up
+pointing at whichever finished last — while `release.yml`, fired by the same tag,
+assembled the SBOM and the notes from whatever was there at that moment. Every
+gate stayed green because nothing compared the two. v0.3.0 shipped that way.
+
+A hand-pushed tag therefore publishes nothing now. It still reaches `release.yml`,
+which refuses it twice over: the commit must be on `main`, and the tag must carry
+the `muninn-manifest-digest:` annotation that `publish` writes.
 
 ### Why the tag is pushed with `RELEASE_PAT`
 
@@ -249,6 +268,8 @@ checklist.
   is the set actually configured today:
   - `Format & Lint`
   - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
+  - `MSRV (rust-version in Cargo.toml)` — **added by the 1.0 review; needs to be
+    added to the required set by hand**, like every entry here
   - `Supply-Chain Security`
   - `Code Coverage (≥ 80%)`
   - `Semgrep SAST`

@@ -95,10 +95,23 @@ async fn serve_with(
         // connection — and its task and buffers — already exists, which is the
         // cost being avoided. Waiting here leaves the peer in the listen
         // backlog, and the kernel refuses it once that fills.
-        let permit = Arc::clone(&permits)
-            .acquire_owned()
-            .await
-            .expect("the semaphore is never closed");
+        //
+        // Inside the `select!`, equally deliberately. Awaiting the permit on its
+        // own put shutdown behind it: at capacity, nothing observed the stop
+        // signal until a connection finished, so the drain below could not even
+        // begin. A peer holding every permit could therefore stretch shutdown
+        // past the Compose stop timeout (F-07). Shutdown is now visible whether
+        // or not there is a permit to be had.
+        let permit = tokio::select! {
+            acquired = Arc::clone(&permits).acquire_owned() => match acquired {
+                Ok(p) => p,
+                // Only reachable if the semaphore were closed, which nothing
+                // does. Stopping is the right answer either way, and it is the
+                // answer that does not panic in a server loop.
+                Err(_) => break,
+            },
+            () = &mut shutdown => break,
+        };
 
         let (stream, peer) = tokio::select! {
             accepted = listener.accept() => match accepted {
@@ -125,7 +138,21 @@ async fn serve_with(
         // panic, not a type error — nothing catches it at compile time.
         builder
             .timer(TokioTimer::new())
-            .header_read_timeout(header_read_timeout);
+            .header_read_timeout(header_read_timeout)
+            // No keep-alive, and this is the keep-alive policy rather than an
+            // oversight. The header deadline bounds one request head; it does
+            // nothing about a peer that sends a complete, small, perfectly
+            // valid request every few seconds on each of 256 connections. That
+            // costs almost nothing to do and holds every permit, so genuine
+            // probes wait in the backlog while the process looks idle (F-07).
+            //
+            // Cheap to give up here specifically: these endpoints answer three
+            // probes and a scrape, each a single short request. A scraper pays
+            // one extra TCP handshake per scrape interval, which is not a cost
+            // worth a starvation vector. Telegraf's `:9273`, which serves the
+            // host metrics, is a different listener with different traffic and
+            // is not affected.
+            .keep_alive(false);
 
         let conn =
             builder.serve_connection(TokioIo::new(stream), TowerToHyperService::new(app.clone()));
@@ -213,6 +240,67 @@ mod tests {
             .unwrap();
         let head = String::from_utf8_lossy(&buf[..n]);
         assert!(head.starts_with("HTTP/1.1 200"), "unexpected: {head}");
+    }
+
+    /// Shutdown is observed even when every permit is taken.
+    ///
+    /// The finding (F-07): the permit was awaited *before* the `select!` that
+    /// watches for shutdown, so at capacity nothing saw the stop signal until a
+    /// connection finished. A peer holding all the permits could stretch
+    /// shutdown past the Compose stop timeout — with the process looking idle
+    /// the whole time.
+    ///
+    /// The server is given one permit and a connection is left occupying it, so
+    /// the loop is parked exactly where the bug was. The assertion is that the
+    /// call *returns*; if it did not, the timeout below reports it rather than
+    /// hanging the suite.
+    #[tokio::test]
+    async fn shutdown_is_observed_at_the_connection_limit() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+
+        // One permit, and a header timeout long enough that the connection
+        // below holds it for the whole test rather than being timed out into
+        // releasing it — which would let the old code pass.
+        let handle = tokio::spawn(serve_with(
+            listener,
+            app(),
+            async {
+                let _ = rx.await;
+            },
+            1,
+            Duration::from_secs(30),
+        ));
+
+        // Take the only permit and keep it: a head that never completes.
+        let mut hog = tokio::net::TcpStream::connect(addr).await.unwrap();
+        hog.write_all(b"GET / HTT").await.unwrap();
+
+        // Wait until the loop is actually parked on the permit, rather than
+        // sleeping and hoping. A second connection cannot be served while the
+        // first holds the only permit, so a read that does not complete is the
+        // signal that capacity is reached.
+        let mut queued = tokio::net::TcpStream::connect(addr).await.unwrap();
+        queued
+            .write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut buf = [0u8; 64];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), queued.read(&mut buf))
+                .await
+                .is_err(),
+            "the second request was served, so the limit was not reached"
+        );
+
+        tx.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the server did not observe shutdown while at the connection limit")
+            .unwrap()
+            .unwrap();
     }
 
     /// The shutdown signal stops the accept loop and the call returns.

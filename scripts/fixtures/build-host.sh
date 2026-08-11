@@ -39,6 +39,12 @@ host_path() {
 }
 abs_out="$(host_path "$OUTDIR")"
 
+# The security ground truth is its own script, copied in through the directory
+# that is already mounted, rather than inlined into the `bash -c` string below.
+# It is thirty lines of awk; escaping it through two layers of shell quoting is
+# how a ground truth quietly starts measuring something else.
+cp "$(dirname "$0")/security-count.sh" "$OUTDIR/security-count.sh"
+
 prepare=""
 case "$STATE" in
     fresh)
@@ -81,8 +87,12 @@ apt-get -s dist-upgrade -o APT::Get::Show-Versions=false > /export/ground-truth.
   echo \"apt=\$(apt-get --version | head -1)\"
   echo \"os=\$(. /etc/os-release; echo \\\"\$ID \$VERSION_ID\\\")\"
   echo \"total=\$(grep -c '^Inst ' /export/ground-truth.txt || echo 0)\"
-  echo \"security=\$(grep '^Inst ' /export/ground-truth.txt | grep -c -- '-[Ss]ecurity' || echo 0)\"
+  echo \"security=\$(awk '/^Inst /{print \$2}' /export/ground-truth.txt | sort -u | sh /export/security-count.sh)\"
+  echo \"security_printed_origin=\$(grep '^Inst ' /export/ground-truth.txt | grep -c -- '-[Ss]ecurity' || echo 0)\"
 } > /export/meta.txt
 " >/dev/null 2>&1
+
+# Not left in the fixture: it is a build tool, not part of the exported host.
+rm -f "$OUTDIR/security-count.sh"
 
 cat "$OUTDIR/meta.txt"

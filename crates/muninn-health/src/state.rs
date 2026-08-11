@@ -17,7 +17,7 @@
 //! never held across an await.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -25,21 +25,30 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 ///
 /// The order matches the startup sequence, which is what makes
 /// `docs/architecture.md`'s diagram checkable against the code.
+///
+/// **Every state here is reachable and observable.** That is a rule, not an
+/// accident: a label that `muninn_state` can never carry is a promise to
+/// whoever writes an alert rule against it, and an unfulfillable one.
+/// `LoadingConfiguration` and `ValidatingConfiguration` were exactly that —
+/// this type is constructed *after* the configuration has been loaded and
+/// validated, because the address the listener binds to comes out of it, so
+/// neither could ever be served. Removed in the 1.0 review (F-05); the startup
+/// steps they named still exist and are described in
+/// `docs/architecture.md`, which now also says from which step a listener
+/// exists at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum State {
     Starting = 0,
-    LoadingConfiguration = 1,
-    ValidatingConfiguration = 2,
-    CheckingRuntime = 3,
-    GeneratingTelegrafConfiguration = 4,
-    ValidatingTelegrafConfiguration = 5,
-    StartingTelegraf = 6,
-    Ready = 7,
-    Degraded = 8,
-    Stopping = 9,
-    Failed = 10,
-    Stopped = 11,
+    CheckingRuntime = 1,
+    GeneratingTelegrafConfiguration = 2,
+    ValidatingTelegrafConfiguration = 3,
+    StartingTelegraf = 4,
+    Ready = 5,
+    Degraded = 6,
+    Stopping = 7,
+    Failed = 8,
+    Stopped = 9,
 }
 
 impl State {
@@ -71,8 +80,6 @@ impl State {
     pub fn as_str(&self) -> &'static str {
         match self {
             State::Starting => "starting",
-            State::LoadingConfiguration => "loading_configuration",
-            State::ValidatingConfiguration => "validating_configuration",
             State::CheckingRuntime => "checking_runtime",
             State::GeneratingTelegrafConfiguration => "generating_telegraf_configuration",
             State::ValidatingTelegrafConfiguration => "validating_telegraf_configuration",
@@ -86,10 +93,8 @@ impl State {
     }
 
     /// Every state, in order. Used by the exhaustiveness tests.
-    pub const ALL: [State; 12] = [
+    pub const ALL: [State; 10] = [
         State::Starting,
-        State::LoadingConfiguration,
-        State::ValidatingConfiguration,
         State::CheckingRuntime,
         State::GeneratingTelegrafConfiguration,
         State::ValidatingTelegrafConfiguration,
@@ -123,6 +128,15 @@ pub struct ModuleCheck {
 /// Everything `/status` and `/metrics` report beyond the state itself.
 #[derive(Debug, Clone, Default)]
 pub struct Details {
+    /// The address the health listener actually bound to.
+    ///
+    /// Not the configured one. `health.listen` may name port 0, which asks the
+    /// kernel for any free port — the configuration then says `:0` while the
+    /// process is answering on something else entirely, and nothing reported
+    /// which (F-18). The test harness and the integration stack both use port 0
+    /// to avoid fighting over ports, so this is a real deployment rather than a
+    /// hypothetical one.
+    pub bound_listen: Option<String>,
     pub telegraf_version: Option<String>,
     pub telegraf_pid: Option<u32>,
     /// Pre-formatted, e.g. "exit code 137". A `String` rather than the process
@@ -143,7 +157,6 @@ pub struct HealthState(Arc<Inner>);
 #[derive(Debug)]
 struct Inner {
     state: AtomicU8,
-    telegraf_restarts: AtomicU64,
     started: Instant,
     details: RwLock<Details>,
 }
@@ -152,7 +165,6 @@ impl HealthState {
     pub fn new() -> Self {
         HealthState(Arc::new(Inner {
             state: AtomicU8::new(State::Starting as u8),
-            telegraf_restarts: AtomicU64::new(0),
             started: Instant::now(),
             details: RwLock::new(Details::default()),
         }))
@@ -168,6 +180,22 @@ impl HealthState {
         State::from_u8(self.0.state.swap(state as u8, Ordering::AcqRel))
     }
 
+    /// Move to `to`, but only if the current state is still `from`. Returns
+    /// whether it moved.
+    ///
+    /// The conditional form exists for one caller and one race: a module's
+    /// retry succeeding at the same moment a stop signal arrives. With
+    /// [`set`](Self::set) the retry would overwrite `Stopping` with `Ready`, and
+    /// `/health/ready` would start answering yes again while muninn is tearing
+    /// Telegraf down — the exact window an orchestrator uses to route traffic.
+    /// A compare-and-swap is what the atomic was already able to do.
+    pub fn transition_from(&self, from: State, to: State) -> bool {
+        self.0
+            .state
+            .compare_exchange(from as u8, to as u8, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
     pub fn is_ready(&self) -> bool {
         self.get().is_ready()
     }
@@ -178,14 +206,6 @@ impl HealthState {
 
     pub fn uptime(&self) -> Duration {
         self.0.started.elapsed()
-    }
-
-    pub fn telegraf_restarts(&self) -> u64 {
-        self.0.telegraf_restarts.load(Ordering::Relaxed)
-    }
-
-    pub fn record_telegraf_restart(&self) {
-        self.0.telegraf_restarts.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Read the details. The guard is dropped before returning, so no caller can
@@ -266,7 +286,23 @@ mod tests {
             assert!(seen.insert(s.as_str()), "{s:?} shares a name");
             assert_eq!(State::from_u8(s as u8), s, "{s:?} did not round-trip");
         }
-        assert_eq!(seen.len(), 12, "the documented machine has twelve states");
+        assert_eq!(seen.len(), 10, "the documented machine has ten states");
+    }
+
+    /// The rule that replaced the two removed states: every variant here has to
+    /// be one the supervisor can actually reach and `/status` can actually
+    /// serve. This test cannot prove reachability on its own — the lifecycle
+    /// tests do that — but it pins the count, so adding a state that nothing
+    /// sets fails here and forces the question to be asked.
+    #[test]
+    fn the_state_machine_carries_no_state_that_cannot_be_served() {
+        assert_eq!(State::ALL.len(), 10);
+        for (i, s) in State::ALL.iter().enumerate() {
+            assert_eq!(
+                *s as usize, i,
+                "{s:?} is out of order with its discriminant"
+            );
+        }
     }
 
     /// Reading from an atomic means an out-of-range value is representable. A
@@ -274,6 +310,34 @@ mod tests {
     #[test]
     fn an_unknown_discriminant_does_not_panic() {
         assert_eq!(State::from_u8(200), State::Stopped);
+    }
+
+    #[test]
+    fn a_conditional_transition_moves_only_from_the_expected_state() {
+        let s = HealthState::new();
+        s.set(State::Degraded);
+
+        assert!(s.transition_from(State::Degraded, State::Ready));
+        assert_eq!(s.get(), State::Ready);
+
+        // The second attempt finds `Ready`, not `Degraded`, and does nothing.
+        assert!(!s.transition_from(State::Degraded, State::Ready));
+        assert_eq!(s.get(), State::Ready);
+    }
+
+    /// The race the conditional form exists for: a module's retry succeeding at
+    /// the same moment a stop signal arrives. An unconditional `set` would put
+    /// readiness back to true while Telegraf is being torn down, which is the
+    /// window an orchestrator uses to route traffic.
+    #[test]
+    fn a_retry_cannot_undo_a_stop_signal() {
+        let s = HealthState::new();
+        s.set(State::Degraded);
+        s.set(State::Stopping);
+
+        assert!(!s.transition_from(State::Degraded, State::Ready));
+        assert_eq!(s.get(), State::Stopping);
+        assert!(!s.is_ready());
     }
 
     #[test]
@@ -324,15 +388,6 @@ mod tests {
             d.module_checks["updates"].at > 0,
             "should carry a timestamp"
         );
-    }
-
-    #[test]
-    fn restarts_are_counted() {
-        let s = HealthState::new();
-        assert_eq!(s.telegraf_restarts(), 0);
-        s.record_telegraf_restart();
-        s.record_telegraf_restart();
-        assert_eq!(s.telegraf_restarts(), 2);
     }
 
     /// A panic elsewhere must not take the diagnostics with it.

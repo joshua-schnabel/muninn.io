@@ -62,6 +62,21 @@ fn render_prometheus(
         // survives Telegraf not running. See ADR-0012.
         .scalar("collectors_exclude", vec!["gocollector", "process"]);
 
+    // Server-side TLS. The option names are Telegraf's own and were checked
+    // against the pinned release's `sample.conf` rather than assumed from the
+    // InfluxDB output's client-side ones: the CA key here is
+    // `tls_allowed_cacerts`, it is an array, and it means "client certificates
+    // I will accept" rather than "who I trust".
+    if let (Some(cert), Some(key)) = (&o.tls.cert_file, &o.tls.key_file) {
+        instance = instance
+            .scalar("tls_cert", cert.clone())
+            .scalar("tls_key", key.clone());
+
+        if let Some(ca) = &o.tls.client_ca_file {
+            instance = instance.scalar("tls_allowed_cacerts", vec![ca.clone()]);
+        }
+    }
+
     if let Some(auth) = &o.basic_auth {
         // Through the same redaction path as the InfluxDB token. There is
         // exactly one way to emit a secret, and it goes through RenderContext.
@@ -77,6 +92,8 @@ fn render_prometheus(
 mod tests {
     use super::*;
     use crate::tests::{config_with, token_file};
+    use muninn_core::Config;
+    use muninn_core::config::normalised;
 
     fn find(instance: &PluginInstance, key: &str) -> Option<String> {
         instance
@@ -156,6 +173,116 @@ mod tests {
             find(prom, "collectors_exclude").as_deref(),
             Some("[\"gocollector\", \"process\"]"),
             "host metrics only — Telegraf's own health belongs on the health port"
+        );
+    }
+
+    // ── The Prometheus credential and its TLS ───────────────────────────────
+    //
+    // The `basic_auth` branch shipped with **no rendering test at all**: the
+    // tests above cover urls, redaction, TLS omission, the listener and
+    // ordering, and none of them ever set it, while the shipped example leaves
+    // both keys null so it is absent from the reference config too. The first
+    // execution of that code was an operator's (N-01).
+
+    fn with_basic_auth(cfg: &mut Config, password: &tempfile::NamedTempFile) {
+        cfg.modules.cpu.enabled = true;
+        let prom = cfg.outputs.prometheus.as_mut().unwrap();
+        prom.basic_auth = Some(normalised::BasicAuth {
+            username: "scraper".to_string(),
+            password: muninn_core::secret::Secret::from_file(password.path()).unwrap(),
+        });
+    }
+
+    fn prometheus_of(cfg: &Config) -> PluginInstance {
+        render(&RenderContext::new(cfg))
+            .into_iter()
+            .find(|i| i.plugin == "prometheus_client")
+            .expect("the prometheus output should render")
+    }
+
+    #[test]
+    fn basic_auth_renders_both_halves() {
+        let p = token_file("scrape-password-value");
+        let cfg = config_with(|c| with_basic_auth(c, &p));
+        let prom = prometheus_of(&cfg);
+        assert_eq!(
+            find(&prom, "basic_username").as_deref(),
+            Some("\"scraper\"")
+        );
+        assert_eq!(
+            find(&prom, "basic_password").as_deref(),
+            Some("\"scrape-password-value\"")
+        );
+    }
+
+    /// The credential goes through the same redaction path as the InfluxDB
+    /// token, so `render-config` output stays safe to paste into an issue.
+    #[test]
+    fn the_basic_auth_password_is_redacted_like_every_other_secret() {
+        let p = token_file("scrape-password-value");
+        let cfg = config_with(|c| with_basic_auth(c, &p));
+        let redacted = render(&RenderContext::redacted(&cfg))
+            .into_iter()
+            .find(|i| i.plugin == "prometheus_client")
+            .unwrap();
+        assert_eq!(
+            find(&redacted, "basic_password").as_deref(),
+            Some("\"***\"")
+        );
+    }
+
+    #[test]
+    fn no_tls_keys_are_rendered_when_none_are_configured() {
+        let cfg = config_with(|c| c.modules.cpu.enabled = true);
+        let prom = prometheus_of(&cfg);
+        for key in ["tls_cert", "tls_key", "tls_allowed_cacerts"] {
+            assert_eq!(find(&prom, key), None, "{key} should be absent");
+        }
+    }
+
+    /// The option names are Telegraf's, taken from the pinned release's
+    /// `sample.conf` rather than mirrored from the InfluxDB output — which is
+    /// a *client* and spells its CA option differently because it means
+    /// something else.
+    #[test]
+    fn server_tls_renders_telegrafs_own_option_names() {
+        let cfg = config_with(|c| {
+            c.modules.cpu.enabled = true;
+            let prom = c.outputs.prometheus.as_mut().unwrap();
+            prom.tls.cert_file = Some("/etc/ssl/muninn.crt".to_string());
+            prom.tls.key_file = Some("/etc/ssl/muninn.key".to_string());
+        });
+        let prom = prometheus_of(&cfg);
+        assert_eq!(
+            find(&prom, "tls_cert").as_deref(),
+            Some("\"/etc/ssl/muninn.crt\"")
+        );
+        assert_eq!(
+            find(&prom, "tls_key").as_deref(),
+            Some("\"/etc/ssl/muninn.key\"")
+        );
+        assert_eq!(
+            find(&prom, "tls_allowed_cacerts"),
+            None,
+            "mutual TLS was not asked for"
+        );
+    }
+
+    /// `tls_allowed_cacerts` is an array in the plugin, and a bare string is
+    /// rejected at `config check` — the same shape mistake `urls` guards
+    /// against on the InfluxDB side.
+    #[test]
+    fn a_client_ca_renders_as_an_array() {
+        let cfg = config_with(|c| {
+            c.modules.cpu.enabled = true;
+            let prom = c.outputs.prometheus.as_mut().unwrap();
+            prom.tls.cert_file = Some("/etc/ssl/muninn.crt".to_string());
+            prom.tls.key_file = Some("/etc/ssl/muninn.key".to_string());
+            prom.tls.client_ca_file = Some("/etc/ssl/clientca.pem".to_string());
+        });
+        assert_eq!(
+            find(&prometheus_of(&cfg), "tls_allowed_cacerts").as_deref(),
+            Some("[\"/etc/ssl/clientca.pem\"]")
         );
     }
 

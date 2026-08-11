@@ -46,7 +46,7 @@ is gone. See [ADR-0012](adr/0012-self-metrics-on-health-server.md).
 | `muninn` | CLI, logging setup, startup sequence, supervisor wiring |
 | `muninn-core` | Config model, loading, validation, secrets, durations, errors, exit codes |
 | `muninn-telegraf` | Typed Telegraf model, TOML renderer, `config check` validator, child process, version check |
-| `muninn-modules` | The `MonitoringModule` trait, eleven modules, two outputs |
+| `muninn-modules` | The `MonitoringModule` trait, twelve modules, two outputs |
 | `muninn-health` | Liveness, readiness, status, self-metrics |
 
 Dependencies point one way: `muninn` → everything; `muninn-modules` →
@@ -87,17 +87,11 @@ validation never competes with the real process for a port. See
         Starting
            │
            ▼
-   LoadingConfiguration ──────┐
+     CheckingRuntime ─────────┐
            │                  │
            ▼                  │
-  ValidatingConfiguration ────┤
-           │                  │
-           ▼                  │
-     CheckingRuntime ─────────┤
-           │                  │
-           ▼                  ├──► Failed ──► (exit)
  GeneratingTelegrafConfig ────┤
-           │                  │
+           │                  ├──► Failed ──► (exit)
            ▼                  │
  ValidatingTelegrafConfig ────┤
            │                  │
@@ -107,7 +101,7 @@ validation never competes with the real process for a port. See
            ▼
          Ready ◄────────► Degraded
            │                  │
-           ▼                  ▼
+           ▼                  │
         Stopping ◄────────────┘
            │
            ▼
@@ -116,10 +110,8 @@ validation never competes with the real process for a port. See
 
 | State | Meaning | Ready? |
 |---|---|---|
-| `Starting` | Process is up, nothing read yet | no |
-| `LoadingConfiguration` | Reading and deserialising the YAML | no |
-| `ValidatingConfiguration` | Schema and semantic rules, secrets | no |
-| `CheckingRuntime` | Mounts, permissions, ports, host OS | no |
+| `Starting` | Process is up, the listener is not bound yet | no |
+| `CheckingRuntime` | Telegraf's version, then mounts, permissions, ports, host OS | no |
 | `GeneratingTelegrafConfiguration` | Rendering TOML | no |
 | `ValidatingTelegrafConfiguration` | Running `telegraf config check` | no |
 | `StartingTelegraf` | Child spawned, not yet confirmed running | no |
@@ -128,6 +120,35 @@ validation never competes with the real process for a port. See
 | `Stopping` | Stop signal received, waiting for Telegraf to exit | no |
 | `Failed` | Unrecoverable; the process is about to exit non-zero | no |
 | `Stopped` | Clean exit | no |
+
+### When a state can first be observed
+
+Steps 1–4 of the startup sequence — arguments, the YAML, validation, secrets —
+happen **before** there is a listener at all, because the address to bind comes
+out of the configuration being read. Nothing can query muninn during them; a
+connection to the health port is refused.
+
+That is why there are ten states and not twelve. `LoadingConfiguration` and
+`ValidatingConfiguration` existed here, in the diagram and in the enum, and
+could never be served by `/status` or carried by `muninn_state` — a label an
+alert rule could be written against and never see. They were removed in the 1.0
+review (finding F-05); the startup steps they named are still in the
+sequence above, where they belong.
+
+`Starting` is the first state, and the first one observable: the listener binds
+immediately after the configuration is resolved, so everything from
+`CheckingRuntime` onwards — including a startup failure — is visible on the
+health port.
+
+### Every startup failure reaches `Failed`
+
+The arrows into `Failed` from the four startup states are load-bearing rather
+than decorative. Because the listener is up during all of them, a startup
+failure that left the state where it was would mean `/health/live` answering 200
+and `muninn_state` reporting `checking_runtime` right up to the moment the
+process exits non-zero. It did exactly that until the 1.0 review; `Failed` was
+set on one path only, a Telegraf that exited after it had been confirmed
+running.
 
 ### Why `Degraded` is ready
 
@@ -141,10 +162,23 @@ collecting. Anything that stops collection is `Failed`, not `Degraded`. The
 failing module is visible in the logs, in `/status`, and in its own
 `*_check_success` metric, so the degradation is never silent.
 
-**What reaches it today.** The updates module runs its check once immediately
-after readiness — a full apt resolution takes seconds, so holding readiness for it
-would delay an orchestrator over something unrelated to collecting metrics — and a
-failure moves muninn to `Degraded`.
+**What reaches it today.** The updates and `image_updates` modules run their
+checks once immediately after readiness — a full apt resolution takes seconds, so
+holding readiness for one would delay an orchestrator over something unrelated to
+collecting metrics — and a failure moves muninn to `Degraded`.
+
+**And what leaves it.** A failed check is retried on that module's own interval
+until it succeeds; when the last failing module reports success, muninn returns
+to `Ready`. A successful check is *not* repeated, because Telegraf is already
+running the same check on the same interval and its results are the ones that
+reach the outputs — repeating it here would parse the host's whole package index
+twice per interval to learn the same thing.
+
+The retry exists for the state, not for the metric. Without it `Degraded` had no
+exit at all: a registry unreachable for two seconds during startup marked a
+container degraded for its entire life, long after the cause was gone
+(finding N-02). A state with no way out is a state that outlives what
+it describes.
 
 That is deliberately the opposite of the Docker module, which refuses to start at
 all when its endpoint does not answer: Docker's failure mode is *silence* that

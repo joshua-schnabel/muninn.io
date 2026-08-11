@@ -35,7 +35,25 @@ unworkable.
 
 ## R8 — The security subset under-reports on Ubuntu
 
-**Severity: medium · Status: known limit, documented**
+**Severity: medium · Status: FIXED, 2026-08-09 — kept for the record**
+
+Classification no longer reads the one origin apt prints. It asks
+`apt-cache policy` which origins the candidate *version* is available from, so
+a security update Ubuntu copied into `<release>-updates` is counted as one.
+The amendment is in [ADR-0009](adr/0009-updates-module-approach.md), the cost
+and the residual uncertainty with it; cell S14 of `scripts/updates-test.sh`
+measures the gap between the two rules on a real Ubuntu fixture rather than
+asserting it away.
+
+**The residual.** The ground truth is a second implementation of the same rule,
+not an independent authority — if the rule itself is wrong, both are wrong
+together. Ubuntu's own `apt-check` is the independent check, and it cannot be
+installed into a fixture without changing the package state being measured.
+
+What the risk said before the fix follows, unchanged, because the measurement in
+it is the reason the fix exists.
+
+---
 
 `muninn_updates_pending{severity="security"}` classifies an update as security
 when the origin apt prints for the **candidate version** names a `-security`
@@ -173,4 +191,5 @@ Kept as one line each, because other pages cite them.
 ## Related
 
 - [`roadmap.md`](roadmap.md) — what is still open
+- [`release-1.0.md`](release-1.0.md) — what must close before the interfaces freeze
 - [`updates-evidence.md`](updates-evidence.md) — the measurements behind R1 and R8

@@ -23,10 +23,45 @@
 
 pub mod debian;
 
+use std::time::Duration;
+
 use muninn_core::Config;
+use muninn_core::duration::ConfigDuration;
 
 use crate::inputs::RANK_UPDATES;
 use crate::{MonitoringModule, PluginInstance, RenderContext, Requirements};
+
+/// How long apt may run before the check kills it.
+///
+/// Not configurable, and not derived from the interval either — unlike
+/// `image_updates`, whose cost scales with the container count, this one costs
+/// what it costs: parsing the host's package index, measured in seconds on
+/// every distribution in `docs/updates-evidence.md`. What the deadline guards
+/// against is not a slow host but a stalled one, where no interval-derived
+/// number would be more right than this.
+///
+/// It exists because apt reads through a mount muninn does not control. See
+/// [`debian::check`] and F-06 of `docs/release-1.0.md`.
+pub const APT_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// How much longer Telegraf waits than the check's own deadline.
+///
+/// Only has to cover process start plus writing one line of output, because
+/// the check stops apt itself at [`APT_TIMEOUT`] and then still has a report to
+/// write.
+const EXEC_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+
+/// The `inputs.exec` timeout that goes with [`APT_TIMEOUT`].
+///
+/// Derived from it rather than written out, for the reason `image_updates`
+/// documents at its own pair: the two failure modes are not symmetric. A helper
+/// Telegraf kills reports *nothing*; a helper that stops apt itself still emits
+/// `check_success=0` with `apt_timed_out`, which is a fact an operator can act
+/// on. Telegraf's number is therefore the larger by construction rather than by
+/// a comment asking someone to keep it that way.
+pub fn exec_timeout() -> Duration {
+    APT_TIMEOUT + EXEC_TIMEOUT_MARGIN
+}
 
 /// Where the image installs muninn.
 ///
@@ -97,9 +132,15 @@ impl MonitoringModule for Updates {
                 // Its own schedule: package state changes on the scale of hours,
                 // and a full apt resolution is expensive next to reading /proc.
                 .scalar("interval", m.interval.as_telegraf())
-                // Generous, because apt has to parse the host's whole package
-                // index. Well under the interval either way.
-                .scalar("timeout", "30s")
+                // Always longer than the deadline the check applies to apt
+                // itself, so apt runs out of muninn's time before Telegraf
+                // runs out of patience. That ordering is what turns a stalled
+                // host mount from a killed helper reporting *nothing* into a
+                // report that says `apt_timed_out` — the same asymmetry
+                // `image_updates` is built on. Generous either way, because apt
+                // has to parse the host's whole package index, and well under
+                // the interval.
+                .scalar("timeout", ConfigDuration::new(exec_timeout()).as_telegraf())
                 .scalar("data_format", "influx")
                 // The check reports its own failure as data (check_success=0)
                 // and exits 0, so a non-zero exit means the helper itself is

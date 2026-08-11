@@ -9,7 +9,7 @@ rather than assumed.
 ```yaml
 services:
   muninn:
-    image: ghcr.io/joshua-schnabel/muninn.io:0.1.0
+    image: ghcr.io/joshua-schnabel/muninn.io:<version>
 
     read_only: true                    # no writable layer
     security_opt: [no-new-privileges:true]
@@ -213,6 +213,15 @@ machine — mounted filesystems, network interfaces, running process counts — 
 `/status` reveals versions and enabled modules. Put both on a trusted network,
 set basic auth on the Prometheus output, or both.
 
+**If you set basic auth, set TLS with it.** `outputs.prometheus.tls` takes a
+`cert_file` and `key_file` for the listener, and optionally a `client_ca_file`
+for mutual TLS. Without it the password crosses the network in the clear on
+every scrape, and muninn warns when it is configured that way — this is the one
+place muninn *sends* a credential rather than receiving one, so a scrape
+interval's worth of exposure is not a rare event. The health port on `8080` has
+no TLS option and is not meant to carry one: it answers probes for an
+orchestrator that reaches it over the container network.
+
 `/status` deliberately carries no secrets and no configuration dump.
 
 **The health listener caps connections and times out a request head.** 256
@@ -234,6 +243,23 @@ semaphore permit taken before `accept`; the deadline is hyper's own
 `header_read_timeout`. Graceful shutdown is preserved, so a probe in flight when
 SIGTERM arrives is finished rather than cut.
 `crates/muninn-health/src/serve.rs` carries the reasoning and the tests.
+
+**The permit is acquired inside the shutdown `select!`, and keep-alive is off.**
+Two corrections the 1.0 review found in that same code, both about the cap
+rather than the deadline:
+
+- Waiting for a permit *before* watching for shutdown meant that at capacity
+  nothing observed the stop signal until a connection finished. A peer holding
+  every permit could stretch the container's shutdown past its stop timeout,
+  with the process looking idle throughout.
+- The header deadline bounds one request head. It does nothing about a peer
+  sending a complete, small, perfectly valid request every few seconds on each
+  of 256 connections — which costs the peer almost nothing and holds every
+  permit, so real probes queue in the backlog. Disabling keep-alive is the
+  policy: each connection serves one request and closes, so a permit is freed
+  after every request. A scraper pays one extra TCP handshake per scrape, which
+  is not a price worth a starvation vector. Telegraf's `:9273` is a separate
+  listener and is unaffected.
 
 **`insecure_skip_verify`** on the InfluxDB output disables certificate
 verification entirely, so anyone able to intercept the connection can read your

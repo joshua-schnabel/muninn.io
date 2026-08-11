@@ -105,38 +105,74 @@ else
   fail "ordering no longer changes behaviour (correct=${correct_n}, broken=${broken_n}) — recheck ADR-0007"
 fi
 
-# ── 5. Documented plugin options exist upstream ──────────────────────────────
-# Catches documentation drifting away from the Telegraf version actually shipped
-# (risk R5).
+# ── 5. Every option the renderer can emit exists upstream ─────────────────
+# Catches the Telegraf plugin surface drifting away from the version actually
+# shipped (risk R5).
+#
+# The options are read out of the **renderer's own source**, not out of
+# docs/reference/telegraf.reference.conf. That reference is rendered from the
+# shipped example, so it only ever contained the options that example happens to
+# switch on — and the example enables neither the docker module nor either
+# `inputs.exec` block, and leaves every TLS and basic-auth key null. The whole
+# `inputs.docker` block, both exec blocks, and all six credential and TLS
+# options were therefore never checked against upstream at all, which is exactly
+# the drift this gate exists to catch walking past it (N-03).
+#
+# Reading the source covers what the renderer *can* emit rather than what one
+# configuration does emit, and cannot fall behind the example again. The
+# alternative — a second reference config that enables everything — would have
+# needed a committed artefact verified by a real `telegraf config check`, and an
+# unverified reference is worse than none: it becomes a test that agrees with
+# whatever the code happens to do.
 info "5/7  plugin options exist in Telegraf ${TELEGRAF_VERSION}"
 TELEGRAF_VERSION="$TELEGRAF_VERSION" python3 - <<'PY' && pass "every plugin option exists upstream" || fail "unknown plugin option(s)"
 import re, os, pathlib, sys, urllib.request
-ver = "v" + os.environ["TELEGRAF_VERSION"]
-base = f"https://raw.githubusercontent.com/influxdata/telegraf/{ver}/plugins"
-conf = pathlib.Path('docs/reference/telegraf.reference.conf').read_text(encoding='utf-8')
 
-pairs, plugin, in_sub = set(), None, False
-for line in conf.splitlines():
-    s = line.strip()
-    if not s or s.startswith('#'):
-        continue
-    m = re.match(r'\[\[(inputs|outputs)\.(\w+)\]\]', s)
-    if m:
-        plugin, in_sub = f'{m.group(1)}/{m.group(2)}', False
-        continue
-    # Sub-table keys are tag names, not plugin options — skip them.
-    if re.match(r'\[(inputs|outputs)\.\w+\.\w+\]', s):
-        in_sub = True
-        continue
-    if s == '[agent]':
-        plugin, in_sub = None, False
-        continue
-    m = re.match(r'(\w+)\s*=', s)
-    if m and plugin and not in_sub:
-        pairs.add((plugin, m.group(1)))
+ver = 'v' + os.environ['TELEGRAF_VERSION']
+base = f'https://raw.githubusercontent.com/influxdata/telegraf/{ver}/plugins'
+
+# `PluginInstance::input("cpu", ...)` opens a plugin; every `.scalar(...)`,
+# `.scalar_opt(...)` and `.list(...)` until the next one belongs to it.
+INSTANCE = re.compile(r'PluginInstance::(input|output)\(\s*"([A-Za-z0-9_]+)"')
+OPTION = re.compile(r'\.(?:scalar|scalar_opt|list)\(\s*"([A-Za-z0-9_]+)"')
+
+pairs = set()
+for src in sorted(pathlib.Path('crates/muninn-modules/src').rglob('*.rs')):
+    text = src.read_text(encoding='utf-8')
+    cut = text.find('#[cfg(test)]')          # a test's fixture is not a rendered option
+    if cut >= 0:
+        text = text[:cut]
+    plugin = None
+    for line in text.splitlines():
+        m = INSTANCE.search(line)
+        if m:
+            plugin = f'{m.group(1)}s/{m.group(2)}'
+        if plugin:
+            for opt in OPTION.findall(line):
+                pairs.add((plugin, opt))
+
+if not pairs:
+    print('  found no plugin options at all — the source layout changed and this',
+          'gate is now checking nothing')
+    sys.exit(1)
+
+# Options every plugin of that kind accepts, listed in Telegraf's
+# docs/CONFIGURATION.md rather than in any one plugin's sample.conf — so a
+# sample-only check reports them missing. Verified against the pinned release's
+# "Input Plugin Common Parameters" section.
+#
+# Deliberately only the ones muninn actually renders. A full transcription would
+# be a list nobody re-checks, and the point of this gate is that an option
+# muninn emits has been seen somewhere upstream.
+COMMON = {
+    'inputs': {'interval', 'alias', 'precision', 'name_override', 'tags'},
+    'outputs': {'alias'},
+}
 
 cache, missing = {}, []
 for plug, opt in sorted(pairs):
+    if opt in COMMON.get(plug.split('/')[0], ()):
+        continue
     if plug not in cache:
         try:
             cache[plug] = urllib.request.urlopen(f'{base}/{plug}/sample.conf', timeout=30).read().decode()
@@ -145,6 +181,8 @@ for plug, opt in sorted(pairs):
             cache[plug] = ''
     if not re.search(rf'^\s*#?\s*{re.escape(opt)}\s*=', cache[plug], re.M):
         missing.append(f'{plug}.{opt}')
+
+print(f'  checked {len(pairs)} options across {len(cache)} plugins')
 for m in missing:
     print('  not found:', m)
 sys.exit(1 if missing else 0)
@@ -172,25 +210,68 @@ else
   fail "ADR-0011 checksums differ from upstream"
 fi
 
-# ── 7. Every relative documentation link resolves ────────────────────────────
+# ── 7. Every relative documentation link resolves, fragment included ─────────
 info "7/7  documentation cross-references"
 python3 - <<'PY' && pass "all relative markdown links resolve" || fail "broken markdown link(s)"
-import re, pathlib, sys, urllib.parse
-bad, checked = [], 0
+# Paths *and* heading fragments.
+#
+# Only the path was checked, and `#anchor` was dropped before the check — so a
+# link to a heading that had been renamed, or never existed, reported success.
+# Two such links were in the tree when this was written: ci-cd.md pointed at a
+# hardening heading that had been reworded, and security-audit.md used the
+# `{#id}` syntax, which GitHub-flavoured Markdown does not read as a custom
+# heading ID at all. Neither had ever resolved (F-16).
+#
+# The slug rules are GitHub's, because GitHub is where these are read:
+# lowercase, drop everything that is not a word character, whitespace or a
+# hyphen, then spaces to hyphens. Repeats get `-1`, `-2`. An em dash therefore
+# leaves the two spaces around it and produces a double hyphen, which is why
+# real anchors in this repository look like `#f-01--secret-values-...`.
+import collections, re, pathlib, sys, urllib.parse
+
+def slugs(text):
+    seen, out = collections.Counter(), set()
+    for line in text.splitlines():
+        m = re.match(r'^(#{1,6})\s+(.*?)\s*$', line)
+        if not m:
+            continue
+        t = m.group(2)
+        t = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', t)  # [text](url) -> text
+        t = t.replace('`', '').lower()
+        t = re.sub(r'[^\w\s-]', '', t).replace(' ', '-')
+        n = seen[t]
+        seen[t] += 1
+        out.add(t if n == 0 else f'{t}-{n}')
+    return out
+
+anchors, bad, checked, frags = {}, [], 0, 0
 for md in sorted(pathlib.Path('.').rglob('*.md')):
     if 'target' in md.parts:
         continue
-    for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', md.read_text(encoding='utf-8')):
+    text = md.read_text(encoding='utf-8')
+    for m in re.finditer(r'\[[^\]]*\]\(([^)]+)\)', text):
         link = m.group(1).strip()
-        if link.startswith(('http://', 'https://', 'mailto:', '#')):
+        if link.startswith(('http://', 'https://', 'mailto:')):
             continue
-        path = link.partition('#')[0]
-        if not path:
+        path, _, frag = link.partition('#')
+
+        target = md if not path else (md.parent / urllib.parse.unquote(path))
+        if path:
+            checked += 1
+            if not target.resolve().exists():
+                bad.append(f'{md.as_posix()} -> {link}  (no such file)')
+                continue
+        # A same-document link has no path and is still worth checking.
+        if not frag or target.suffix != '.md':
             continue
-        checked += 1
-        if not (md.parent / urllib.parse.unquote(path)).resolve().exists():
-            bad.append(f'{md.as_posix()} -> {link}')
-print(f'  checked {checked} relative links')
+        key = target.resolve()
+        if key not in anchors:
+            anchors[key] = slugs(key.read_text(encoding='utf-8'))
+        frags += 1
+        if urllib.parse.unquote(frag) not in anchors[key]:
+            bad.append(f'{md.as_posix()} -> {link}  (no such heading)')
+
+print(f'  checked {checked} relative links and {frags} heading fragments')
 for b in bad:
     print('  broken:', b)
 sys.exit(1 if bad else 0)

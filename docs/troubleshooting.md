@@ -33,7 +33,7 @@ Validate without starting anything:
 
 ```bash
 docker run --rm -v ./muninn.yaml:/etc/muninn/muninn.yaml:ro \
-  jschnabel/muninn:0.1.1 validate
+  jschnabel/muninn:<version> validate
 ```
 
 ## Exit code 11 (SECRET)
@@ -67,7 +67,7 @@ See what was generated (secrets are redacted):
 
 ```bash
 docker run --rm -v ./muninn.yaml:/etc/muninn/muninn.yaml:ro \
-  jschnabel/muninn:0.1.1 render-config
+  jschnabel/muninn:<version> render-config
 ```
 
 The generated file itself lives on a tmpfs, is root-only and is never persisted,
@@ -142,19 +142,49 @@ credentials. This reason token covers everything that can go wrong there: rate
 limits, a registry that is down, and an expired or absent credential for a
 private image. They are not split apart today — [R9](risks.md).
 
+**It also takes the module down, and the container with it.** One container
+without a verdict now holds `muninn_module_check_success{module="image_updates"}`
+at 0 and muninn at `degraded`, because the aggregate means "every selected
+container was answered for" rather than "the daemon replied". That is intended
+and is the honest report — but if a single unreachable registry is a thing you
+have looked at and decided not to care about, say so with
+`modules.image_updates.container_exclude`. An excluded container is not
+selected, so it cannot hold the aggregate down.
+[`modules.md#image_updates`](modules.md#image_updates), F-11.
+
+Telegraf's own `muninn_image_updates_check_success` is unaffected: it answers
+whether the daemon could be reached, and it still does.
+
 The module is verified against public images only.
 [ADR-0013](adr/0013-image-updates-via-docker-api.md)
 
 ## `updates` reports 0 security updates on Ubuntu
 
-Not necessarily good news. The security subset is a **lower bound** on Ubuntu:
-security updates are published to `<release>-security` and also copied into
-`<release>-updates`, and when apt resolves the candidate through the latter
-muninn does not count it as security. The total is unaffected, and the host's own
-`apt-get -s dist-upgrade` says the same thing.
+Now good news, and it did not always mean that. Classification asks whether the
+candidate version is available from **any** security origin, so a security
+update Ubuntu published to `<release>-security` and also copied into
+`<release>-updates` is counted either way. Zero means zero.
 
-Alert on the total. [R8](risks.md),
-[`updates-evidence.md`](updates-evidence.md)
+Until that changed, muninn read only the one origin apt prints for the candidate
+— whichever pocket it happened to resolve through — so an Ubuntu host with
+security updates pending could report zero. Worth knowing if you are reading a
+dashboard whose history crosses the change: the security series can step up
+without anything on the host having moved. [R8](risks.md),
+[ADR-0009](adr/0009-updates-module-approach.md)
+
+## `updates` stops reporting a total it used to report
+
+Deliberate. The security subset is a second `apt-cache policy` pass, and if that
+pass fails the **whole check** fails — `muninn_updates_check_success` goes to 0
+with apt's own `reason`, rather than a total appearing beside a security count
+that might be wrong. A missing series reads as zero on most dashboards, which is
+the failure this rule exists to prevent.
+
+So a check that went from answering to `apt_failed` or `apt_timed_out` after
+this change is usually the second pass, not the first. `muninn update-check`
+prints the detail on stderr. Setting `modules.updates.security_only_metric` to
+`false` skips the pass entirely — the total comes back, and the security series
+legitimately goes away with it.
 
 ## A module reports failure but the container stays ready
 
