@@ -8,6 +8,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 The release pipeline reads the version from this file — see
 [`docs/ci-cd.md`](docs/ci-cd.md). Never hand-push a `v*` tag.
 
+## [Unreleased]
+
 ## [1.0.0] - 2026-08-11
 
 ### Changed
