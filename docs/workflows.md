@@ -212,10 +212,13 @@ via `workflow_dispatch` with an existing tag.
    container pull commands, the manifest digest (best-effort), and the test
    summary if there is one. Then generates an SBOM from the **published** tag and
    attaches it. Idempotent throughout.
-4. **`prepare-dev`** — opens an **auto-merging PR into `dev`** that reopens a
+4. **`prepare-dev`** — merges `main` back into `dev` so the release commits enter
+   its ancestry, then opens an **auto-merging PR into `dev`** that reopens a
    fresh `## [Unreleased]`, repoints the compare links, and bumps the workspace
    version through `scripts/set-workspace-version.sh`. It pushes only to a
-   `release/*` branch, which `auto-pr.yml` ignores.
+   `release/*` branch, which `auto-pr.yml` ignores. The PR is merged with a
+   **merge commit**, not a squash — a squash would flatten the back-merge to one
+   parent and undo the reason it is there.
 
 **Gotchas**
 
@@ -227,6 +230,12 @@ via `workflow_dispatch` with an existing tag.
 - The version bump writes `Cargo.toml` **and** `Cargo.lock`. Bumping only the
   manifest makes every `--locked` job fail before a test runs — which is how the
   housekeeping PR arrived red the first time.
+- **`if: always()` is not "run last".** It decides whether a step runs after an
+  earlier one failed; steps still execute in file order. `prepare-dev`'s
+  signing-key cleanup was written that way and placed *above* the step that
+  commits, so it deleted the key before the commit needed it and every release
+  would have failed the back-merge — v1.0.0 did. A cleanup that must follow the
+  work has to be positioned after it as well as marked `always()`.
 
 ## `release-dispatch.yml` — one-click release, owner-only
 
