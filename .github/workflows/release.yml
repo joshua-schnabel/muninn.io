@@ -513,28 +513,6 @@ jobs:
           git config user.signingkey "$KEYID"
           git config commit.gpgsign true
 
-      # The signing material outlives the one commit it exists for unless
-      # something removes it, and `always()` is the point: the case worth
-      # covering is the job that failed halfway, leaving a private key in the
-      # agent and a passphrase in a file on a runner that is about to be
-      # returned to the pool (F-13).
-      #
-      # It cannot move to *after* the commit in the ordinary sense — the commit
-      # happens inside the step below — so this is a cleanup rather than a
-      # narrowing. What runs between the import and the commit is this
-      # repository's own scripts and the `gh` CLI, not third-party actions;
-      # that is a materially smaller surface than ci.yml's publish job had, and
-      # it is the reason this is the lesser half of the finding.
-      - name: Remove the signing material
-        if: always()
-        run: |
-          rm -f "$RUNNER_TEMP/gpg-pass" "$RUNNER_TEMP/gpg-wrap"
-          gpg --batch --quiet --list-secret-keys --with-colons 2>/dev/null \
-            | awk -F: '/^fpr:/ {print $10}' \
-            | while read -r fpr; do
-                gpg --batch --yes --delete-secret-and-public-key "$fpr" 2>/dev/null || true
-              done
-
       - name: Open housekeeping PR into dev
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
@@ -564,9 +542,18 @@ jobs:
           # changelog merge is how entries get silently dropped, so this stops
           # and says what to do. The release itself is complete by this point;
           # only the back-merge is outstanding.
+          # A merge can fail for reasons that are not a conflict — a signing
+          # failure being the one this job has actually hit — and reporting one
+          # as the other sends the reader looking for a conflict that does not
+          # exist. Unmerged paths are what makes it a conflict, so ask.
           if ! git merge --no-ff --no-edit origin/main; then
-            git merge --abort || true
-            echo "::error::merging main into dev conflicts — dev moved during the release. Do it by hand: git switch dev && git merge origin/main, resolve, then open the housekeeping PR. The release itself is complete."
+            conflicts="$(git ls-files --unmerged)"
+            git merge --abort 2>/dev/null || true
+            if [ -n "$conflicts" ]; then
+              echo "::error::merging main into dev conflicts — dev moved during the release. Do it by hand: git switch dev && git merge origin/main, resolve, then open the housekeeping PR. The release itself is complete."
+            else
+              echo "::error::merging main into dev failed with no conflicting paths — the cause is in the git output above, not in the merge. The release itself is complete; the back-merge and the housekeeping PR are outstanding."
+            fi
             exit 1
           fi
 
@@ -638,3 +625,29 @@ jobs:
           # exactly this reason.
           gh pr merge --auto --merge "$BR" || \
             echo "::warning::Could not enable auto-merge (RELEASE_PAT missing, or merge commits not allowed on dev?). Merge the PR by hand — with a merge commit."
+
+      # The signing material outlives the one commit it exists for unless
+      # something removes it, and `always()` is the point: the case worth
+      # covering is the job that failed halfway, leaving a private key in the
+      # agent and a passphrase in a file on a runner that is about to be
+      # returned to the pool (F-13).
+      #
+      # It must be the *last* step, not merely an `always()` one. `always()`
+      # decides whether a step runs when an earlier one failed; it does not
+      # move the step to the end of the job. Placed above the step that
+      # commits, it deleted the key before the commit that needs it — which is
+      # what happened to v1.0.0.
+      #
+      # What runs between the import and the commit is this repository's own
+      # scripts and the `gh` CLI, not third-party actions; that is a materially
+      # smaller surface than ci.yml's publish job had, and it is the reason
+      # this is the lesser half of the finding.
+      - name: Remove the signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/gpg-pass" "$RUNNER_TEMP/gpg-wrap"
+          gpg --batch --quiet --list-secret-keys --with-colons 2>/dev/null \
+            | awk -F: '/^fpr:/ {print $10}' \
+            | while read -r fpr; do
+                gpg --batch --yes --delete-secret-and-public-key "$fpr" 2>/dev/null || true
+              done

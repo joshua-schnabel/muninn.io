@@ -10,6 +10,14 @@ The release pipeline reads the version from this file — see
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release's signing key is removed after the commit that needs it, not before.** The F-13 cleanup that deletes the private key and its passphrase from the runner was written as an `if: always()` step and placed above the step it was meant to follow, on the reasoning that it "cannot move to after the commit — the commit happens inside the step below". That reasoning was wrong about what `always()` does: it decides whether a step runs when an earlier one *failed*, and does not defer the step to the end of the job. Steps still run in file order, so every release imported the key, deleted it, and then asked git to sign — with `commit.gpgsign` and `user.signingkey` still configured. **v1.0.0 hit it**: the back-merge failed with `gpg: skipped "…": No secret key`, `dev` never received the release commits, and no housekeeping PR was opened. The release itself was complete and unaffected — the tag, the image, the SBOM and the notes all come from earlier jobs. The step is now last in the job, which is what `always()` was reaching for and could not express by itself.
+
+- **A failed back-merge is no longer reported as a conflict when there is none.** Any non-zero exit from `git merge` printed "merging main into dev conflicts — dev moved during the release", so the one failure this job has actually had described a cause that did not exist and sent the reader to resolve a conflict that was not there. The handler now asks `git ls-files --unmerged` and only calls it a conflict when there are unmerged paths; anything else says so and points at git's own output. Both messages still state that the release is complete, which was the useful half.
+
+## [1.0.0] - 2026-08-11
+
 ### Changed
 
 - **A release is built and published once, and the Release names the bytes it describes.** `ci.yml` triggered on `v*.*.*` tags as well as branches, and `publish` creates the release tag as its last step — so a release built and published the image **twice**: once from the `main` push, once from the tag that push created. Two builds, two manifests, and one moving `:x.y.z` tag pointing at whichever run finished last, while `release.yml` — fired by the same tag — assembled the SBOM and the release notes from whatever the tag resolved to at that moment. Every gate stayed green, because nothing compared the two. **v0.3.0 shipped that way.** Found in huginn.io, which has the same pipeline shape and the same bug (joshua-schnabel/huginn.io#69).
@@ -617,7 +625,8 @@ project brief:
 - There is no `inputs.load`; the `load` and `system` modules merge into one
   plugin instance.
 
-[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/joshua-schnabel/muninn.io/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v1.0.0
 [0.3.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.3.0
 [0.2.1]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.1
 [0.2.0]: https://github.com/joshua-schnabel/muninn.io/releases/tag/v0.2.0
