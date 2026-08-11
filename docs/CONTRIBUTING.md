@@ -2,7 +2,8 @@
 
 ## Before you start
 
-muninn is feature-complete and released — `0.1.0` is the first version. Read
+muninn is feature-complete and released — `1.0.0` is the current version, and
+the surfaces in [`versioning.md`](versioning.md) are frozen. Read
 [`architecture.md`](architecture.md) for the shape of the thing, and
 [`roadmap.md`](roadmap.md) for what is still open.
 

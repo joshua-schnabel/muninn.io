@@ -191,5 +191,4 @@ Kept as one line each, because other pages cite them.
 ## Related
 
 - [`roadmap.md`](roadmap.md) — what is still open
-- [`release-1.0.md`](release-1.0.md) — what must close before the interfaces freeze
 - [`updates-evidence.md`](updates-evidence.md) — the measurements behind R1 and R8
