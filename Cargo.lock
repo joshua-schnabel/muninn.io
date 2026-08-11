@@ -481,7 +481,7 @@ dependencies = [
 
 [[package]]
 name = "muninn"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "clap",
  "libc",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "muninn-core"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "humantime",
  "humantime-serde",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "muninn-health"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "axum",
  "hyper",
@@ -524,7 +524,7 @@ dependencies = [
 
 [[package]]
 name = "muninn-modules"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "insta",
  "muninn-core",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "muninn-telegraf"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "insta",
  "libc",
