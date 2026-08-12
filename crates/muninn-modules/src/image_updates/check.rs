@@ -40,6 +40,7 @@
 use std::time::{Duration, Instant};
 
 use super::docker_api::{self, Container, DockerApi};
+use super::registry_auth::RegistryCredential;
 use crate::unix_now;
 
 /// The measurement for the one check that covers the whole daemon: could the
@@ -265,6 +266,7 @@ pub fn check(
     budget: Duration,
     include: &[String],
     exclude: &[String],
+    registry_auth: Vec<RegistryCredential>,
 ) -> Report {
     // Validation rejects a malformed endpoint before it is ever rendered, so
     // this only fires when the command is run by hand with a typo — but this
@@ -283,7 +285,7 @@ pub fn check(
     };
 
     run(
-        &docker_api::Client::new(parsed, registry_timeout),
+        &docker_api::Client::new(parsed, registry_timeout).with_registry_auth(registry_auth),
         budget,
         include,
         exclude,
@@ -1002,6 +1004,7 @@ mod tests {
             GENEROUS,
             &[],
             &[],
+            Vec::new(),
         );
         assert_eq!(report.daemon_outcome, Err(DaemonReason::InvalidEndpoint));
         assert!(report.containers.is_empty());
@@ -1023,6 +1026,7 @@ mod tests {
             GENEROUS,
             &[],
             &[],
+            Vec::new(),
         );
         assert_eq!(report.daemon_outcome, Err(DaemonReason::DockerUnreachable));
         assert!(report.containers.is_empty());

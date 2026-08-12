@@ -474,6 +474,114 @@ fn image_updates_interval_below_a_minute_is_rejected() {
     assert!(msg.contains("1m or more"), "got: {msg}");
 }
 
+/// The registry host is spelled the way an image reference spells it, and every
+/// other Docker endpoint in this file takes a scheme — so `https://` is the
+/// mistake to expect. It would simply never match, and the check would fail as
+/// though nothing had been configured at all.
+#[test]
+fn a_registry_with_a_scheme_is_rejected() {
+    let msg = rejects(
+        &with(
+            r#"modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: "https://registry.example.com"
+        username: robot
+        password_file: /run/secrets/pw
+"#,
+        ),
+        "modules.image_updates.registry_auth[0].registry",
+    );
+    assert!(msg.contains("no scheme"), "got: {msg}");
+}
+
+#[test]
+fn a_registry_carrying_a_repository_path_is_rejected() {
+    let msg = rejects(
+        &with(
+            r#"modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: registry.example.com/team/app
+        username: robot
+        password_file: /run/secrets/pw
+"#,
+        ),
+        "modules.image_updates.registry_auth[0].registry",
+    );
+    assert!(msg.contains("registry host alone"), "got: {msg}");
+}
+
+/// Which of two entries applies would decide whether a check authenticates, and
+/// picking one silently is a failure an operator cannot explain afterwards.
+#[test]
+fn the_same_registry_twice_is_rejected() {
+    let msg = rejects(
+        &with(
+            r#"modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: r.example.com
+        username: a
+        password_file: /run/a
+      - registry: r.example.com
+        username: b
+        password_file: /run/b
+"#,
+        ),
+        "modules.image_updates.registry_auth[1].registry",
+    );
+    assert!(msg.contains("configured twice"), "got: {msg}");
+}
+
+#[test]
+fn an_empty_registry_username_is_rejected() {
+    rejects(
+        &with(
+            r#"modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: r.example.com
+        username: ""
+        password_file: /run/secrets/pw
+"#,
+        ),
+        "modules.image_updates.registry_auth[0].username",
+    );
+}
+
+/// The key is named `password_file` precisely so a value cannot be written
+/// there by accident. An empty one is the way it would still slip through.
+#[test]
+fn an_empty_registry_password_file_is_rejected() {
+    let msg = rejects(
+        &with(
+            r#"modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: r.example.com
+        username: robot
+        password_file: ""
+"#,
+        ),
+        "modules.image_updates.registry_auth[0].password_file",
+    );
+    assert!(msg.contains("file paths, never values"), "got: {msg}");
+}
+
+/// Nothing to configure is the default and the common case: every public
+/// registry answers an anonymous query.
+#[test]
+fn no_registry_auth_is_valid() {
+    let cfg = ok(&with("modules:\n  image_updates:\n    enabled: true\n"));
+    assert!(cfg.modules.image_updates.registry_auth.is_empty());
+}
+
 #[test]
 fn image_updates_endpoint_must_have_a_known_scheme() {
     rejects(

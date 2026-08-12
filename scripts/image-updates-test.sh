@@ -26,12 +26,17 @@
 # # The authenticated registry (I11-I13)
 #
 # Cells I1-I10 all use a public registry, where an anonymous distribution query
-# succeeds — so none of them ever exercised ADR-0013's central claim, that
+# succeeds — so none of them ever exercised ADR-0013's original claim, that
 # muninn needs no credential handling because the daemon "already knows any
-# registry credentials the host is configured with". I11 runs a local
-# `registry:2` behind htpasswd and asserts that claim; I12 and I13 assert the
-# invariant that a 401 and a 404 arrive as a reason with no verdict rather than
-# as "up to date". This is finding F-14 and the measurement half of R9.
+# registry credentials the host is configured with". These three did, and it was
+# false: `docker login` writes to the *client's* config and the CLI forwards the
+# credential in an X-Registry-Auth header, which muninn was not sending.
+#
+# They now cover the fix. A local `registry:2` behind htpasswd, and muninn given
+# the credential the way this project accepts credentials — a password *file*
+# named by its own configuration: I11 asserts the image is judged, I12 that a
+# rejected credential is a reason with no verdict, I13 the same for a repository
+# the registry does not have. Finding F-14, and R9.
 #
 # # Every run is hardened
 #
@@ -132,16 +137,62 @@ group_flag() {
     [ -n "$SOCKET_GID" ] && printf '%s' "--group-add=${SOCKET_GID}"
 }
 
+# A configuration to mount at /etc/muninn/muninn.yaml for the next `check`,
+# together with the directory holding any secret files it names. Empty for
+# every cell that needs no credentials, which is all of I1-I10: `image-check`
+# reads its configuration only for `modules.image_updates.registry_auth`, and
+# says so on stderr when there is none.
+CHECK_CONFIG=""
+CHECK_SECRETS=""
+
 # `muninn image-check` in the shipped image, hardened, against the real daemon.
 check() {
     local flag; flag=$(group_flag)
+    local mounts=()
+    if [ -n "$CHECK_CONFIG" ]; then
+        mounts+=(-v "$(native "$(dirname "$CHECK_CONFIG")")/$(basename "$CHECK_CONFIG"):/etc/muninn/muninn.yaml:ro")
+    fi
+    if [ -n "$CHECK_SECRETS" ]; then
+        mounts+=(-v "$(native "$CHECK_SECRETS"):/run/secrets:ro")
+    fi
     docker run --rm \
         --read-only --cap-drop=ALL --security-opt no-new-privileges:true \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
         ${flag:+"$flag"} \
+        "${mounts[@]}" \
         -v "${SOCKET}:/var/run/docker.sock:ro" \
         "$IMAGE" image-check --endpoint unix:///var/run/docker.sock "$@" 2>/dev/null
 }
+
+# A muninn configuration whose image_updates module carries one registry
+# credential, plus the password file it names.
+#
+# The password is a file and the file is mounted, because that is the only
+# shape this project accepts a credential in — and writing the cell any other
+# way would be testing a path operators cannot use.
+write_auth_config() { # <password>
+    local dir="$WORK/auth-config"
+    rm -rf "$dir" && mkdir -p "$dir/secrets"
+    printf '%s' "$1" > "$dir/secrets/registry-password"
+    chmod 0600 "$dir/secrets/registry-password" 2>/dev/null || true
+    cat > "$dir/muninn.yaml" <<YAML
+version: 1
+modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: "${REGISTRY_ADDR}"
+        username: "${REGISTRY_USER}"
+        password_file: /run/secrets/registry-password
+outputs:
+  prometheus:
+    enabled: true
+YAML
+    CHECK_CONFIG="$dir/muninn.yaml"
+    CHECK_SECRETS="$dir/secrets"
+}
+
+clear_auth_config() { CHECK_CONFIG=""; CHECK_SECRETS=""; }
 
 # The line for one container, out of the whole report. The check line comes
 # first, so this is it rather than the verdict line.
@@ -524,66 +575,59 @@ YAML
     docker rm -f "${PREFIX}-c-e2e" >/dev/null 2>&1
 }
 
-I11() { # THE cell for F-14: does a private registry work through the daemon at all?
+I11() { # THE cell for F-14: does a private registry work at all?
     #
-    # ADR-0013's central claim is that muninn needs no credential handling
-    # because `GET /distribution/{ref}/json` asks the *daemon*, which "already
-    # knows any registry credentials the host is configured with". Everything
-    # else in this module rests on that sentence, and until this cell existed
-    # nothing had ever executed it: the unit tests script the daemon's answers,
-    # and every other cell here uses a public registry, where an anonymous query
-    # succeeds and the claim is never load-bearing.
+    # ADR-0013's original premise was that muninn needed no credential handling,
+    # because asking the daemon meant the daemon "already knows any registry
+    # credentials the host is configured with". This cell is what executed that
+    # sentence for the first time, and it was false: `docker login` writes to
+    # the *client's* config and the CLI forwards the credential in an
+    # X-Registry-Auth header, which muninn was not sending. The measured answer
+    # was distribution_query_failed against a registry the host could push to.
     #
-    # This is the same shape as the chunked-encoding bug (AGENTS.md §6): a
-    # plausible sentence about upstream, a full green unit suite, and no live
-    # measurement. So the cell asserts the claim rather than accommodating it —
-    # if the daemon does not in fact use the host's credentials, this goes red
-    # and names the reason it got, which is the finding.
+    # So the cell now asserts the fixed behaviour: with the credential in
+    # muninn's own configuration, as a password *file*, the image is judged.
     local why
     if ! why=$(registry_fixture); then
         skip I11 "$why"
         return
     fi
-    start_container "${PREFIX}-c-private" "${REGISTRY_REPO}:v1" \
-        || { fail I11 "could not start a container from the private registry"; return; }
+    start_container "${PREFIX}-c-private" "${REGISTRY_REPO}:v1"         || { fail I11 "could not start a container from the private registry"; return; }
 
+    write_auth_config "$REGISTRY_PASS"
     local out line
     out=$(check --include "${PREFIX}-c-private")
     line=$(line_for "$out" "${PREFIX}-c-private")
+    clear_auth_config
 
     if [ "$(field "$line" check_success)" = 1 ] && has_verdict "$out" "${PREFIX}-c-private"; then
-        pass I11 "an image from an authenticated registry is judged through the daemon's own credentials"
+        pass I11 "an image from an authenticated registry is judged, using the configured credential"
     else
-        fail I11 "ADR-0013 says the daemon uses the host's registry credentials; it did not \
-(reason=$(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*/\1/p')): $line"
+        fail I11 "expected a verdict for an authenticated registry (reason=$(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*//p')): $line"
     fi
     docker rm -f "${PREFIX}-c-private" >/dev/null 2>&1
 }
 
-I12() { # credentials the registry rejects must never produce a healthy value
+I12() { # a credential the registry rejects must never produce a healthy value
     #
-    # Independent of I11's outcome: whether or not the authenticated path works,
-    # a 401 has to arrive as `check_success=0` with a reason and no verdict.
-    # That is the project's sharpest rule, and it is the half of F-14 that holds
-    # whichever way the ADR's claim turns out.
+    # The password in muninn's configuration is wrong, so the registry answers
+    # 401. This is the project's sharpest rule applied to the new code path: a
+    # rejected credential is a reason with no verdict, never "up to date".
     local why
     if ! why=$(registry_fixture); then
         skip I12 "$why"
         return
     fi
-    start_container "${PREFIX}-c-401" "${REGISTRY_REPO}:v1" \
-        || { fail I12 "could not start"; return; }
-    docker logout "$REGISTRY_ADDR" >/dev/null 2>&1
+    start_container "${PREFIX}-c-401" "${REGISTRY_REPO}:v1"         || { fail I12 "could not start"; return; }
 
+    write_auth_config "definitely-not-the-password"
     local out line
     out=$(check --include "${PREFIX}-c-401")
     line=$(line_for "$out" "${PREFIX}-c-401")
+    clear_auth_config
 
-    if [ "$(field "$line" check_success)" = 0 ] \
-       && echo "$line" | grep -q 'reason=' \
-       && ! has_verdict "$out" "${PREFIX}-c-401"; then
-        pass I12 "a registry that answers 401 reports a reason and NO verdict \
-($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*/\1/p'))"
+    if [ "$(field "$line" check_success)" = 0 ]        && echo "$line" | grep -q 'reason='        && ! has_verdict "$out" "${PREFIX}-c-401"; then
+        pass I12 "a rejected credential reports a reason and NO verdict ($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*//p'))"
     else
         fail I12 "expected check_success=0 with a reason and no verdict, got: $out"
     fi
@@ -592,32 +636,30 @@ I12() { # credentials the registry rejects must never produce a healthy value
 
 I13() { # authenticated, but the repository is not there
     #
-    # The fourth case R9 collapses into one token. Produced by restarting the
-    # registry with empty storage: the host keeps the image and its RepoDigest,
-    # so the module has every reason to ask — and the answer is 404 rather than
-    # a refusal to connect or a refusal to authorise.
+    # Correct credentials this time, against a registry restarted with empty
+    # storage: the host keeps the image and its RepoDigest, so the module has
+    # every reason to ask, and the answer is "no such repository" rather than a
+    # refusal to connect or to authorise. Still a reason with no verdict.
     local why
     if ! why=$(registry_fixture); then
         skip I13 "$why"
         return
     fi
-    start_container "${PREFIX}-c-404" "${REGISTRY_REPO}:v1" \
-        || { fail I13 "could not start"; return; }
+    start_container "${PREFIX}-c-404" "${REGISTRY_REPO}:v1"         || { fail I13 "could not start"; return; }
     if ! start_registry; then
         skip I13 "the registry did not come back up empty"
         docker rm -f "${PREFIX}-c-404" >/dev/null 2>&1
         return
     fi
 
+    write_auth_config "$REGISTRY_PASS"
     local out line
     out=$(check --include "${PREFIX}-c-404")
     line=$(line_for "$out" "${PREFIX}-c-404")
+    clear_auth_config
 
-    if [ "$(field "$line" check_success)" = 0 ] \
-       && echo "$line" | grep -q 'reason=' \
-       && ! has_verdict "$out" "${PREFIX}-c-404"; then
-        pass I13 "a repository the registry does not have reports a reason and NO verdict \
-($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*/\1/p'))"
+    if [ "$(field "$line" check_success)" = 0 ]        && echo "$line" | grep -q 'reason='        && ! has_verdict "$out" "${PREFIX}-c-404"; then
+        pass I13 "a repository the registry does not have reports a reason and NO verdict ($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*//p'))"
     else
         fail I13 "expected check_success=0 with a reason and no verdict, got: $out"
     fi

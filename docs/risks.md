@@ -85,9 +85,52 @@ It is a second apt invocation and a second parser, and it would change numbers
 that were measured, so it needs its own ADR amendment and its own ground truth
 rather than a quiet change here.
 
-## R9 — image_updates is verified against public registries only
+## R9 — image_updates against private registries
 
-**Severity: medium · Status: known limit, documented**
+**Severity: medium · Status: MEASURED and FIXED, 2026-08-12 — kept for the
+record**
+
+The risk was that a claim had never been executed. It has been now, and it was
+wrong.
+
+`image_updates` still never speaks to a registry itself — it asks the Docker
+daemon to resolve each container's tag. What
+[ADR-0013](adr/0013-image-updates-via-docker-api.md) also claimed was that the
+daemon "already knows any registry credentials the host is configured with", so
+muninn needed no credential handling. **It does not know them.** `docker login`
+writes to the *client's* `~/.docker/config.json`, and the Docker CLI forwards
+the credential per request in an `X-Registry-Auth` header; the daemon holds
+none. muninn was not sending that header, so **no authenticated registry worked
+at all** — not partially, not with a caveat.
+
+Cell I11 of `scripts/image-updates-test.sh` established it against a local
+`registry:2` behind htpasswd, with the host logged in and the image pushed:
+`distribution_query_failed`, on both architectures. Every unit test passed
+throughout, because they script the daemon's answers.
+
+**The fix** is `modules.image_updates.registry_auth` — registry host, username,
+`password_file` — and the header, base64url as the daemon's decoder requires.
+The ADR carries a dated amendment; cells I11–I13 are the acceptance test and
+now cover a judged image, a rejected credential and an absent repository.
+
+**What the invariant did throughout.** Every one of those failures reported
+`check_success=0` with a reason and no verdict. The module never said "up to
+date" about an image it could not resolve, which is the one thing that had to
+hold while the rest of it did not.
+
+**Residual.** `distribution_query_failed` still covers four distinct causes —
+unreachable, unauthorised, no such repository, and an image built locally on a
+containerd image store that never left the host (cell I5). The daemon's HTTP
+status distinguishes at least the first three and the module keeps it in the
+error it builds, so splitting the token is now a measurable change rather than
+an invented one. Deliberately not done here: it changes a label vocabulary an
+operator may have in alert rules, and it is a separate decision from making the
+feature work.
+
+What the risk said before it was measured follows, unchanged, because the
+reasoning in it is why the measurement was worth making.
+
+---
 
 The `image_updates` module never speaks to a registry itself: it asks the
 Docker daemon to resolve each container's tag, and the daemon uses whatever

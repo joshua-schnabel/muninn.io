@@ -292,7 +292,7 @@ modules:
 | `network` | off | `include_interfaces`, `exclude_interfaces` | host `/proc` |
 | `docker` | off | `endpoint`, `container_include`, `container_exclude`, `container_states`, `timeout` | Docker socket |
 | `updates` | off | `interval`, `security_only_metric` | host `/hostfs` (same mount as the rest) |
-| `image_updates` | off | `endpoint`, `timeout`, `registry_timeout`, `interval`, `container_include`, `container_exclude` | Docker socket |
+| `image_updates` | off | `endpoint`, `timeout`, `registry_timeout`, `interval`, `container_include`, `container_exclude`, `registry_auth` | Docker socket |
 
 ### Include and exclude
 
@@ -364,7 +364,7 @@ For each running container, matched against `container_include`/
 image reference against its registry (`GET /distribution/{name}/json`) and
 compares the digest it gets back to the one the daemon recorded when the
 running image was pulled. muninn never speaks HTTPS to a registry itself — the
-daemon does, with whatever credentials the host already has. See
+daemon does the TLS handshake and the token exchange. See
 [ADR-0013](adr/0013-image-updates-via-docker-api.md).
 
 Like `modules.updates`, a failed check degrades rather than stops muninn: a
@@ -385,6 +385,36 @@ answer it, and holding that to five seconds reports `distribution_query_failed`
 for a registry that was merely slow. Setting `registry_timeout` below `timeout`
 is allowed but warned about; it is almost always a mistake, and its symptom
 points nowhere near its cause.
+
+**Private registries need `registry_auth`.** The daemon does the network work
+but holds no credentials of its own: `docker login` writes to the *client's*
+`~/.docker/config.json`, and the Docker CLI passes the credential to the daemon
+per request. muninn replaces the CLI here, so it has to be given the credential
+too — a host on which `docker pull` works by hand proves nothing about what
+muninn can resolve.
+
+```yaml
+modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: registry.example.com      # host as it appears in the image
+        username: robot                     # reference; add :5000 if it has a port
+        password_file: /run/secrets/registry-password
+```
+
+`registry` is the host alone — no scheme, no repository path — and `docker.io`
+is the one to use for Docker Hub, including for images written unqualified as
+`alpine:3.19`. Public registries need no entry: an anonymous query works there,
+and muninn sends no header when nothing matches.
+
+`password_file` is a path, never a password, like every other credential here.
+It is read inside the process that uses it and never reaches the generated
+Telegraf configuration or a command line — see
+[`hardening.md`](hardening.md) for what the container has to mount. An entry
+whose file cannot be read is dropped with a log line, and the containers on
+that registry then report `distribution_query_failed`; the rest of the check is
+unaffected.
 
 **`interval` also bounds one run.** The check spends at most half of it before
 reporting the containers it did not reach as `budget_exceeded`, and the

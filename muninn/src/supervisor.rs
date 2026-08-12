@@ -447,6 +447,21 @@ async fn check_image_updates_once(config: &Config, state: &HealthState) -> bool 
     let include = m.container_include.clone();
     let exclude = m.container_exclude.clone();
 
+    // Resolved here, in the agent that already holds a validated configuration,
+    // rather than passed down as flags: the rendered `inputs.exec` command line
+    // is what Telegraf executes, so a credential on it would sit in the
+    // generated config and in the process table both.
+    //
+    // An unreadable file drops that one entry and is logged. The containers on
+    // that registry then report `distribution_query_failed` — a per-container
+    // failure with a cause an operator can act on, rather than a check that
+    // refuses to run at all and takes the public registries down with it.
+    let (registry_auth, problems) =
+        muninn_modules::image_updates::registry_auth::resolve(&m.registry_auth);
+    for p in &problems {
+        warn!(detail = %p, "a registry credential could not be read");
+    }
+
     // The same cap Telegraf puts on the same check, for the same reason. If
     // the check honoured its budget this never fires.
     let cap = exec_timeout(m.interval.inner());
@@ -461,6 +476,7 @@ async fn check_image_updates_once(config: &Config, state: &HealthState) -> bool 
             budget,
             &include,
             &exclude,
+            registry_auth,
         )
     });
 

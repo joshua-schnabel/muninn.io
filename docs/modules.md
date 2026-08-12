@@ -506,6 +506,33 @@ modules:
 | `interval` | duration | `1h` | Own schedule — package state changes slowly and the check is comparatively expensive |
 | `security_only_metric` | boolean | `true` | Report the security subset alongside the total |
 
+**Private registries need a credential, and this is not optional.** The daemon
+does the network work but holds none of its own: `docker login` writes to the
+*client's* `~/.docker/config.json`, and the Docker CLI passes the credential to
+the daemon per request. muninn replaces the CLI on this path, so it has to be
+given one too. A host where `docker pull` succeeds by hand tells you nothing
+about what muninn can resolve — that assumption is what ADR-0013 originally
+recorded, and cell I11 of `scripts/image-updates-test.sh` disproved it.
+
+```yaml
+registry_auth:
+  - registry: registry.example.com
+    username: robot
+    password_file: /run/secrets/registry-password
+```
+
+`registry` is the host exactly as it appears in an image reference: no scheme,
+no repository path, with the port when there is one, and `docker.io` for Docker
+Hub — including for images written unqualified as `alpine:3.19`. Public
+registries need no entry; muninn sends no credential when nothing matches,
+which is what keeps an anonymous lookup working.
+
+`password_file` is a path, never a password. It is read inside the process that
+performs the check, so the value never reaches the generated Telegraf
+configuration nor any command line. A file that cannot be read drops that one
+entry with a log line naming the registry and the path — never the contents —
+and the containers on that registry then report `distribution_query_failed`.
+
 **Renders to** `[[inputs.exec]]` with `data_format = "influx"`, running
 
 ```toml
@@ -740,6 +767,7 @@ modules:
     interval: 1h
     container_include: []
     container_exclude: []
+    registry_auth: []
 ```
 
 | Option | Type | Default | Effect |
@@ -750,6 +778,34 @@ modules:
 | `interval` | duration | `1h` | Own schedule, and the run's own budget — see below |
 | `container_include` | list of globs | `[]` | Container names to check (allow-list) |
 | `container_exclude` | list of globs | `[]` | Container names to skip |
+| `registry_auth` | list | `[]` | Credentials for registries that require them — see below |
+
+**Private registries need a credential, and this is not optional.** The daemon
+does the network work but holds none of its own: `docker login` writes to the
+*client's* `~/.docker/config.json`, and the Docker CLI passes the credential to
+the daemon per request. muninn replaces the CLI on this path, so it has to be
+given one too. A host where `docker pull` succeeds by hand tells you nothing
+about what muninn can resolve — that assumption is what ADR-0013 originally
+recorded, and cell I11 of `scripts/image-updates-test.sh` disproved it.
+
+```yaml
+registry_auth:
+  - registry: registry.example.com
+    username: robot
+    password_file: /run/secrets/registry-password
+```
+
+`registry` is the host exactly as it appears in an image reference: no scheme,
+no repository path, with the port when there is one, and `docker.io` for Docker
+Hub — including for images written unqualified as `alpine:3.19`. Public
+registries need no entry; muninn sends no credential when nothing matches,
+which is what keeps an anonymous lookup working.
+
+`password_file` is a path, never a password. It is read inside the process that
+performs the check, so the value never reaches the generated Telegraf
+configuration nor any command line. A file that cannot be read drops that one
+entry with a log line naming the registry and the path — never the contents —
+and the containers on that registry then report `distribution_query_failed`.
 
 **Renders to** `[[inputs.exec]]` with `data_format = "influx"`, running
 
