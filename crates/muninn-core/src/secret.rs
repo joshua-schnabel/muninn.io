@@ -163,6 +163,24 @@ impl Redactor {
         Redactor { values }
     }
 
+    /// The same redactor plus values that were not in the configuration model.
+    ///
+    /// [`crate::config::Config::redactor`] can only carry secrets the config
+    /// *holds*, and not every credential is one. `modules.image_updates
+    /// .registry_auth` names password **files**; the passwords are read later,
+    /// by the code that sends them, and never enter the normalised model. So
+    /// they were outside the redactor entirely — found by the 2026-08-12 audit
+    /// as M-02, and not closable by adding a line to `redactor()`, because
+    /// there is no value there to add.
+    ///
+    /// Rebuilt through [`Redactor::new`] rather than pushed onto `values`, so
+    /// the minimum length, the longest-first order and the deduplication stay
+    /// defined in exactly one place.
+    #[must_use]
+    pub fn extended_with(self, more: impl IntoIterator<Item = String>) -> Self {
+        Redactor::new(self.values.into_iter().chain(more))
+    }
+
     /// Whether this redactor would change anything. Lets a caller skip the
     /// work — and the allocation — when nothing is configured.
     pub fn is_empty(&self) -> bool {

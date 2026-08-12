@@ -18,6 +18,12 @@ same artefact.** The bytes that are scanned, integration-tested and published ar
 byte-identical. A pipeline that rebuilds between scanning and publishing has not
 scanned what it published.
 
+**And that is checked, not assumed.** `build` records the tarball's SHA-256
+beside it and every consumer verifies it before touching the bytes. Until the
+[2026-08-12 audit](security-audit.md#m-03--nothing-checked-that-the-published-bytes-were-the-built-bytes)
+the paragraph above was a guarantee resting entirely on GitHub's artefact store,
+with nothing in this repository that would have noticed if it had not held.
+
 ```
 release-dispatch.yml (optional entry point) → release PR into main
                                       ▼

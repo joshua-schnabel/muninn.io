@@ -1438,10 +1438,18 @@ fn debug_formatting_the_resolved_config_leaks_no_secret() {
 /// The guard `Config::redactor` says it relies on, because the compiler will
 /// not catch a credential someone forgets to add there.
 ///
-/// Every secret this configuration can hold is set, to a distinct value, and
+/// Every secret this configuration **holds** is set, to a distinct value, and
 /// each one has to disappear from a line that quotes it. A new credential added
 /// to `Outputs` without a line in `redactor()` fails here rather than shipping
 /// as silent half-coverage.
+///
+/// **What it cannot see**, recorded because assuming otherwise is what let
+/// M-02 through: a credential the model stores as a *path* never appears in a
+/// configuration this test can build, so no assertion here would have noticed
+/// `registry_auth`. Those are covered by
+/// `muninn::supervisor::a_registry_password_is_redacted_out_of_telegraf_output`,
+/// which asserts against the process's whole credential set rather than one
+/// struct's fields. Adding a `_file` key means adding a case there too.
 #[test]
 fn every_resolved_secret_is_redactable() {
     let token = token_file("influx-token-aaaaaa");
