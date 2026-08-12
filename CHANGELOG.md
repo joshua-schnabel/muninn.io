@@ -20,6 +20,10 @@ The release pipeline reads the version from this file — see
 
   **The credential is not a flag.** The rendered `inputs.exec` command line is what Telegraf executes, so a credential there would sit in the generated configuration *and* in the process table. It is resolved inside the process that uses it — the agent, or `muninn image-check` reading its own `--config` — which is what this project's "secrets are file paths only" rule requires here. An entry whose file cannot be read is dropped with a message naming the registry and the path, never the contents, and only the containers on that registry are affected.
 
+### Fixed
+
+- **The secret-file documentation now says who has to own the file, not only what mode it should carry.** `0600` was prescribed and checked; ownership was neither, and it is the half that decides whether the file can be opened at all. A bind mount carries the host's uid straight through and the container runs as uid 10001, so a `0600` token owned by `root` or by the operator's own account is unreadable inside — muninn stops with exit code 11 naming a path whose permissions look exactly right. Found by the first CI run of cell I11: it wrote its password file `0600` as the runner user, muninn could not read it, the credential was dropped and the daemon was asked without a header — reporting `distribution_query_failed`, which is precisely the symptom the cell exists to detect. The fixture measured itself rather than the module. `docs/configuration.md` now gives the `chown 10001:10001` beside the `chmod`, and the suite records why its own fixtures are `0644`.
+
   **The invariant held throughout.** Every one of these failures reported `check_success=0` with a reason and no verdict. The module never claimed an image it could not resolve was up to date, which is the one thing that had to stay true while the rest of it did not. Cells I11–I13 are the acceptance test: a judged image, a rejected credential, an absent repository. Finding F-14; [R9](docs/risks.md) closes, and ADR-0013 carries a dated amendment.
 
 ### Fixed

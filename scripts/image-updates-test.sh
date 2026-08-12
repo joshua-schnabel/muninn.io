@@ -145,6 +145,20 @@ group_flag() {
 CHECK_CONFIG=""
 CHECK_SECRETS=""
 
+# Where `check` puts muninn's stderr instead of discarding it.
+#
+# The line protocol on stdout is what the cells assert against, and stderr used
+# to go to /dev/null so it could not corrupt that. But muninn says on stderr why
+# it dropped a credential — an unreadable file, a rejected registry — and
+# throwing that away is what made the first I11 failure a guess: the reason
+# token says the daemon's query failed, not whether muninn ever sent a header.
+# A failing cell quotes the last lines of this file.
+CHECK_STDERR="$WORK/check.stderr"
+
+check_stderr_tail() { # -> the last few lines, or nothing
+    [ -s "$CHECK_STDERR" ] && tr '\n' '|' < "$CHECK_STDERR" | tail -c 400
+}
+
 # `muninn image-check` in the shipped image, hardened, against the real daemon.
 check() {
     local flag; flag=$(group_flag)
@@ -161,7 +175,7 @@ check() {
         ${flag:+"$flag"} \
         "${mounts[@]}" \
         -v "${SOCKET}:/var/run/docker.sock:ro" \
-        "$IMAGE" image-check --endpoint unix:///var/run/docker.sock "$@" 2>/dev/null
+        "$IMAGE" image-check --endpoint unix:///var/run/docker.sock "$@" 2>"$CHECK_STDERR"
 }
 
 # A muninn configuration whose image_updates module carries one registry
@@ -174,7 +188,22 @@ write_auth_config() { # <password>
     local dir="$WORK/auth-config"
     rm -rf "$dir" && mkdir -p "$dir/secrets"
     printf '%s' "$1" > "$dir/secrets/registry-password"
-    chmod 0600 "$dir/secrets/registry-password" 2>/dev/null || true
+
+    # Deliberately NOT 0600, and the reason is the one an operator meets too.
+    #
+    # A bind mount carries the host's uid, and the image runs as uid 10001
+    # (Dockerfile `USER muninn`). A 0600 file written by the host user is
+    # therefore unreadable inside the container, muninn drops the credential
+    # with a warning, and the daemon is asked without a header — which reports
+    # `distribution_query_failed`, i.e. exactly the symptom this cell was
+    # written to detect. The first CI run of I11 failed that way, against a
+    # module that was working: `chmod 0600` here measured the fixture, not
+    # muninn. `scripts/integration-test.sh` never hit it only because it has
+    # always written its InfluxDB token at the default umask.
+    #
+    # The mode is what muninn warns about; ownership is what decides whether it
+    # can read at all. Documented at the key, in docs/configuration.md.
+    chmod 0644 "$dir/secrets/registry-password" 2>/dev/null || true
     cat > "$dir/muninn.yaml" <<YAML
 version: 1
 modules:
@@ -213,6 +242,17 @@ verdict_is() { # output  container_name  0|1
 
 has_verdict() { # output  container_name
     echo "$1" | grep -q "container_name=$2,[^ ]* update_available="
+}
+
+# The reason tag out of an influx line, for a message.
+#
+# `field` reads fields, which are `key=value` with a type suffix; `reason` is a
+# tag, so it needs its own reader. It had one inline in three cells and all
+# three were broken in the same way — a `\1` backreference that reached the
+# file as a literal control byte, so every cell that printed a reason printed
+# nothing where the reason should be. That is why it lives here now.
+reason_of() { # line
+    printf '%s' "$1" | sed -n 's/.*[ ,]reason=\([A-Za-z0-9_]*\).*//p' | head -1
 }
 
 # One field or tag out of an influx line.
@@ -603,7 +643,7 @@ I11() { # THE cell for F-14: does a private registry work at all?
     if [ "$(field "$line" check_success)" = 1 ] && has_verdict "$out" "${PREFIX}-c-private"; then
         pass I11 "an image from an authenticated registry is judged, using the configured credential"
     else
-        fail I11 "expected a verdict for an authenticated registry (reason=$(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*//p')): $line"
+        fail I11 "expected a verdict for an authenticated registry (reason=$(reason_of "$line")): $line [muninn said: $(check_stderr_tail)]"
     fi
     docker rm -f "${PREFIX}-c-private" >/dev/null 2>&1
 }
@@ -627,7 +667,7 @@ I12() { # a credential the registry rejects must never produce a healthy value
     clear_auth_config
 
     if [ "$(field "$line" check_success)" = 0 ]        && echo "$line" | grep -q 'reason='        && ! has_verdict "$out" "${PREFIX}-c-401"; then
-        pass I12 "a rejected credential reports a reason and NO verdict ($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*//p'))"
+        pass I12 "a rejected credential reports a reason and NO verdict ($(reason_of "$line"))"
     else
         fail I12 "expected check_success=0 with a reason and no verdict, got: $out"
     fi
@@ -659,7 +699,7 @@ I13() { # authenticated, but the repository is not there
     clear_auth_config
 
     if [ "$(field "$line" check_success)" = 0 ]        && echo "$line" | grep -q 'reason='        && ! has_verdict "$out" "${PREFIX}-c-404"; then
-        pass I13 "a repository the registry does not have reports a reason and NO verdict ($(echo "$line" | sed -n 's/.*reason=\([a-z_]*\).*//p'))"
+        pass I13 "a repository the registry does not have reports a reason and NO verdict ($(reason_of "$line"))"
     else
         fail I13 "expected check_success=0 with a reason and no verdict, got: $out"
     fi

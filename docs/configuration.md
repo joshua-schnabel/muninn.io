@@ -557,6 +557,21 @@ would in a distroless image: the runtime carries a shell and a package manager
 for the updates module, so "readable by anything else in the container" is a
 larger set than it sounds.
 
+**Ownership decides whether it can be read at all**, and it is the half that
+`0600` alone gets wrong. A bind mount carries the host's uid straight through;
+the container runs as **uid 10001**. So a `0600` file owned by `root` or by your
+own account on the host is *unreadable* inside, and muninn stops with exit code
+11 naming the path — a mode that looks exactly right, on a file the process
+cannot open. Either give it to that uid, which keeps `0600` meaningful:
+
+```bash
+sudo chown 10001:10001 ./influxdb-token && sudo chmod 0600 ./influxdb-token
+```
+
+or use Docker or Kubernetes secrets, which do their own mapping. `0644` also
+works and is what the test fixtures use, at the cost of the warning above.
+This applies to every `_file` key, `registry_auth[].password_file` included.
+
 **Error messages name the path and never the contents.** The value is wrapped in
 a type whose `Debug` and `Display` both render `***`, so no log line, error or
 diagnostic dump can print it — that is a property of the type, not a convention
