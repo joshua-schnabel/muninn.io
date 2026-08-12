@@ -248,11 +248,15 @@ has_verdict() { # output  container_name
 #
 # `field` reads fields, which are `key=value` with a type suffix; `reason` is a
 # tag, so it needs its own reader. It had one inline in three cells and all
-# three were broken in the same way — a `\1` backreference that reached the
-# file as a literal control byte, so every cell that printed a reason printed
-# nothing where the reason should be. That is why it lives here now.
+# three were broken the same way: a sed backreference that reached the file as
+# a literal 0x01 byte, so every cell that printed a reason printed nothing.
+# Twice, in fact — the first repair was written through a tool that ate the
+# escape again, and CI showed `NO verdict ()` both times.
+#
+# So this uses no backslash at all. There is nothing left to mangle, and that
+# is the point rather than a style preference.
 reason_of() { # line
-    printf '%s' "$1" | sed -n 's/.*[ ,]reason=\([A-Za-z0-9_]*\).*//p' | head -1
+    printf '%s' "$1" | grep -o '[ ,]reason=[A-Za-z0-9_]*' | head -1 | cut -d= -f2
 }
 
 # One field or tag out of an influx line.
