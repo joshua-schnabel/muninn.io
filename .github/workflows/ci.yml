@@ -428,7 +428,7 @@ jobs:
   build:
     name: Build image ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    needs: [check, test, supply-chain, coverage, reference, version-gate]
+    needs: [check, test, msrv, supply-chain, coverage, reference, version-gate]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -680,6 +680,68 @@ jobs:
       # inside 100 per 6 hours.
       - name: Image updates system tests
         run: bash scripts/image-updates-test.sh muninn:dev
+
+  # ── The two fan-in gates the ruleset points at ────────────────────────────
+  #
+  # Everything above reports its own check, and a check that is not in the
+  # ruleset's required set is an *indicator*: it shows a red cross and stops
+  # nobody. Keeping that set in step with this file by hand is how `MSRV` came
+  # to run on every pull request for a whole release without ever blocking one,
+  # and the same was true of `Version gate`, `Telegraf reference & docs` and
+  # both `Updates module` legs. Adding a job here is the moment the omission
+  # happens, and it is silent.
+  #
+  # So the ruleset names these two instead, and they derive the answer from
+  # `needs` — which is the same list the pipeline already has to maintain to
+  # order itself correctly. A job added to `needs` is covered by the gate the
+  # moment it is added.
+  #
+  # `if: always()` is load-bearing rather than defensive. Without it a gate
+  # whose dependency failed does not fail — it is **skipped**, and a skipped
+  # required check counts as satisfied. The gate would then be green by absence
+  # in exactly the case it exists for. So it always runs, and reads the results
+  # itself rather than letting its own scheduling stand in for them.
+  #
+  # `continue-on-error` on the beta leg keeps its meaning: that leg reports
+  # `success` to `needs` even when it fails, which is what makes it a canary
+  # rather than a blocker.
+  source-gate:
+    name: Source gate
+    runs-on: ubuntu-latest
+    needs: [check, test, msrv, supply-chain, coverage, reference, version-gate]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Every source check succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          bad="$(printf '%s' "$RESULTS" \
+            | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"')"
+          if [ -n "$bad" ]; then
+            echo "::error::source gate failed: $(echo "$bad" | tr '\n' ' ')"
+            exit 1
+          fi
+          printf '%s' "$RESULTS" | jq -r 'keys[] | "  ok  \(.)"'
+
+  image-gate:
+    name: Image gate
+    runs-on: ubuntu-latest
+    needs: [build, scan, integration, updates]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Every image check succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          bad="$(printf '%s' "$RESULTS" \
+            | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"')"
+          if [ -n "$bad" ]; then
+            echo "::error::image gate failed: $(echo "$bad" | tr '\n' ' ')"
+            exit 1
+          fi
+          printf '%s' "$RESULTS" | jq -r 'keys[] | "  ok  \(.)"'
 
   # ── Push the scanned+tested bytes by digest (push events only) ────────────
   # Skopeo copies straight from the artifact tarball — the exact bytes that
