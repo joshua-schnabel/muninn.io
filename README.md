@@ -107,12 +107,14 @@ Four details in that compose file are easy to get wrong and slow to debug —
 `stop_grace_period`, `hostname`, the tmpfs and the two ports. Each is explained
 in [`docs/host-mounts.md`](docs/host-mounts.md).
 
-**`0.1.0` is the first release.** It is published to
+**`1.0.0` is the current release.** It is published to
 [Docker Hub](https://hub.docker.com/r/jschnabel/muninn/tags) and mirrored
 byte-identically to `ghcr.io/joshua-schnabel/muninn.io`, multi-arch for
 `linux/amd64` and `linux/arm64`. Pin the version rather than the moving `dev`
-tag, which continues to carry pre-release builds from the `dev` branch. It is a
-`0.x` release — what a version number promises here is in
+tag, which continues to carry pre-release builds from the `dev` branch. The
+stable surface is frozen — every YAML key, exit code, `muninn_*` metric name,
+both health endpoints and the container contract now need a major release to
+break. What a version number promises here is in
 [`docs/versioning.md`](docs/versioning.md).
 
 ## Two metrics endpoints

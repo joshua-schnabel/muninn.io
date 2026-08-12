@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Set the workspace version in Cargo.toml *and* Cargo.lock.
+# Set the workspace version in Cargo.toml, Cargo.lock *and* the three pages that
+# name the current release in prose.
 #
 # Both, always, because they are one fact stored twice: every CI job runs
 # `--locked`, and a Cargo.toml whose version the lock file does not know fails
@@ -24,6 +25,14 @@
 # Which packages are the workspace's: those with no `source =` line in the lock.
 # Registry packages all carry one, so the distinction is a property of the file
 # rather than a hard-coded list of crate names to keep in step.
+#
+# The prose is here for the same reason the lock file is: README.md, AGENTS.md
+# and docs/CONTRIBUTING.md each state which release is current, and each does it
+# by naming the number. That is one fact stored three more times, and it went
+# stale within a day of 1.0.0 — all three still said `0.1.0`. Both callers of
+# this script already pass exactly the version those sentences should carry, so
+# stamping them here needs no new wiring. Check 8 of verify-design-package.sh is
+# the gate that catches a hand-edit that skipped this script.
 #
 # Usage: set-workspace-version.sh <x.y.z> [<repo root>]
 
@@ -94,4 +103,42 @@ with open(path, "w", encoding="utf-8", newline="") as f:
 print(f"{path}: {changed} workspace package version(s) set to {version}")
 PYEOF
 
-echo "Cargo.toml and Cargo.lock now carry version $VERSION"
+# Anchored on each sentence's own wording, so a version mentioned elsewhere on
+# the same page — the historical v0.1.0 incidents, for instance — is untouched.
+# A pattern that stops matching is a hard error rather than a silent no-op: the
+# sentence was reworded, and this script plus check 8 both need the new wording.
+VERSION="$VERSION" ROOT="$ROOT" python3 - <<'PYEOF'
+import os, re, sys
+
+version = os.environ["VERSION"]
+root = os.environ["ROOT"]
+
+# (path, regex with exactly one group around the version literal)
+targets = [
+    ("README.md",
+     r"(?m)^(\*\*`)\d+\.\d+\.\d+(` is the current release\.\*\*)"),
+    ("AGENTS.md",
+     r"(?m)^(\*\*Status: released\. `)\d+\.\d+\.\d+(` is the current version)"),
+    ("docs/CONTRIBUTING.md",
+     r"(?m)^(muninn is feature-complete and released — `)\d+\.\d+\.\d+(` is the current version)"),
+]
+
+failed = False
+for rel, pattern in targets:
+    path = os.path.join(root, rel)
+    with open(path, encoding="utf-8", newline="") as f:
+        text = f.read()
+    new, n = re.subn(pattern, lambda m: f"{m.group(1)}{version}{m.group(2)}", text)
+    if n != 1:
+        print(f"::error::{rel}: expected 1 release-status sentence, matched {n}", file=sys.stderr)
+        failed = True
+        continue
+    if new != text:
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(new)
+    print(f"{rel}: names {version}")
+
+sys.exit(1 if failed else 0)
+PYEOF
+
+echo "Cargo.toml, Cargo.lock and the release-status prose now carry version $VERSION"

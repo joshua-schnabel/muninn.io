@@ -33,10 +33,9 @@ found sound is the more useful half of the document.
 **A later pass found two more**, both on surfaces this review looked at and
 called sound. `Redactor` skipped values shorter than eight bytes while loading
 accepted them, and `telegraf config check`'s output reached `MuninnError`
-through no redactor at all. Both are F-01 of
-[`release-1.0.md`](release-1.0.md), and the paragraph below headed *Telegraf's
-output is redacted before muninn re-emits it* was true about the child process
-and silently not true about the validator. That is the useful lesson of this
+through no redactor at all. Both were closed in 1.0.0, and the paragraph below
+headed *Telegraf's output is redacted before muninn re-emits it* was true about
+the child process and silently not true about the validator. That is the useful lesson of this
 document: "we looked and it holds" is worth recording precisely because it can
 be shown wrong later.
 
@@ -75,10 +74,9 @@ level to initialise it with comes from the configuration being validated. The
 commands that read a configuration without running never initialise a subscriber
 at all. So the event was discarded on every path where an operator was meant to
 see it, the two tests asserted only that a loose mode is not fatal, and this
-page and the changelog both called it closed. Recorded as F-02 of
-[`release-1.0.md`](release-1.0.md) and fixed by returning the finding through
-the same channel as every other configuration warning, which the caller prints
-on stderr once it can. The test now asserts the diagnostic, not the absence of a
+page and the changelog both called it closed. Closed in 1.0.0 by returning the
+finding through the same channel as every other configuration warning, which the
+caller prints on stderr once it can. The test now asserts the diagnostic, not the absence of a
 failure.
 
 Unix only — mode bits are the check, and there is nothing equivalent to look at
