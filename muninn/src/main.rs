@@ -41,6 +41,7 @@ use clap::Parser;
 use muninn_core::MuninnError;
 use muninn_core::config::{self, Overrides};
 use muninn_modules::RenderContext;
+use muninn_modules::image_updates::registry_auth::{self, RegistryCredential};
 
 mod cli;
 mod generated_config;
@@ -118,6 +119,7 @@ fn dispatch(args: &Cli) -> muninn_core::Result<()> {
                 *budget_secs,
                 include,
                 exclude,
+                &args.config,
             );
             Ok(())
         }
@@ -455,6 +457,7 @@ fn image_check(
     budget_secs: u64,
     include: &[String],
     exclude: &[String],
+    config_path: &std::path::Path,
 ) {
     use muninn_modules::image_updates::check;
     use std::time::Duration;
@@ -466,6 +469,7 @@ fn image_check(
         Duration::from_secs(budget_secs),
         include,
         exclude,
+        registry_credentials(config_path),
     );
 
     if let Some(detail) = &report.detail {
@@ -481,6 +485,45 @@ fn image_check(
     }
 
     print!("{}", report.line_protocol());
+}
+
+/// The registry credentials from the configuration, each password read from
+/// the file the configuration names.
+///
+/// Read here rather than passed as flags, and this is the reason the whole
+/// feature is shaped this way: the rendered `inputs.exec` command line is what
+/// Telegraf executes, so a credential on it would sit in the generated config
+/// *and* in the process table. Secrets are file paths in this project, and a
+/// path resolved inside the process that uses it is the only form that keeps
+/// them out of argv.
+///
+/// **Deliberately non-fatal.** A missing or unreadable configuration leaves
+/// the list empty, and an unreadable password file drops that one entry. Both
+/// then surface as `distribution_query_failed` on exactly the containers
+/// affected — a per-container failure an operator can act on, where refusing to
+/// run would take down the check for every container including the public ones
+/// that never needed a credential. Nothing reports a healthy value either way,
+/// which is the invariant that matters.
+fn registry_credentials(config_path: &std::path::Path) -> Vec<RegistryCredential> {
+    let overrides = Overrides::from_env();
+    let (cfg, _warnings) = match config::load(config_path, &overrides) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            eprintln!(
+                "muninn: image update check: no registry credentials — {} could not be read: {e}",
+                config_path.display()
+            );
+            return Vec::new();
+        }
+    };
+
+    let (credentials, problems) = registry_auth::resolve(&cfg.modules.image_updates.registry_auth);
+    // Names the registry and the path, never the contents — the rule every
+    // other secret error in this project follows.
+    for p in &problems {
+        eprintln!("muninn: image update check: {p}");
+    }
+    credentials
 }
 
 /// The full lifecycle. This is what the container runs.

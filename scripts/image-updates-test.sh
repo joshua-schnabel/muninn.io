@@ -23,6 +23,21 @@
 # that tag is certainly something else. A known-stale container, built on
 # demand, with no push and nothing to wait for.
 #
+# # The authenticated registry (I11-I13)
+#
+# Cells I1-I10 all use a public registry, where an anonymous distribution query
+# succeeds — so none of them ever exercised ADR-0013's original claim, that
+# muninn needs no credential handling because the daemon "already knows any
+# registry credentials the host is configured with". These three did, and it was
+# false: `docker login` writes to the *client's* config and the CLI forwards the
+# credential in an X-Registry-Auth header, which muninn was not sending.
+#
+# They now cover the fix. A local `registry:2` behind htpasswd, and muninn given
+# the credential the way this project accepts credentials — a password *file*
+# named by its own configuration: I11 asserts the image is judged, I12 that a
+# rejected credential is a reason with no verdict, I13 the same for a repository
+# the registry does not have. Finding F-14, and R9.
+#
 # # Every run is hardened
 #
 # Non-root, read-only root filesystem, --cap-drop=ALL, no-new-privileges, and a
@@ -66,12 +81,29 @@ skip() { skip_n=$((skip_n+1)); echo "  ${YELLOW}– $1${NC}  skipped: $2"; }
 OLD_TAG="alpine:3.19"
 PREFIX="muninn-iu-test"
 
+# The local authenticated registry cells (I11-I13) use 127.0.0.1 deliberately:
+# Docker treats 127.0.0.0/8 as an insecure registry by default, so these need no
+# daemon configuration and therefore no privileged setup step on a runner.
+REGISTRY_IMAGE="registry:2"
+HTPASSWD_IMAGE="httpd:2"
+REGISTRY_ADDR="127.0.0.1:${IMAGE_UPDATES_REGISTRY_PORT:-5000}"
+REGISTRY_USER="muninn"
+REGISTRY_PASS="s3cret-for-a-test-only"
+REGISTRY_REPO="${REGISTRY_ADDR}/muninn-test/app"
+
 cleanup() {
     docker rm -f "${PREFIX}-agent" >/dev/null 2>&1
     docker ps -aq --filter "name=^${PREFIX}-c" | while read -r id; do
         docker rm -f "$id" >/dev/null 2>&1
     done
     docker rmi -f "${PREFIX}/local:v1" >/dev/null 2>&1
+    # The registry cells log the *host's* docker client in. Leaving that behind
+    # would be this suite editing the credential store of the machine it ran on,
+    # so the logout is part of teardown rather than of the last cell that
+    # happens to need it.
+    docker logout "$REGISTRY_ADDR" >/dev/null 2>&1
+    docker rm -f "${PREFIX}-registry" >/dev/null 2>&1
+    docker rmi -f "${REGISTRY_REPO}:v1" >/dev/null 2>&1
 }
 trap cleanup EXIT
 
@@ -105,16 +137,91 @@ group_flag() {
     [ -n "$SOCKET_GID" ] && printf '%s' "--group-add=${SOCKET_GID}"
 }
 
+# A configuration to mount at /etc/muninn/muninn.yaml for the next `check`,
+# together with the directory holding any secret files it names. Empty for
+# every cell that needs no credentials, which is all of I1-I10: `image-check`
+# reads its configuration only for `modules.image_updates.registry_auth`, and
+# says so on stderr when there is none.
+CHECK_CONFIG=""
+CHECK_SECRETS=""
+
+# Where `check` puts muninn's stderr instead of discarding it.
+#
+# The line protocol on stdout is what the cells assert against, and stderr used
+# to go to /dev/null so it could not corrupt that. But muninn says on stderr why
+# it dropped a credential — an unreadable file, a rejected registry — and
+# throwing that away is what made the first I11 failure a guess: the reason
+# token says the daemon's query failed, not whether muninn ever sent a header.
+# A failing cell quotes the last lines of this file.
+CHECK_STDERR="$WORK/check.stderr"
+
+check_stderr_tail() { # -> the last few lines, or nothing
+    [ -s "$CHECK_STDERR" ] && tr '\n' '|' < "$CHECK_STDERR" | tail -c 400
+}
+
 # `muninn image-check` in the shipped image, hardened, against the real daemon.
 check() {
     local flag; flag=$(group_flag)
+    local mounts=()
+    if [ -n "$CHECK_CONFIG" ]; then
+        mounts+=(-v "$(native "$(dirname "$CHECK_CONFIG")")/$(basename "$CHECK_CONFIG"):/etc/muninn/muninn.yaml:ro")
+    fi
+    if [ -n "$CHECK_SECRETS" ]; then
+        mounts+=(-v "$(native "$CHECK_SECRETS"):/run/secrets:ro")
+    fi
     docker run --rm \
         --read-only --cap-drop=ALL --security-opt no-new-privileges:true \
         --tmpfs "/run/muninn:${TMPFS_OPTS}" \
         ${flag:+"$flag"} \
+        "${mounts[@]}" \
         -v "${SOCKET}:/var/run/docker.sock:ro" \
-        "$IMAGE" image-check --endpoint unix:///var/run/docker.sock "$@" 2>/dev/null
+        "$IMAGE" image-check --endpoint unix:///var/run/docker.sock "$@" 2>"$CHECK_STDERR"
 }
+
+# A muninn configuration whose image_updates module carries one registry
+# credential, plus the password file it names.
+#
+# The password is a file and the file is mounted, because that is the only
+# shape this project accepts a credential in — and writing the cell any other
+# way would be testing a path operators cannot use.
+write_auth_config() { # <password>
+    local dir="$WORK/auth-config"
+    rm -rf "$dir" && mkdir -p "$dir/secrets"
+    printf '%s' "$1" > "$dir/secrets/registry-password"
+
+    # Deliberately NOT 0600, and the reason is the one an operator meets too.
+    #
+    # A bind mount carries the host's uid, and the image runs as uid 10001
+    # (Dockerfile `USER muninn`). A 0600 file written by the host user is
+    # therefore unreadable inside the container, muninn drops the credential
+    # with a warning, and the daemon is asked without a header — which reports
+    # `distribution_query_failed`, i.e. exactly the symptom this cell was
+    # written to detect. The first CI run of I11 failed that way, against a
+    # module that was working: `chmod 0600` here measured the fixture, not
+    # muninn. `scripts/integration-test.sh` never hit it only because it has
+    # always written its InfluxDB token at the default umask.
+    #
+    # The mode is what muninn warns about; ownership is what decides whether it
+    # can read at all. Documented at the key, in docs/configuration.md.
+    chmod 0644 "$dir/secrets/registry-password" 2>/dev/null || true
+    cat > "$dir/muninn.yaml" <<YAML
+version: 1
+modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: "${REGISTRY_ADDR}"
+        username: "${REGISTRY_USER}"
+        password_file: /run/secrets/registry-password
+outputs:
+  prometheus:
+    enabled: true
+YAML
+    CHECK_CONFIG="$dir/muninn.yaml"
+    CHECK_SECRETS="$dir/secrets"
+}
+
+clear_auth_config() { CHECK_CONFIG=""; CHECK_SECRETS=""; }
 
 # The line for one container, out of the whole report. The check line comes
 # first, so this is it rather than the verdict line.
@@ -137,6 +244,17 @@ has_verdict() { # output  container_name
     echo "$1" | grep -q "container_name=$2,[^ ]* update_available="
 }
 
+# The reason tag out of an influx line, for a message.
+#
+# `field` reads fields, which are `key=value` with a type suffix; `reason` is a
+# tag, so it needs its own reader. It had one inline in three cells and all
+# three were broken in the same way — a `\1` backreference that reached the
+# file as a literal control byte, so every cell that printed a reason printed
+# nothing where the reason should be. That is why it lives here now.
+reason_of() { # line
+    printf '%s' "$1" | sed -n 's/.*[ ,]reason=\([A-Za-z0-9_]*\).*//p' | head -1
+}
+
 # One field or tag out of an influx line.
 field() { # line  key
     echo "$1" | sed -n "s/.*[ ,]$2=\([^,i ]*\)i\?.*/\1/p" | head -1
@@ -146,6 +264,70 @@ start_container() { # name  image  [extra docker run args...]
     local name="$1" image="$2"; shift 2
     docker rm -f "$name" >/dev/null 2>&1
     docker run -d --name "$name" "$@" "$image" sleep 3600 >/dev/null 2>&1
+}
+
+# ── The authenticated registry the I11-I13 cells measure against ─────────────
+#
+# Started fresh each time it is called, with storage in the container's own
+# writable layer and no volume. That is what makes "the repository is not there"
+# testable at all: restarting it is how a registry that held an image comes to
+# answer 404 for it while the host still has the image and its RepoDigest.
+start_registry() { # -> 0 up, 1 could not
+    local auth; auth="$WORK/auth"
+    mkdir -p "$auth"
+
+    # bcrypt, generated by the httpd image rather than by a host htpasswd that
+    # may not be installed. -B because registry:2 rejects the older formats.
+    if [ ! -s "$auth/htpasswd" ]; then
+        docker run --rm --entrypoint htpasswd "$HTPASSWD_IMAGE" \
+            -Bbn "$REGISTRY_USER" "$REGISTRY_PASS" > "$auth/htpasswd" 2>/dev/null \
+            || return 1
+        [ -s "$auth/htpasswd" ] || return 1
+    fi
+
+    docker rm -f "${PREFIX}-registry" >/dev/null 2>&1
+    docker run -d --name "${PREFIX}-registry" \
+        -p "${REGISTRY_ADDR}:5000" \
+        -v "$(native "$auth")/htpasswd:/auth/htpasswd:ro" \
+        -e "REGISTRY_AUTH=htpasswd" \
+        -e "REGISTRY_AUTH_HTPASSWD_REALM=muninn-test" \
+        -e "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd" \
+        "$REGISTRY_IMAGE" >/dev/null 2>&1 || return 1
+
+    # Up means "answers /v2/ with 401", not "the container is running": an
+    # unauthenticated 401 is the registry saying both that it is listening and
+    # that the auth stanza took effect. Polled, not slept at.
+    local deadline=$(( SECONDS + 60 ))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        [ "$(curl -s -o /dev/null -w '%{http_code}' "http://${REGISTRY_ADDR}/v2/" 2>/dev/null)" = "401" ] \
+            && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# The three cells share a setup, and each of them is meaningless if it did not
+# complete, so it reports its own reason for skipping rather than failing.
+registry_fixture() { # -> 0 ready, 1 unusable (message on stdout)
+    if ! docker pull -q "$REGISTRY_IMAGE" >/dev/null 2>&1 \
+       || ! docker pull -q "$HTPASSWD_IMAGE" >/dev/null 2>&1; then
+        echo "cannot pull ${REGISTRY_IMAGE} / ${HTPASSWD_IMAGE}"
+        return 1
+    fi
+    if ! start_registry; then
+        echo "the local registry never answered 401 on ${REGISTRY_ADDR}/v2/"
+        return 1
+    fi
+    if ! docker login "$REGISTRY_ADDR" -u "$REGISTRY_USER" -p "$REGISTRY_PASS" >/dev/null 2>&1; then
+        echo "could not log the host's docker client into ${REGISTRY_ADDR}"
+        return 1
+    fi
+    docker tag "$OLD_TAG" "${REGISTRY_REPO}:v1" >/dev/null 2>&1
+    if ! docker push -q "${REGISTRY_REPO}:v1" >/dev/null 2>&1; then
+        echo "could not push to ${REGISTRY_REPO}"
+        return 1
+    fi
+    return 0
 }
 
 # Everything below needs the daemon, and most of it needs Docker Hub. Checked
@@ -433,6 +615,97 @@ YAML
     docker rm -f "${PREFIX}-c-e2e" >/dev/null 2>&1
 }
 
+I11() { # THE cell for F-14: does a private registry work at all?
+    #
+    # ADR-0013's original premise was that muninn needed no credential handling,
+    # because asking the daemon meant the daemon "already knows any registry
+    # credentials the host is configured with". This cell is what executed that
+    # sentence for the first time, and it was false: `docker login` writes to
+    # the *client's* config and the CLI forwards the credential in an
+    # X-Registry-Auth header, which muninn was not sending. The measured answer
+    # was distribution_query_failed against a registry the host could push to.
+    #
+    # So the cell now asserts the fixed behaviour: with the credential in
+    # muninn's own configuration, as a password *file*, the image is judged.
+    local why
+    if ! why=$(registry_fixture); then
+        skip I11 "$why"
+        return
+    fi
+    start_container "${PREFIX}-c-private" "${REGISTRY_REPO}:v1"         || { fail I11 "could not start a container from the private registry"; return; }
+
+    write_auth_config "$REGISTRY_PASS"
+    local out line
+    out=$(check --include "${PREFIX}-c-private")
+    line=$(line_for "$out" "${PREFIX}-c-private")
+    clear_auth_config
+
+    if [ "$(field "$line" check_success)" = 1 ] && has_verdict "$out" "${PREFIX}-c-private"; then
+        pass I11 "an image from an authenticated registry is judged, using the configured credential"
+    else
+        fail I11 "expected a verdict for an authenticated registry (reason=$(reason_of "$line")): $line [muninn said: $(check_stderr_tail)]"
+    fi
+    docker rm -f "${PREFIX}-c-private" >/dev/null 2>&1
+}
+
+I12() { # a credential the registry rejects must never produce a healthy value
+    #
+    # The password in muninn's configuration is wrong, so the registry answers
+    # 401. This is the project's sharpest rule applied to the new code path: a
+    # rejected credential is a reason with no verdict, never "up to date".
+    local why
+    if ! why=$(registry_fixture); then
+        skip I12 "$why"
+        return
+    fi
+    start_container "${PREFIX}-c-401" "${REGISTRY_REPO}:v1"         || { fail I12 "could not start"; return; }
+
+    write_auth_config "definitely-not-the-password"
+    local out line
+    out=$(check --include "${PREFIX}-c-401")
+    line=$(line_for "$out" "${PREFIX}-c-401")
+    clear_auth_config
+
+    if [ "$(field "$line" check_success)" = 0 ]        && echo "$line" | grep -q 'reason='        && ! has_verdict "$out" "${PREFIX}-c-401"; then
+        pass I12 "a rejected credential reports a reason and NO verdict ($(reason_of "$line"))"
+    else
+        fail I12 "expected check_success=0 with a reason and no verdict, got: $out"
+    fi
+    docker rm -f "${PREFIX}-c-401" >/dev/null 2>&1
+}
+
+I13() { # authenticated, but the repository is not there
+    #
+    # Correct credentials this time, against a registry restarted with empty
+    # storage: the host keeps the image and its RepoDigest, so the module has
+    # every reason to ask, and the answer is "no such repository" rather than a
+    # refusal to connect or to authorise. Still a reason with no verdict.
+    local why
+    if ! why=$(registry_fixture); then
+        skip I13 "$why"
+        return
+    fi
+    start_container "${PREFIX}-c-404" "${REGISTRY_REPO}:v1"         || { fail I13 "could not start"; return; }
+    if ! start_registry; then
+        skip I13 "the registry did not come back up empty"
+        docker rm -f "${PREFIX}-c-404" >/dev/null 2>&1
+        return
+    fi
+
+    write_auth_config "$REGISTRY_PASS"
+    local out line
+    out=$(check --include "${PREFIX}-c-404")
+    line=$(line_for "$out" "${PREFIX}-c-404")
+    clear_auth_config
+
+    if [ "$(field "$line" check_success)" = 0 ]        && echo "$line" | grep -q 'reason='        && ! has_verdict "$out" "${PREFIX}-c-404"; then
+        pass I13 "a repository the registry does not have reports a reason and NO verdict ($(reason_of "$line"))"
+    else
+        fail I13 "expected check_success=0 with a reason and no verdict, got: $out"
+    fi
+    docker rm -f "${PREFIX}-c-404" >/dev/null 2>&1
+}
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
@@ -452,7 +725,7 @@ echo "socket group ${SOCKET_GID:-<undetermined>}"
 echo
 
 CELLS=("$@")
-[ ${#CELLS[@]} -eq 0 ] && CELLS=(I1 I2 I3 I4 I5 I6 I7 I8 I9 I10)
+[ ${#CELLS[@]} -eq 0 ] && CELLS=(I1 I2 I3 I4 I5 I6 I7 I8 I9 I10 I11 I12 I13)
 
 for cell in "${CELLS[@]}"; do
     if declare -F "$cell" >/dev/null; then

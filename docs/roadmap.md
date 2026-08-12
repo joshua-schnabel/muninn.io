@@ -41,14 +41,14 @@ be installed into a fixture without changing the package state being measured.
 Somewhere between "build the fixture, then install it" and "run apt-check in a
 sibling container against the exported rootfs".
 
-**Measure `image_updates` against an authenticated registry.** The module is
-verified against public images only. A private registry the host can already
-pull from should work through the daemon's own stored credentials with no
-change to muninn, but nothing in the repository records that it does, or what
-an expired credential looks like — all of it lands in
-`distribution_query_failed`. Needs a local authenticated registry in
-`scripts/image-updates-test.sh` before any reason token is split.
-[R9](risks.md), [ADR-0013](adr/0013-image-updates-via-docker-api.md).
+**Split `distribution_query_failed` by cause, if it is worth it.** The token
+covers four distinct situations — the registry was unreachable, the credential
+was rejected, the repository is not there, and an image built locally on a
+containerd image store that never left the host. The daemon's HTTP status
+separates at least the first three and the module already keeps it, so this is
+now a measurable change rather than an invented distinction — which is what
+[R9](risks.md) required before it could be made. It changes a label vocabulary
+an operator may have in alert rules, so it needs its own decision.
 
 **Six suppressed image findings expire 2026-11-03.** One gRPC-Go finding and
 five rclone findings, all in Go modules vendored into the Telegraf binary, all

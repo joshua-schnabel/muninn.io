@@ -286,6 +286,24 @@ modules:
     # Container names to drop (globs allowed).
     container_exclude: []
 
+    # Credentials for registries that require authentication. Leave empty for
+    # public registries — an anonymous lookup works there.
+    #
+    # Needed because the Docker daemon holds no registry credentials of its
+    # own: `docker login` writes to the *client's* config and the CLI passes
+    # the credential to the daemon per request. muninn replaces the CLI here,
+    # so a host where `docker pull` works by hand says nothing about what
+    # muninn can resolve. See ADR-0013's amendment.
+    #
+    # `registry` is the host as it appears in an image reference: no scheme, no
+    # repository path, `docker.io` for Docker Hub. As everywhere else in this
+    # file, the password is a *path* and never a value.
+    registry_auth: []
+    # registry_auth:
+    #   - registry: registry.example.com
+    #     username: robot
+    #     password_file: /run/secrets/registry-password
+
     # Registry lookups are rate-limited (Docker Hub: 100 anonymous pulls per 6h
     # per IP) and run once per container, so this runs on its own schedule
     # rather than at `agent.interval`, and is rejected below one minute.

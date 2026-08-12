@@ -330,8 +330,73 @@ fn validate_modules(cfg: &ConfigV1, warnings: &mut Vec<String>) -> Result<()> {
         }
 
         validate_docker_endpoint(&m.image_updates.endpoint, "image_updates", warnings)?;
+        validate_registry_auth(&m.image_updates.registry_auth, warnings)?;
     }
 
+    Ok(())
+}
+
+/// Every registry credential names a registry, a user and a readable file.
+///
+/// A duplicate registry is refused rather than resolved by "last one wins":
+/// which of two entries applies would decide whether a check authenticates,
+/// and silently picking one is the kind of answer an operator only discovers
+/// through a `distribution_query_failed` they cannot explain.
+/// Two passes, and the order is the point: everything decidable from the
+/// document is checked before anything is read from disk. A typo'd registry
+/// host reported *after* "no such file" for a different entry sends the reader
+/// to the wrong problem.
+fn validate_registry_auth(entries: &[RegistryAuth], warnings: &mut Vec<String>) -> Result<()> {
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        let at = format!("modules.image_updates.registry_auth[{i}]");
+
+        for (value, key) in [(&e.registry, "registry"), (&e.username, "username")] {
+            if value.trim().is_empty() {
+                return Err(MuninnError::config(format!("{at}.{key} must not be empty")));
+            }
+        }
+        // A scheme here is the most likely mistake, because every other Docker
+        // endpoint in this file takes one. An image reference never carries a
+        // scheme, so a `https://` entry would simply never match anything and
+        // the check would fail as if nothing had been configured at all.
+        if e.registry.contains("://") {
+            return Err(MuninnError::config(format!(
+                "{at}.registry is '{}' — this is the host as it appears in an image reference, \
+                 so it carries no scheme: use 'registry.example.com' or \
+                 'registry.example.com:5000'",
+                e.registry
+            )));
+        }
+        if e.registry.contains('/') {
+            return Err(MuninnError::config(format!(
+                "{at}.registry is '{}' — this is the registry host alone, without a repository \
+                 path: use 'registry.example.com', not 'registry.example.com/team/app'",
+                e.registry
+            )));
+        }
+        if seen.contains(&e.registry.as_str()) {
+            return Err(MuninnError::config(format!(
+                "{at}.registry '{}' is configured twice; one registry has one credential",
+                e.registry
+            )));
+        }
+        seen.push(&e.registry);
+
+        if e.password_file.trim().is_empty() {
+            return Err(MuninnError::config(format!(
+                "{at}.password_file must not be empty — credentials are file paths, never values"
+            )));
+        }
+    }
+
+    for (i, e) in entries.iter().enumerate() {
+        secret::validate_file(
+            &e.password_file,
+            &format!("modules.image_updates.registry_auth[{i}].password_file"),
+            warnings,
+        )?;
+    }
     Ok(())
 }
 
