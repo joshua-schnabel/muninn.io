@@ -19,6 +19,11 @@ concurrency:
 permissions:
   contents: read
 
+# The `Security ·` prefix on the scanner names groups them on the run page, the
+# same way ci.yml groups its stages; GitHub has no stages of its own. The gate
+# below deliberately carries no prefix — it is the name the branch ruleset
+# requires, and a renamed required check never reports again, which blocks every
+# pull request indefinitely.
 jobs:
   # ── ShellCheck over the scripts ────────────────────────────────────────────
   # The shell in this repository is not glue: scripts/*.sh are the three system
@@ -29,7 +34,7 @@ jobs:
   # actionlint already shellchecks the `run:` blocks inside the workflows; this
   # covers the scripts those blocks call.
   shellcheck:
-    name: ShellCheck
+    name: Security · ShellCheck
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -45,7 +50,7 @@ jobs:
   # dependency, a shell error inside a `run:` block — and expression syntax in
   # places it is easy to forget is parsed, including comments.
   actionlint:
-    name: Actionlint
+    name: Security · Actionlint
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -65,7 +70,7 @@ jobs:
 
   # ── Semgrep SAST (source code analysis) ────────────────────────────────────
   semgrep:
-    name: Semgrep SAST
+    name: Security · Semgrep SAST
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -144,6 +149,11 @@ jobs:
   # `if: always()` is load-bearing — without it a gate whose dependency failed
   # is skipped rather than failed, and a skipped required check counts as
   # satisfied.
+  #
+  # The body is identical to ci.yml's two gates apart from $STAGE; see the
+  # comment there for why that triplication is preferred over a local composite
+  # action. Unlike those two, this gate orders nothing — nothing follows it in
+  # this file. It exists purely to be the required check.
   security-gate:
     name: Security gate
     runs-on: ubuntu-latest
@@ -154,11 +164,21 @@ jobs:
       - name: Every scanner succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}
+          STAGE: Security
         run: |
+          # Written before the verdict, so a failing stage still reports which
+          # scanner failed on the run's summary page.
+          {
+            echo "## $STAGE stage"
+            echo
+            echo "| job | result |"
+            echo "|---|---|"
+            printf '%s' "$RESULTS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
           bad="$(printf '%s' "$RESULTS" \
             | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"')"
           if [ -n "$bad" ]; then
             echo "::error::security gate failed: $(echo "$bad" | tr '\n' ' ')"
             exit 1
           fi
-          printf '%s' "$RESULTS" | jq -r 'keys[] | "  ok  \(.)"'

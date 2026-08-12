@@ -18,17 +18,23 @@ name: Dependabot
 
 on: pull_request
 
-# For Dependabot-triggered runs the token is read-only by default; elevate it so
-# `gh pr edit` and `gh pr merge --auto` work.
-permissions:
-  contents: write
-  pull-requests: write
+# Nothing by default. The elevation this file needs is declared on the job that
+# needs it, which is `release-dispatch.yml`'s rule applied here — a workflow-wide
+# grant is inherited by whatever is added next, and a second job in this file
+# would have started life with write access to contents and pull requests
+# without anyone deciding that. Finding M-05, 2026-08-12.
+permissions: {}
 
 jobs:
   dependabot:
     name: Retarget and auto-merge
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # For Dependabot-triggered runs the token is read-only by default; elevate it
+    # so `gh pr edit` and `gh pr merge --auto` work.
+    permissions:
+      contents: write
+      pull-requests: write
     # Only act on Dependabot's own PRs.
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:

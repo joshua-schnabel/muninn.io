@@ -37,27 +37,46 @@ env:
 
 # ── Pipeline shape ─────────────────────────────────────────────────────────
 #
+#   ── Source ──────────────────────────────────────────────────────────────
 #   check ─┬ test (stable + beta·canary) ─┐
+#          ├ msrv (the rust-version floor still builds) ────┤
 #          ├ supply-chain ────────────────┤
-#          ├ coverage (needs test) ───────┤
+#          ├ coverage ────────────────────┤
 #          ├ reference (Telegraf accepts the target format) ┤
 #          └ version-gate (SemVer + successor, main only) ──┤
+#                                         ▼
+#                                    SOURCE GATE
+#   ── Image ─────────────────────────────┼─────────────────────────────────
 #                                         ▼
 #              build (per arch, native) → image.tar artifact
 #                 ├ scan        (Trivy on the artifact)
 #                 ├ integration (compose stack + hardened image, on the artifact)
 #                 └ updates     (the updates module against real host trees)
 #                                         ▼
-#              push (per arch, push only) → skopeo by digest → digest artifact
+#                                     IMAGE GATE
+#   ── Release (push events only) ────────┼─────────────────────────────────
+#                                         ▼
+#              push (per arch) → skopeo by digest → digest artifact
 #                                         ▼
 #              publish → DockerHub manifest, mirror to ghcr, staging cleanup, tag
 #                                         ▼            (tag push → release.yml:
 #                                                       GitHub Release + dev PR)
 #
+# The two gates are the stage boundaries, not commentary beside them: `build`
+# depends on `source-gate` and `push` on `image-gate`, so each stage's membership
+# is written down exactly once, in that gate's `needs`. It used to be written
+# twice — `build` re-listed the source jobs — and two copies of a list are a list
+# that drifts. See the gate jobs below for the rest of the reasoning.
+#
+# `coverage` deliberately hangs off `check` rather than `test`: cargo-llvm-cov
+# runs the whole workspace suite itself, instrumented, so waiting for `test`
+# bought no extra confidence — only a wait on the beta leg, which cannot block
+# anything.
+#
 # One job, one responsibility. The image is built ONCE per arch into a tarball;
 # every later job consumes that same artifact, so the bytes scanned, tested and
-# published are identical. publish needs scan AND integration AND updates, so
-# nothing unscanned or untested can ship.
+# published are identical. push sits behind image-gate, which covers scan AND
+# integration AND updates, so nothing unscanned or untested can ship.
 #
 # Two jobs have no counterpart in huginn.io's pipeline, both from WP0 findings:
 # `reference` (the target TOML must still be real Telegraf) and `updates` (the
@@ -65,9 +84,15 @@ env:
 # exercise). See docs/ci-cd.md.
 
 jobs:
-  # ── Gate 1: Format & Lint ──────────────────────────────────────────────────
+  # ── Source: Format & Lint ─────────────────────────────────────────────────
+  # The `Source ·` / `Image ·` / `Release ·` prefixes exist only to make the run
+  # page group by stage — GitHub has no stages of its own, and the run graph is
+  # drawn from `needs` alone. The three *gate* names carry no prefix: they are
+  # what the branch ruleset requires, and renaming a required check leaves it
+  # never reporting, which blocks every pull request. Prefix new jobs; leave the
+  # gates alone.
   check:
-    name: Format & Lint
+    name: Source · Format & Lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -96,9 +121,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  # ── Gate 2: Tests (stable + beta) ─────────────────────────────────────────
+  # ── Source: Tests (stable + beta) ─────────────────────────────────────────
   test:
-    name: Tests (${{ matrix.rust }})
+    name: Source · Tests (${{ matrix.rust }})
     runs-on: ubuntu-latest
     needs: check
     timeout-minutes: 20
@@ -139,7 +164,7 @@ jobs:
           MUNINN_TELEGRAF_BIN: ${{ runner.temp }}/telegraf
         run: cargo test --workspace --locked
 
-  # ── Gate 2b: the declared MSRV actually compiles ──────────────────────────
+  # ── Source: the declared MSRV actually compiles ───────────────────────────
   # `rust-version` in Cargo.toml is the supported floor, and until now nothing
   # compiled with it. The Docker builder sits above it deliberately — Dependabot
   # moves that tag and doing so is an update, not an MSRV change — and the
@@ -156,7 +181,7 @@ jobs:
   # repeated in a workflow is one that goes stale the morning someone raises the
   # floor, and nothing fails when it does.
   msrv:
-    name: MSRV (rust-version in Cargo.toml)
+    name: Source · MSRV (rust-version in Cargo.toml)
     runs-on: ubuntu-latest
     needs: check
     timeout-minutes: 20
@@ -192,11 +217,11 @@ jobs:
       - name: cargo check on the floor
         run: cargo check --workspace --all-targets --locked
 
-  # ── Gate 3: Supply-chain security (cargo-deny) ────────────────────────────
+  # ── Source: Supply-chain security (cargo-deny) ────────────────────────────
   # cargo-deny is a superset of cargo-audit: advisories, licenses, banned
   # crates and registry sources in one pass.
   supply-chain:
-    name: Supply-Chain Security
+    name: Source · Supply-Chain Security
     runs-on: ubuntu-latest
     needs: check
     timeout-minutes: 15
@@ -223,11 +248,18 @@ jobs:
       - name: cargo deny check
         run: cargo deny check
 
-  # ── Gate 4: Code coverage ≥ 80 % ──────────────────────────────────────────
+  # ── Source: Code coverage ≥ 80 % ──────────────────────────────────────────
+  # Depends on `check`, not on `test`, so it runs *alongside* the two toolchain
+  # legs instead of behind them. `cargo llvm-cov --workspace` runs the whole
+  # suite itself, instrumented — waiting for `test` first never added confidence,
+  # it only added the duration of a full workspace suite to the critical path,
+  # and part of that wait was the beta leg, which `continue-on-error` forbids
+  # from blocking anything. The cost is a coverage run that is also spent on a
+  # red push; `source-gate` still lists both jobs, so nothing stops blocking.
   coverage:
-    name: Code Coverage (≥ 80%)
+    name: Source · Code Coverage (≥ 80%)
     runs-on: ubuntu-latest
-    needs: test
+    needs: check
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -300,7 +332,7 @@ jobs:
             }
           ' lcov.info >> "$GITHUB_STEP_SUMMARY"
 
-  # ── Gate 5: the target format is still real Telegraf ──────────────────────
+  # ── Source: the target format is still real Telegraf ──────────────────────
   # muninn's own addition, from the WP0 findings. Three things drift silently
   # and none of them is visible to a Rust test:
   #
@@ -313,7 +345,7 @@ jobs:
   #     is what catches documentation drifting away from the shipped version,
   #     which is R5.
   reference:
-    name: Telegraf reference & docs
+    name: Source · Telegraf reference & docs
     runs-on: ubuntu-latest
     needs: check
     timeout-minutes: 20
@@ -350,13 +382,14 @@ jobs:
           VERIFY_SKIP_CARGO: "1"
         run: bash scripts/verify-design-package.sh
 
-  # ── Release version gate (SemVer + must exceed the last tag) ───────────────
+  # ── Source: release version gate (SemVer + must exceed the last tag) ──────
   # Enforces only for a release context: a PR whose base is main, or a push to
-  # main. On every other event it is a deliberate no-op pass — a *skipped* job
-  # in `needs` would skip `build` too, so this job must always run and decide
-  # internally whether to enforce.
+  # main. On every other event it is a deliberate no-op pass rather than a
+  # skipped job: `source-gate` treats anything that is not `success` as a
+  # failure, so skipping here would fail the gate and take `build` with it. This
+  # job must always run and decide internally whether to enforce.
   version-gate:
-    name: Version gate
+    name: Source · Version gate
     runs-on: ubuntu-latest
     needs: check
     timeout-minutes: 5
@@ -426,9 +459,14 @@ jobs:
   # arm64 on ubuntu-24.04-arm — no QEMU). The tarball is uploaded as an artifact
   # and is the single source of truth for scan, integration, updates and publish.
   build:
-    name: Build image ${{ matrix.platform }}
+    name: Image · Build ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    needs: [check, test, msrv, supply-chain, coverage, reference, version-gate]
+    # The whole source stage, named once — see `source-gate` below. This used to
+    # re-list its seven members, which made `source-gate.needs` a second copy of
+    # the same set: a job added to the gate alone would block the merge but not
+    # the build, and a job added to `build` alone would gate nothing. `msrv` had
+    # already fallen out of this list once.
+    needs: [source-gate]
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -474,11 +512,29 @@ jobs:
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
 
+      # The whole pipeline rests on one sentence — the bytes scanned, tested and
+      # published are the bytes built — and until the 2026-08-12 audit (M-03)
+      # nothing in this repository could tell whether it was true. The tarball
+      # travelled between five jobs through an artefact store, and no checksum
+      # was recorded on the way out or compared on the way in.
+      #
+      # It is recorded here, in the job that produced the bytes, and verified in
+      # `push`, the last job that can still stop them. That converts a documented
+      # guarantee into a checked one, which is the whole difference between this
+      # pipeline's central claim and an assumption about GitHub's storage.
+      - name: Record the tarball's checksum
+        run: |
+          cd "${RUNNER_TEMP}"
+          sha256sum image.tar > image.tar.sha256
+          cat image.tar.sha256
+
       - name: Upload image tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-${{ env.PLATFORM_PAIR }}
-          path: ${{ runner.temp }}/image.tar
+          path: |
+            ${{ runner.temp }}/image.tar
+            ${{ runner.temp }}/image.tar.sha256
           if-no-files-found: error
           retention-days: 1
 
@@ -486,7 +542,7 @@ jobs:
   # Runs on ubuntu-latest for both arches: Trivy reads the tarball's layers, so
   # the host architecture is irrelevant.
   scan:
-    name: Trivy scan ${{ matrix.platform }}
+    name: Image · Trivy scan ${{ matrix.platform }}
     runs-on: ubuntu-latest
     needs: build
     timeout-minutes: 20
@@ -514,6 +570,13 @@ jobs:
         with:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
+
+      # M-03: the bytes this job judges must be the bytes `build` produced.
+      # Every consumer checks, not only `push` — "scanned, tested and published
+      # are identical" is four claims, and one verification at the end would
+      # leave three of them still assumed.
+      - name: Verify the tarball is the one that was built
+        run: cd "${RUNNER_TEMP}" && sha256sum -c image.tar.sha256
 
       - name: Trivy - full scan (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -580,7 +643,7 @@ jobs:
   # ── Integration-test the built artifact (loaded, never rebuilt) ───────────
   # Native runner per arch: the loaded container must run on matching hardware.
   integration:
-    name: Integration test ${{ matrix.platform }}
+    name: Image · Integration test ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     needs: build
     timeout-minutes: 30
@@ -607,6 +670,13 @@ jobs:
         with:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
+
+      # M-03: the bytes this job judges must be the bytes `build` produced.
+      # Every consumer checks, not only `push` — "scanned, tested and published
+      # are identical" is four claims, and one verification at the end would
+      # leave three of them still assumed.
+      - name: Verify the tarball is the one that was built
+        run: cd "${RUNNER_TEMP}" && sha256sum -c image.tar.sha256
 
       - name: Load image
         run: docker load -i "${{ runner.temp }}/image.tar" && docker tag muninn:ci muninn:dev
@@ -638,7 +708,7 @@ jobs:
   # of apt work that should not sit in front of the stack test. Cell S11 (a real
   # host through WSL) skips here and says so; the rest run.
   updates:
-    name: Updates module ${{ matrix.platform }}
+    name: Image · Updates module ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
     needs: build
     timeout-minutes: 40
@@ -666,6 +736,13 @@ jobs:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
 
+      # M-03: the bytes this job judges must be the bytes `build` produced.
+      # Every consumer checks, not only `push` — "scanned, tested and published
+      # are identical" is four claims, and one verification at the end would
+      # leave three of them still assumed.
+      - name: Verify the tarball is the one that was built
+        run: cd "${RUNNER_TEMP}" && sha256sum -c image.tar.sha256
+
       - name: Load image
         run: docker load -i "${{ runner.temp }}/image.tar" && docker tag muninn:ci muninn:dev
 
@@ -681,7 +758,7 @@ jobs:
       - name: Image updates system tests
         run: bash scripts/image-updates-test.sh muninn:dev
 
-  # ── The two fan-in gates the ruleset points at ────────────────────────────
+  # ── The two fan-in gates: stage boundaries, and what the ruleset names ────
   #
   # Everything above reports its own check, and a check that is not in the
   # ruleset's required set is an *indicator*: it shows a red cross and stops
@@ -694,17 +771,42 @@ jobs:
   # So the ruleset names these two instead, and they derive the answer from
   # `needs` — which is the same list the pipeline already has to maintain to
   # order itself correctly. A job added to `needs` is covered by the gate the
-  # moment it is added.
+  # moment it is added, rather than the moment somebody remembers to edit a
+  # repository setting they cannot see from here.
+  #
+  # They are also where the pipeline *waits*: `build` needs `source-gate` and
+  # `push` needs `image-gate`, so each stage's membership is written down once.
+  # `build` used to re-list the source jobs, and two copies of one list is a list
+  # that drifts — `msrv` was missing from that copy, so a job that had run on
+  # every pull request for a release gated nothing at all.
   #
   # `if: always()` is load-bearing rather than defensive. Without it a gate
   # whose dependency failed does not fail — it is **skipped**, and a skipped
   # required check counts as satisfied. The gate would then be green by absence
   # in exactly the case it exists for. So it always runs, and reads the results
-  # itself rather than letting its own scheduling stand in for them.
+  # itself rather than letting its own scheduling stand in for them. It is also
+  # what keeps the chaining honest: a gate that can never be skipped is a
+  # dependency that resolves to a real verdict, so `build` and `push` are
+  # skipped precisely when their stage did not pass.
+  #
+  # `push` and `publish` are deliberately in no gate: both are `push`-only, so
+  # on a pull request they report `skipped`, and these checks treat anything
+  # that is not `success` as a failure.
   #
   # `continue-on-error` on the beta leg keeps its meaning: that leg reports
   # `success` to `needs` even when it fails, which is what makes it a canary
   # rather than a blocker.
+  #
+  # The two bodies below, and `security-gate` in security.yml, are identical
+  # apart from $STAGE. A local composite action would remove the triplication
+  # and would cost each gate an `actions/checkout`; these three jobs currently
+  # touch no source and hold no credentials, and that is worth more than twelve
+  # deduplicated lines of shell.
+  #
+  # NOTE: `Source gate` and `Image gate` are the names the branch ruleset
+  # requires. A renamed required check never reports again, and a check that
+  # never reports blocks every pull request. Do not "harmonise" them with the
+  # `Source ·` / `Image ·` prefixes on the jobs above.
   source-gate:
     name: Source gate
     runs-on: ubuntu-latest
@@ -715,14 +817,26 @@ jobs:
       - name: Every source check succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}
+          STAGE: Source
         run: |
+          # The table is written before the verdict, so a failing stage still
+          # reports which member failed on the run's summary page — that is the
+          # case somebody actually reads it in. `tee -a` puts the same lines in
+          # the job log, where the run's own output belongs.
+          {
+            echo "## $STAGE stage"
+            echo
+            echo "| job | result |"
+            echo "|---|---|"
+            printf '%s' "$RESULTS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
           bad="$(printf '%s' "$RESULTS" \
             | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"')"
           if [ -n "$bad" ]; then
             echo "::error::source gate failed: $(echo "$bad" | tr '\n' ' ')"
             exit 1
           fi
-          printf '%s' "$RESULTS" | jq -r 'keys[] | "  ok  \(.)"'
 
   image-gate:
     name: Image gate
@@ -734,23 +848,35 @@ jobs:
       - name: Every image check succeeded
         env:
           RESULTS: ${{ toJSON(needs) }}
+          STAGE: Image
         run: |
+          {
+            echo "## $STAGE stage"
+            echo
+            echo "| job | result |"
+            echo "|---|---|"
+            printf '%s' "$RESULTS" | jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
           bad="$(printf '%s' "$RESULTS" \
             | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"')"
           if [ -n "$bad" ]; then
             echo "::error::image gate failed: $(echo "$bad" | tr '\n' ' ')"
             exit 1
           fi
-          printf '%s' "$RESULTS" | jq -r 'keys[] | "  ok  \(.)"'
 
   # ── Push the scanned+tested bytes by digest (push events only) ────────────
   # Skopeo copies straight from the artifact tarball — the exact bytes that
   # scan, integration and updates validated. Skipped on pull_request, so the
   # DockerHub credentials are never reachable from a PR (fork-safe).
   push:
-    name: Push image ${{ matrix.platform }}
+    name: Release · Push image ${{ matrix.platform }}
     runs-on: ${{ matrix.runner }}
-    needs: [scan, integration, updates]
+    # The whole image stage, named once. `if:` narrows this job to push events;
+    # it does not loosen the dependency — an `if:` without a status function
+    # leaves the implicit `success()` on `needs` in place, so a red `image-gate`
+    # still skips this job and, through it, `publish`.
+    needs: [image-gate]
     if: github.event_name == 'push'
     timeout-minutes: 15
     strategy:
@@ -772,6 +898,20 @@ jobs:
         with:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
+
+      # The other half of M-03. This is the last point at which the bytes can be
+      # stopped, so it is where the claim is checked: the tarball about to be
+      # pushed must be the one `build` produced. A mismatch is a hard failure —
+      # there is no benign explanation for it, and "publish anyway and mention
+      # it" would defeat the check.
+      - name: Verify the tarball is the one that was built and scanned
+        run: |
+          cd "${RUNNER_TEMP}"
+          if [ ! -s image.tar.sha256 ]; then
+            echo "::error::no checksum accompanied the image artefact — build did not record one"
+            exit 1
+          fi
+          sha256sum -c image.tar.sha256
 
       - name: Install skopeo
         run: sudo apt-get update && sudo apt-get install -y skopeo
@@ -822,7 +962,7 @@ jobs:
 
   # ── Assemble the multi-arch manifest, tag it, tag the release ─────────────
   publish:
-    name: Publish to DockerHub
+    name: Release · Publish to DockerHub
     runs-on: ubuntu-latest
     needs: [push]
     if: github.event_name == 'push'
@@ -1043,10 +1183,16 @@ jobs:
       #
       # Through git's `extraheader` rather than a token in the remote URL: a URL
       # is argv, and argv is readable by anything else on the machine and lands
-      # in `git remote -v` for whatever runs next. The header is written into
-      # the local config, used, and removed on the way out — including when the
-      # push fails, which is the case where a leftover credential would
-      # otherwise sit in a workspace nobody looks at again.
+      # in `git remote -v` for whatever runs next.
+      #
+      # The header reaches git through `GIT_CONFIG_COUNT`, not through
+      # `git config --local`, and that is M-06 of the 2026-08-12 audit. Writing
+      # it with `git config` handed the credential to an external binary as an
+      # argument — the exact exposure the paragraph above rejects, in the step
+      # that rejects it — and left it in `.git/config` until a trap removed it.
+      # Environment is not argv: `/proc/<pid>/environ` is readable by the owning
+      # user, `/proc/<pid>/cmdline` by everyone. It also needs no cleanup, since
+      # nothing is written down; the trap and the `--unset-all` are gone with it.
       - name: Create git tag
         if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
         env:
@@ -1064,12 +1210,11 @@ jobs:
           # cannot identify.
           git tag "$TAG" -m "Release $TAG" -m "muninn-manifest-digest: $DIGEST"
 
-          header='http.https://github.com/.extraheader'
-          trap 'git config --local --unset-all "$header" 2>/dev/null || true' EXIT
-
-          # Base64 on stdin, not as an argument, for the same reason the Docker
-          # Hub steps above pass their credentials through a config file.
+          # `printf` is a bash builtin, so the token never becomes a separate
+          # process's argv here; `base64` reads it on stdin for the same reason.
           basic="$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
-          git config --local "$header" "AUTHORIZATION: basic ${basic}"
 
-          git push "https://github.com/${GITHUB_REPOSITORY}" "refs/tags/${TAG}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}" \
+            git push "https://github.com/${GITHUB_REPOSITORY}" "refs/tags/${TAG}"

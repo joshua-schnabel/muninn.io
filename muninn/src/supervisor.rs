@@ -193,7 +193,7 @@ async fn start(config: &Config, state: &HealthState) -> Result<Telegraf> {
     // The file being checked holds resolved secrets, so Telegraf's complaints
     // about it are scrubbed before they can reach the error — the same redactor
     // the child's stdout and stderr go through below.
-    let redactor = config.redactor();
+    let redactor = output_redactor(config);
     validator::check_config(&binary, config_path, &redactor)?;
     let validation = validation_started.elapsed();
     state.update(|d| d.telegraf_validation = Some(validation));
@@ -213,6 +213,38 @@ async fn start(config: &Config, state: &HealthState) -> Result<Telegraf> {
     confirm_running(&mut telegraf).await?;
 
     Ok(telegraf)
+}
+
+/// Every credential this process resolves, ready to scrub Telegraf's output.
+///
+/// `Config::redactor()` covers the secrets the configuration *holds* — the
+/// InfluxDB token and the Prometheus password, both resolved during
+/// normalisation. Registry passwords are not among them: the model carries
+/// `password_file` paths, and the values are read later, by the code that
+/// builds the `X-Registry-Auth` header. So they sat outside the redactor,
+/// which is finding M-02 of the 2026-08-12 audit.
+///
+/// Reading them a second time here is deliberate. Threading the resolved
+/// credentials from this point to `image_updates_check`, which runs in a
+/// separate task from a cloned configuration, would tie a startup ordering to a
+/// credential lifetime for no gain — the file is small, read once at startup,
+/// and the same path is what the check itself uses.
+///
+/// Problems are discarded on purpose: this call is not the one that acts on
+/// them. `image_updates_check` resolves the same entries and logs each failure
+/// once, which is where an operator can do something about it. Warning twice
+/// about one unreadable file would read as two faults.
+fn output_redactor(config: &Config) -> muninn_core::secret::Redactor {
+    use muninn_core::secret::Secret;
+
+    let (credentials, _problems) = muninn_modules::image_updates::registry_auth::resolve(
+        &config.modules.image_updates.registry_auth,
+    );
+    config.redactor().extended_with(
+        credentials
+            .iter()
+            .map(|c| Secret::expose(&c.password).to_string()),
+    )
 }
 
 /// The startup self-checks, and their retry.
@@ -747,6 +779,55 @@ mod tests {
     // The state-machine tests moved to `muninn-health` with the state itself,
     // and writing the generated configuration to `generated_config`, next to the
     // permission rule it enforces. What is left is the supervisor's own state.
+
+    /// M-02: a registry password must not survive Telegraf's output.
+    ///
+    /// The value never enters the configuration model — the model holds the
+    /// *path* — so `Config::redactor()` alone cannot see it, and this test fails
+    /// against `config.redactor()` in place of `output_redactor`. That is the
+    /// point of it: the assertion is about the process's whole credential set,
+    /// not about one struct's fields.
+    ///
+    /// `image_updates` runs through `inputs.exec`, so `muninn image-check`'s
+    /// stderr *is* a Telegraf log line — the exact text this redactor scrubs.
+    #[test]
+    fn a_registry_password_is_redacted_out_of_telegraf_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw = dir.path().join("registry-password");
+        std::fs::write(&pw, "registry-pw-cccccc").unwrap();
+
+        let yaml = format!(
+            r#"version: 1
+modules:
+  image_updates:
+    enabled: true
+    registry_auth:
+      - registry: registry.example.com
+        username: robot
+        password_file: "{}"
+outputs:
+  prometheus:
+    enabled: true
+"#,
+            pw.display().to_string().replace('\\', "/")
+        );
+        let cfg_path = dir.path().join("muninn.yaml");
+        std::fs::write(&cfg_path, yaml).unwrap();
+        let (config, _warnings) =
+            muninn_core::config::load_and_resolve(&cfg_path, &Default::default())
+                .expect("fixture config is valid");
+
+        let line = "E! [inputs.exec] registry.example.com rejected registry-pw-cccccc";
+        let out = output_redactor(&config).apply(line);
+        assert!(
+            !out.contains("registry-pw-cccccc"),
+            "the registry password survived redaction: {out}"
+        );
+
+        // And the configuration-held secrets keep working, so this is an
+        // addition rather than a replacement.
+        assert!(config.redactor().is_empty());
+    }
 
     /// A transition logs and moves; the state the health server reads is the one
     /// the supervisor last set.
