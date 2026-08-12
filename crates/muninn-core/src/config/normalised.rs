@@ -177,18 +177,29 @@ impl Config {
         })
     }
 
-    /// A [`Redactor`] holding every secret this configuration resolved.
+    /// A [`Redactor`] holding every secret **this configuration resolved**.
     ///
     /// Built here rather than at the call site because this module is the one
     /// place that knows where secrets live — the same reason `from_v1` above is
     /// the only place they are read.
     ///
-    /// **A third credential must be added here by hand.** The compiler will not
-    /// say so: adding a field to [`Outputs`] leaves this compiling and silently
-    /// less complete, which is the worst shape a redactor can take, because it
-    /// still reads as coverage. `every_resolved_secret_is_redactable` in the
-    /// tests below is what actually holds the line — it walks a configuration
-    /// with every credential set and fails if one survives.
+    /// **This is not every credential muninn handles, and the difference is the
+    /// point.** It covers secrets whose *value* is in the model: the InfluxDB
+    /// token and the Prometheus password, both read during normalisation.
+    /// `modules.image_updates.registry_auth` is not one — the model carries a
+    /// `password_file` path and the value is read later, by the code that sends
+    /// it, so there is nothing here to add. It was outside the redactor
+    /// entirely until the 2026-08-12 audit found it (M-02); the caller merges it
+    /// in with [`Redactor::extended_with`], and `muninn::supervisor::
+    /// output_redactor` is where the whole set is assembled.
+    ///
+    /// **A third config-held credential must be added here by hand.** The
+    /// compiler will not say so: adding a field to [`Outputs`] leaves this
+    /// compiling and silently less complete, which is the worst shape a redactor
+    /// can take, because it still reads as coverage.
+    /// `every_resolved_secret_is_redactable` in the tests below holds that line
+    /// for the values this method can see, and holds nothing about the ones it
+    /// cannot — which is exactly how M-02 got past a test written to prevent it.
     ///
     /// Used to scrub Telegraf's own output before muninn re-emits it — see
     /// `muninn_telegraf::process::forward`.
