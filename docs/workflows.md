@@ -24,10 +24,7 @@ Dependabot config, not a workflow.
 
 **Runs on** every pull request, pushes to `dev`/`main`, and `v*.*.*` tags.
 
-Each job has one responsibility, and the pipeline runs in three stages —
-**Source**, **Image**, **Release** — separated by the two fan-in gates below.
-Job display names carry the stage as a prefix; the gates themselves do not, and
-must not (they are the required checks). `needs` orders everything.
+Each job has one responsibility; later jobs depend on earlier ones via `needs`.
 
 1. **`check`** — `cargo fmt --check` and `cargo clippy -D warnings`.
 2. **`test`** — `cargo test --workspace --locked` on stable **and** beta. Beta is
@@ -43,11 +40,7 @@ must not (they are the required checks). `needs` orders everything.
    registry sources.
 5. **`coverage`** — `cargo llvm-cov --fail-under-lines 80`, workspace-aggregate
    line coverage. Uploads `lcov.info` and writes the percentage into the job
-   summary, computed from the file's `LF`/`LH` records. Depends on `check`,
-   **not** on `test`, so it runs alongside the two toolchain legs: it runs the
-   whole suite itself under instrumentation, so waiting for `test` added no
-   confidence — only a full suite's duration on the critical path, part of it
-   spent on the beta leg, which cannot block anything.
+   summary, computed from the file's `LF`/`LH` records.
 6. **`reference`** — muninn's own gate, and the one that catches what no Rust
    test can see. It verifies that the pinned Telegraf still accepts
    `docs/reference/telegraf.reference.conf` (the anchor every snapshot is
@@ -59,10 +52,8 @@ must not (they are the required checks). `needs` orders everything.
    `TELEGRAF_VERSION` matches the Dockerfile's.
 7. **`version-gate`** — the top `CHANGELOG.md` version must be valid SemVer and
    strictly greater than the last `v*` tag. Enforces **only** in a release
-   context and is a no-op pass otherwise. It must always *run* rather than skip:
-   `source-gate` counts anything that is not `success` as a failure, so a skip
-   here would fail the gate and take `build` with it. Being in that gate is also
-   what makes an invalid release version fail before the expensive image build.
+   context and is a no-op pass otherwise. It must always *run*: a skipped `needs`
+   job would skip `build` too.
 8. **`build`** (matrix, per architecture, **native** runner) — builds the image
    exactly once into `image.tar` and uploads it as an artefact.
 9. **`scan`** (matrix) — Trivy against that artefact: a full SARIF pass to the
@@ -75,32 +66,10 @@ must not (they are the required checks). `needs` orders everything.
     host trees. Separate from `integration` because building the Debian and
     Ubuntu fixture trees is minutes of apt work that should not sit in front of
     the stack test.
-12. **`source-gate`** and **`image-gate`** — the two jobs the branch ruleset
-    actually names, and the boundaries between the stages. Each depends on a
-    group of the jobs above and fails if any of them did not report `success`;
-    neither runs a build or a test of its own. Each also writes its members and
-    their results as a table to the run summary, before deciding — so a failing
-    stage still says which member failed, on the page somebody actually reads.
-    They exist because a check that is not in the required set is only an
-    *indicator*: it goes visibly red and blocks nobody, which is the state
-    `MSRV`, `Version gate`, `Telegraf reference & docs` and both `Updates
-    module` legs were in. Requiring a fan-in job instead makes coverage follow
-    `needs`, which this file has to maintain anyway to order itself — and since
-    `build` and `push` depend on their gate rather than re-listing its members,
-    each stage's membership is written down exactly once. Both carry
-    `if: always()`, and that is load-bearing twice over: without it a gate whose
-    dependency failed would be *skipped*, a skipped required check counts as
-    satisfied — green in exactly the case it exists for — and a gate that can be
-    skipped would be an unreliable thing for `build` to depend on. `push` and
-    `publish` are deliberately not in either gate, because a `push`-only job
-    reports `skipped` on a pull request.
-13. **`push`** (matrix, `if: push`) — needs `image-gate`, so it sees the
-    scanned, integration-tested and updates-tested bytes and nothing else;
-    skopeo copies the tarball to a staging tag by digest. Skipped on PRs, so
-    registry credentials are never reachable there. Its `if:` narrows the job to
-    push events without loosening the dependency — an `if:` carrying no status
-    function leaves the implicit `success()` on `needs` in place.
-14. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
+12. **`push`** (matrix, `if: push`) — needs `scan`, `integration` **and**
+    `updates`; skopeo copies the scanned tarball to a staging tag by digest.
+    Skipped on PRs, so registry credentials are never reachable there.
+13. **`publish`** (`if: push`) — assembles the multi-arch manifest from the
     digests, mirrors it to ghcr with `skopeo copy --all`, deletes the staging
     tags, and creates the git tag `vX.Y.Z`. It publishes **no new bytes**.
 
@@ -136,13 +105,6 @@ feature branches before a PR exists.
   shell errors inside `run:` blocks — the half ShellCheck above does not cover.
 - **`semgrep`** — a full pass to SARIF that never blocks, then a blocking pass on
   ERROR severity. Rulesets `p/rust` and `p/secrets`.
-- **`security-gate`** — the fan-in job the ruleset names, failing if any of the
-  three above did not report `success` and writing their results to the run
-  summary either way. Same `if: always()` reasoning as `ci.yml`'s two gates,
-  though unlike those it orders nothing — nothing follows it in this file, so it
-  exists purely to be the required check. This file is where the omission was
-  real: all three scanners went red without blocking a merge, and requiring one
-  job covers them and whatever is added next.
 
 **Gotchas**
 
