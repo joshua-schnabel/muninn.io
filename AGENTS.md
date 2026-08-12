@@ -24,7 +24,8 @@ Telegraf has no plugin for either ([ADR-0009](docs/adr/0009-updates-module-appro
 operational metrics are a separate surface on the health port
 ([`docs/self-metrics.md`](docs/self-metrics.md)).
 
-**Status: released. `0.1.0` is the first cut version; `dev` keeps publishing
+**Status: released. `1.0.0` is the current version and the stable surfaces in
+[`docs/versioning.md`](docs/versioning.md) are frozen; `dev` keeps publishing
 pre-release images alongside it.**
 [`docs/roadmap.md`](docs/roadmap.md) carries what is still open and is the one
 place it is tracked — do not restate it here, it goes stale. What already shipped
@@ -284,7 +285,6 @@ explicitly and flagged in the PR.
 | Topic | Read |
 |---|---|
 | What is still open | [`docs/roadmap.md`](docs/roadmap.md) |
-| What must close before 1.0 | [`docs/release-1.0.md`](docs/release-1.0.md) |
 | Architecture, startup, state machine | [`docs/architecture.md`](docs/architecture.md) |
 | Config reference (every key) | [`docs/configuration.md`](docs/configuration.md) |
 | Module reference | [`docs/modules.md`](docs/modules.md) |

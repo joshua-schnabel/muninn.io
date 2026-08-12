@@ -42,9 +42,9 @@ info() { echo "${YELLOW}→${NC} $*"; }
 # running them: the point of this step is that a local run gates everything at
 # once. Anywhere else, leaving it out would be a way to pass by omission.
 if [ "${VERIFY_SKIP_CARGO:-0}" = "1" ]; then
-  info "1/7  cargo gates — skipped (VERIFY_SKIP_CARGO=1; CI runs them as separate jobs)"
+  info "1/8  cargo gates — skipped (VERIFY_SKIP_CARGO=1; CI runs them as separate jobs)"
 else
-  info "1/7  cargo gates"
+  info "1/8  cargo gates"
   cargo fmt --all -- --check          >/dev/null 2>&1 && pass "cargo fmt"    || fail "cargo fmt"
   cargo metadata --locked --format-version 1 >/dev/null 2>&1 \
     && pass "cargo metadata --locked" || fail "cargo metadata --locked (Cargo.lock out of date?)"
@@ -54,7 +54,7 @@ else
 fi
 
 # ── 2. The example configurations are valid YAML ─────────────────────────────
-info "2/7  example configurations parse"
+info "2/8  example configurations parse"
 python3 - <<'PY' && pass "config/*.yaml parse" || fail "config/*.yaml"
 import yaml, pathlib, sys
 ok = True
@@ -73,7 +73,7 @@ PY
 # ── 3. The reference config is real, valid Telegraf ──────────────────────────
 # The primary acceptance criterion: the format the renderer targets is proven
 # before the renderer exists.
-info "3/7  reference config accepted by Telegraf ${TELEGRAF_VERSION}"
+info "3/8  reference config accepted by Telegraf ${TELEGRAF_VERSION}"
 if docker run --rm -v "$DOCKER_ROOT/docs/reference:/ref:ro" "telegraf:${TELEGRAF_VERSION}" \
      telegraf config check --strict-env-handling --config /ref/telegraf.reference.conf >/dev/null 2>&1
 then
@@ -85,7 +85,7 @@ fi
 # ── 4. The ordering fixtures still demonstrate what ADR-0007 claims ──────────
 # Both must pass validation — that is the point, the mistake is invisible to it.
 # The difference only shows up in the metrics actually emitted.
-info "4/7  sub-table ordering fixtures (ADR-0007)"
+info "4/8  sub-table ordering fixtures (ADR-0007)"
 for f in ordering-correct ordering-broken; do
   docker run --rm -v "$DOCKER_ROOT/docs/reference:/ref:ro" "telegraf:${TELEGRAF_VERSION}" \
     telegraf config check --strict-env-handling --config "/ref/${f}.conf" >/dev/null 2>&1 \
@@ -124,7 +124,7 @@ fi
 # needed a committed artefact verified by a real `telegraf config check`, and an
 # unverified reference is worse than none: it becomes a test that agrees with
 # whatever the code happens to do.
-info "5/7  plugin options exist in Telegraf ${TELEGRAF_VERSION}"
+info "5/8  plugin options exist in Telegraf ${TELEGRAF_VERSION}"
 TELEGRAF_VERSION="$TELEGRAF_VERSION" python3 - <<'PY' && pass "every plugin option exists upstream" || fail "unknown plugin option(s)"
 import re, os, pathlib, sys, urllib.request
 
@@ -189,7 +189,7 @@ sys.exit(1 if missing else 0)
 PY
 
 # ── 6. The pinned Telegraf checksums match upstream and ADR-0011 ─────────────
-info "6/7  Telegraf tarball checksums"
+info "6/8  Telegraf tarball checksums"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 (
@@ -211,7 +211,7 @@ else
 fi
 
 # ── 7. Every relative documentation link resolves, fragment included ─────────
-info "7/7  documentation cross-references"
+info "7/8  documentation cross-references"
 python3 - <<'PY' && pass "all relative markdown links resolve" || fail "broken markdown link(s)"
 # Paths *and* heading fragments.
 #
@@ -276,6 +276,51 @@ for b in bad:
     print('  broken:', b)
 sys.exit(1 if bad else 0)
 PY
+
+# ── 8. The release named in prose is the release the changelog cut ──────────
+#
+# Three pages tell a reader which version is current, and each does it by naming
+# the number. AGENTS.md §7 forbids exactly that for good reason — a number
+# copied into a sentence is wrong the morning after the next release, and
+# nothing fails when it goes stale. F-15 cleaned this up once already, and it
+# came back the day 1.0.0 shipped: all three still said `0.1.0`, and the README
+# additionally still called it "a `0.x` release" while versioning.md had been
+# rewritten to promise 1.x semantics.
+#
+# Naming the version is a deliberate choice, so the drift is made mechanical
+# instead of remembered. The authority is CHANGELOG.md, read through
+# changelog-version.sh — which is the same extraction the version gate and both
+# release workflows use, and validates SemVer before printing.
+info "8/8  the release named in prose"
+expected="$(bash scripts/changelog-version.sh 2>/dev/null || true)"
+if [ -z "$expected" ]; then
+  fail "could not read the current version from CHANGELOG.md"
+else
+  drifted=""
+  # One line per page, each the sentence that states what is current. Anchored
+  # on its own wording rather than on "any version-shaped string in the file",
+  # so a historical mention elsewhere on the page is not a false positive.
+  check_prose() { # <file> <grep -E pattern for the status sentence>
+    line="$(grep -nE "$2" "$1" | head -1)" || true
+    if [ -z "$line" ]; then
+      drifted="${drifted}\n  $1: the status sentence was not found — reword the pattern in this check"
+      return
+    fi
+    found="$(printf '%s' "$line" | grep -oE '`[0-9]+\.[0-9]+\.[0-9]+`' | head -1 | tr -d '`')"
+    if [ "$found" != "$expected" ]; then
+      drifted="${drifted}\n  $1:${line%%:*} says '${found:-none}', CHANGELOG.md says '$expected'"
+    fi
+  }
+  check_prose README.md            '^\*\*`[0-9].*` is the current release\.\*\*'
+  check_prose AGENTS.md            '^\*\*Status: released\. `[0-9]'
+  check_prose docs/CONTRIBUTING.md '^muninn is feature-complete and released'
+
+  if [ -z "$drifted" ]; then
+    pass "README, AGENTS.md and CONTRIBUTING.md all name $expected"
+  else
+    fail "the release named in prose has drifted:$(printf '%b' "$drifted")"
+  fi
+fi
 
 echo
 if [ "$failures" -eq 0 ]; then

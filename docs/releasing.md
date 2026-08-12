@@ -50,6 +50,17 @@ Rename `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`; the accumulated entries
 stay under it. Pick `X.Y.Z` per SemVer — [`versioning.md`](versioning.md) says
 what the number promises.
 
+Then run `scripts/set-workspace-version.sh X.Y.Z`. It stamps `Cargo.toml`,
+`Cargo.lock` and the three pages that name the current release in prose —
+`README.md`, `AGENTS.md` and [`CONTRIBUTING.md`](CONTRIBUTING.md) — in one go,
+so none of them is yours to edit by hand. The one-click path above already calls
+it for you.
+
+Two gates catch a skipped stamp rather than letting it ship: the **version gate**
+compares `CHANGELOG.md` against `[workspace.package].version`, and check 8 of
+`scripts/verify-design-package.sh` compares it against the three prose pages,
+naming the file, the line and both versions.
+
 ### 2. Open the release PR `dev → main`
 
 The **version gate** validates `X.Y.Z` before the merge is allowed: valid SemVer,
