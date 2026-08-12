@@ -25,6 +25,7 @@
 
 pub mod check;
 pub mod docker_api;
+pub mod registry_auth;
 
 use std::time::Duration;
 

@@ -1,6 +1,55 @@
 # ADR-0013 — Detect image updates through the Docker Engine API, not a registry client
 
-**Status:** accepted · **Date:** 2026-08-04
+**Status:** accepted · **Date:** 2026-08-04 ·
+**Amended 2026-08-12** — see *Amendment: the daemon does not hold credentials*
+
+## Amendment: the daemon does not hold credentials (2026-08-12)
+
+This decision was recorded with a claim that turned out to be false, and the
+claim was load-bearing. It said muninn needed no credential handling of its own,
+because asking the daemon meant the daemon "already knows any registry
+credentials the host is configured with".
+
+It does not. `docker login` never speaks to the daemon: it authenticates against
+the registry and writes the result into the **client's**
+`~/.docker/config.json`. The Docker CLI then reads that file and forwards the
+credential to the daemon in an `X-Registry-Auth` header on every request that
+needs one. The daemon stores none of its own — daemon-side credential storage
+has been requested upstream twice ([moby/moby#41706][41706],
+[moby/moby#11820][11820]) and implemented neither time.
+
+So the socket gives muninn the ability to *ask*, not the credentials to ask
+*with*. muninn replaces the CLI on this path rather than using it, and has to
+send that header itself.
+
+**Measured, not reasoned.** Cells I1–I10 of `scripts/image-updates-test.sh` all
+use a public registry, where an anonymous distribution query succeeds — so this
+claim was never load-bearing in any test, and every unit test passed throughout
+because a scripted daemon agrees with whoever wrote it. Cell I11, against a
+local `registry:2` behind htpasswd with the host logged in and the image pushed,
+reported `distribution_query_failed`. Both architectures, same answer. This is
+the same shape as the chunked-encoding correction below.
+
+**What changed.** `modules.image_updates.registry_auth` takes a registry host, a
+username and a `password_file`, and muninn sends the `X-Registry-Auth` header
+for references whose registry matches. The value is **base64url** (RFC 4648 §5),
+which the API documentation does not state and the daemon's decoder requires
+([moby/moby#33434][33434]).
+
+The credential is resolved inside the process that uses it — the agent, or
+`muninn image-check` reading its own `--config`. It is deliberately **not** a
+flag: the rendered `inputs.exec` command line is what Telegraf executes, so a
+credential there would sit in the generated configuration and in the process
+table. Secrets in this project are file paths, and this is what that rule
+requires here.
+
+**Unchanged:** the reason for asking the daemon at all. muninn still needs no
+TLS stack and no bearer-token flow — the daemon performs the handshake and the
+token exchange, and is simply handed the credential to use.
+
+[41706]: https://github.com/moby/moby/issues/41706
+[11820]: https://github.com/moby/moby/issues/11820
+[33434]: https://github.com/moby/moby/issues/33434
 
 ## Context
 

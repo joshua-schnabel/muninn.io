@@ -378,6 +378,41 @@ pub struct ImageUpdatesModule {
     pub container_include: Vec<String>,
     #[serde(default)]
     pub container_exclude: Vec<String>,
+    /// Credentials for registries that require authentication.
+    ///
+    /// Empty by default, which is every public registry: an anonymous
+    /// distribution query works there and nothing needs configuring.
+    ///
+    /// This exists because ADR-0013's original premise was wrong. It said
+    /// muninn needed no credential handling, since asking the daemon meant the
+    /// daemon "already knows any registry credentials the host is configured
+    /// with". It does not: `docker login` writes to the *client's*
+    /// `~/.docker/config.json`, and the Docker CLI forwards those credentials
+    /// to the daemon in an `X-Registry-Auth` header on every request. The
+    /// daemon stores none of its own — dockerd-side credential storage has
+    /// been requested twice upstream (moby/moby#41706, moby/moby#11820) and
+    /// implemented neither time. So a socket gives muninn the ability to ask,
+    /// not the credentials to ask with, and it has to supply that header
+    /// itself. Measured by cell I11 of `scripts/image-updates-test.sh`.
+    #[serde(default)]
+    pub registry_auth: Vec<RegistryAuth>,
+}
+
+/// One registry's credentials.
+///
+/// A path, never a password — the same rule every other credential in this
+/// model follows, and the reason the value never appears in the generated
+/// Telegraf configuration or in the helper's argv.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegistryAuth {
+    /// The registry host this applies to, as it appears in an image reference:
+    /// `registry.example.com`, `registry.example.com:5000`, or `docker.io` for
+    /// Docker Hub — which is what an unqualified `alpine:3.19` resolves to.
+    pub registry: String,
+    pub username: String,
+    /// A path, never a password.
+    pub password_file: String,
 }
 
 fn default_registry_timeout() -> ConfigDuration {
@@ -394,6 +429,7 @@ impl Default for ImageUpdatesModule {
             interval: default_updates_interval(),
             container_include: Vec::new(),
             container_exclude: Vec::new(),
+            registry_auth: Vec::new(),
         }
     }
 }

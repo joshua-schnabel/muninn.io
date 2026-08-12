@@ -14,10 +14,17 @@
 //! GHCR or a private registry — needs a TLS stack and a bearer-token auth flow
 //! muninn has nowhere else. `GET /distribution/{name}/json` asks the *daemon*
 //! to do that instead: the daemon already has a TLS stack (Go's, a separate
-//! process from muninn's Rust) and already knows any registry credentials the
-//! host is configured with. muninn stays a plaintext HTTP client talking to a
-//! socket or a proxy, exactly as it already does for `/_ping` and exactly as
+//! process from muninn's Rust). muninn stays a plaintext HTTP client talking to
+//! a socket or a proxy, exactly as it already does for `/_ping` and exactly as
 //! `deny.toml`'s note on OpenSSL says it does.
+//!
+//! **What the daemon does not bring is the credentials.** This module used to
+//! say it did — "already knows any registry credentials the host is configured
+//! with" — and that was wrong: `docker login` writes to the *client's*
+//! `~/.docker/config.json` and the CLI forwards the credential per request in
+//! an `X-Registry-Auth` header. muninn replaces the CLI here rather than using
+//! it, so it has to send that header itself. See [`super::registry_auth`], and
+//! cell I11 of `scripts/image-updates-test.sh`, which is what established it.
 //!
 //! # Why this is not a general HTTP client
 //!
@@ -62,6 +69,8 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
+
+use super::registry_auth::{self, RegistryCredential};
 
 use serde::Deserialize;
 
@@ -130,6 +139,10 @@ pub trait DockerApi {
 pub struct Client {
     endpoint: Endpoint,
     registry_timeout: Duration,
+    /// Empty for every public registry, which is the default and needs
+    /// nothing: an anonymous distribution query succeeds there. See
+    /// [`super::registry_auth`] for why muninn has to carry these at all.
+    registry_auth: Vec<RegistryCredential>,
 }
 
 impl Client {
@@ -137,7 +150,14 @@ impl Client {
         Client {
             endpoint,
             registry_timeout,
+            registry_auth: Vec::new(),
         }
+    }
+
+    /// Credentials for registries that require authentication.
+    pub fn with_registry_auth(mut self, credentials: Vec<RegistryCredential>) -> Self {
+        self.registry_auth = credentials;
+        self
     }
 
     /// The same endpoint, with the registry timeout in place of the API one.
@@ -152,7 +172,7 @@ impl Client {
 impl DockerApi for Client {
     fn list_running_containers(&self) -> Result<Vec<Container>, String> {
         let path = format!("/containers/json?{RUNNING_FILTER}");
-        let resp = get(&self.endpoint, &path)?;
+        let resp = get(&self.endpoint, &path, None)?;
         if resp.status != 200 {
             return Err(format!(
                 "GET /containers/json answered {}: {}",
@@ -165,7 +185,7 @@ impl DockerApi for Client {
 
     fn repo_digests(&self, image_id: &str) -> Result<Vec<String>, String> {
         let path = format!("/images/{image_id}/json");
-        let resp = get(&self.endpoint, &path)?;
+        let resp = get(&self.endpoint, &path, None)?;
         if resp.status != 200 {
             return Err(format!(
                 "GET {path} answered {}: {}",
@@ -182,7 +202,11 @@ impl DockerApi for Client {
         // reference exactly as `docker pull` would take it — encoding it would be
         // asking for a path this route does not match.
         let path = format!("/distribution/{image_reference}/json");
-        let resp = get(&self.registry_endpoint(), &path)?;
+        // The only request that reaches a registry, and therefore the only one
+        // a credential belongs on. The daemon-local calls above are answered
+        // out of its own state and never authenticate.
+        let auth = registry_auth::header_for(&self.registry_auth, image_reference);
+        let resp = get(&self.registry_endpoint(), &path, auth.as_deref())?;
         if resp.status != 200 {
             return Err(format!(
                 "GET {path} answered {}: {}",
@@ -289,37 +313,59 @@ struct Response {
 /// deployment, a socket proxy. Refusing it here costs one check and removes
 /// the assumption entirely rather than resting on an upstream guarantee this
 /// module has no way to verify.
-fn get(endpoint: &Endpoint, path: &str) -> Result<Response, String> {
+fn get(endpoint: &Endpoint, path: &str, auth: Option<&str>) -> Result<Response, String> {
     if path.chars().any(|c| c.is_control() || c == ' ') {
         return Err(format!(
             "refusing to send a request whose path contains a control character or space: {path:?}"
         ));
     }
+    // The same check the path gets, for the same reason and with the same
+    // refusal: this value is interpolated into a header line built by hand, so
+    // a carriage return or newline in it is a header injection. base64url
+    // output cannot contain either, which makes this a check on the invariant
+    // rather than on the credential — and an invariant worth failing loudly if
+    // it ever stops holding. The message names neither the value nor any part
+    // of it.
+    if auth.is_some_and(|a| a.chars().any(|c| c.is_control())) {
+        return Err(
+            "refusing to send a registry credential containing a control character".to_string(),
+        );
+    }
     match &endpoint.kind {
-        EndpointKind::UnixSocket(socket_path) => unix(socket_path, path, endpoint.timeout),
-        EndpointKind::Tcp(addr) => tcp(addr, path, endpoint.timeout),
+        EndpointKind::UnixSocket(socket_path) => unix(socket_path, path, endpoint.timeout, auth),
+        EndpointKind::Tcp(addr) => tcp(addr, path, endpoint.timeout, auth),
     }
 }
 
 #[cfg(unix)]
-fn unix(socket_path: &str, path: &str, timeout: Duration) -> Result<Response, String> {
+fn unix(
+    socket_path: &str,
+    path: &str,
+    timeout: Duration,
+    auth: Option<&str>,
+) -> Result<Response, String> {
     use std::os::unix::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket_path)
         .map_err(|e| format!("cannot connect to '{socket_path}': {e}"))?;
     stream.set_read_timeout(Some(timeout)).ok();
     stream.set_write_timeout(Some(timeout)).ok();
-    exchange(&mut stream, path)
+    exchange(&mut stream, path, auth)
 }
 
 /// muninn ships as a Linux container; this exists only so the workspace builds
 /// and tests on a developer's non-Linux machine.
 #[cfg(not(unix))]
-fn unix(_socket_path: &str, _path: &str, _timeout: Duration) -> Result<Response, String> {
+fn unix(
+    _socket_path: &str,
+    _path: &str,
+    _timeout: Duration,
+    _auth: Option<&str>,
+) -> Result<Response, String> {
     Err("unix sockets are not available on this platform".to_string())
 }
 
-fn tcp(addr: &str, path: &str, timeout: Duration) -> Result<Response, String> {
+fn tcp(addr: &str, path: &str, timeout: Duration, auth: Option<&str>) -> Result<Response, String> {
     let resolved = addr
         .to_socket_addrs()
         .map_err(|e| format!("cannot resolve '{addr}': {e}"))?
@@ -330,12 +376,21 @@ fn tcp(addr: &str, path: &str, timeout: Duration) -> Result<Response, String> {
         .map_err(|e| format!("cannot connect to '{addr}': {e}"))?;
     stream.set_read_timeout(Some(timeout)).ok();
     stream.set_write_timeout(Some(timeout)).ok();
-    exchange(&mut stream, path)
+    exchange(&mut stream, path, auth)
 }
 
-fn exchange<S: Read + Write>(stream: &mut S, path: &str) -> Result<Response, String> {
+fn exchange<S: Read + Write>(
+    stream: &mut S,
+    path: &str,
+    auth: Option<&str>,
+) -> Result<Response, String> {
+    // Omitted entirely when there is no credential, rather than sent empty: an
+    // anonymous distribution query is what succeeds against a public registry,
+    // and an empty `X-Registry-Auth` would turn that into a rejected
+    // authenticated one.
+    let auth_header = auth.map_or(String::new(), |a| format!("X-Registry-Auth: {a}\r\n"));
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: docker\r\nAccept: application/json\r\nUser-Agent: muninn\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: docker\r\nAccept: application/json\r\nUser-Agent: muninn\r\n{auth_header}Connection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -632,7 +687,7 @@ mod tests {
         let mut f = Fake::new(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n{\"Id\":\"abc\"}",
         );
-        let resp = exchange(&mut f, "/containers/json").unwrap();
+        let resp = exchange(&mut f, "/containers/json", None).unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, b"{\"Id\":\"abc\"}");
         assert!(String::from_utf8_lossy(&f.written).starts_with("GET /containers/json HTTP/1.1"));
@@ -645,7 +700,7 @@ mod tests {
     #[test]
     fn a_body_without_content_length_is_still_read() {
         let mut f = Fake::new("HTTP/1.1 200 OK\r\n\r\n{\"RepoDigests\":[]}");
-        let resp = exchange(&mut f, "/images/x/json").unwrap();
+        let resp = exchange(&mut f, "/images/x/json", None).unwrap();
         assert_eq!(resp.body, b"{\"RepoDigests\":[]}");
     }
 
@@ -656,7 +711,7 @@ mod tests {
         let mut oversized = "HTTP/1.1 200 OK\r\n\r\n".to_string();
         oversized.push_str(&"a".repeat(MAX_RESPONSE_BYTES as usize + 1));
         let mut f = Fake::new(&oversized);
-        let e = exchange(&mut f, "/containers/json").unwrap_err();
+        let e = exchange(&mut f, "/containers/json", None).unwrap_err();
         assert!(e.contains("exceeded"), "{e}");
     }
 
@@ -672,7 +727,7 @@ mod tests {
             timeout: Duration::from_millis(50),
         };
         for path in ["/images/x\r\nGET /secret HTTP/1.1/json", "/images/x y/json"] {
-            let e = get(&endpoint, path).unwrap_err();
+            let e = get(&endpoint, path, None).unwrap_err();
             assert!(
                 e.contains("control character") || e.contains("space"),
                 "{path:?}: {e}"
@@ -689,7 +744,7 @@ mod tests {
             kind: EndpointKind::Tcp(addr.to_string()),
             timeout: Duration::from_millis(50),
         };
-        let e = get(&endpoint, "/distribution/nginx:latest/json").unwrap_err();
+        let e = get(&endpoint, "/distribution/nginx:latest/json", None).unwrap_err();
         assert!(
             e.contains("cannot connect"),
             "an ordinary path should reach the connection attempt: {e}"
@@ -701,7 +756,7 @@ mod tests {
         let mut f = Fake::new(
             "HTTP/1.1 404 Not Found\r\nContent-Length: 27\r\n\r\n{\"message\":\"no such image\"}",
         );
-        let resp = exchange(&mut f, "/images/x/json").unwrap();
+        let resp = exchange(&mut f, "/images/x/json", None).unwrap();
         assert_eq!(resp.status, 404);
         assert_eq!(body_excerpt(&resp.body), "no such image");
     }
@@ -717,7 +772,7 @@ mod tests {
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n\
              d\r\n[{\"Id\":\"abc\"}\r\n1\r\n]\r\n0\r\n\r\n",
         );
-        let resp = exchange(&mut f, "/containers/json").unwrap();
+        let resp = exchange(&mut f, "/containers/json", None).unwrap();
         assert_eq!(resp.status, 200);
         assert_eq!(resp.body, b"[{\"Id\":\"abc\"}]");
     }
@@ -732,7 +787,7 @@ mod tests {
             payload.len(),
             payload
         ));
-        let resp = exchange(&mut f, "/containers/json").unwrap();
+        let resp = exchange(&mut f, "/containers/json", None).unwrap();
         assert_eq!(parse_container_list(&resp.body).unwrap().len(), 2);
     }
 
@@ -744,7 +799,64 @@ mod tests {
         let mut f = Fake::new(
             "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5;name=value\r\nhello\r\n0\r\n\r\n",
         );
-        assert_eq!(exchange(&mut f, "/x").unwrap().body, b"hello");
+        assert_eq!(exchange(&mut f, "/x", None).unwrap().body, b"hello");
+    }
+
+    // ── The registry credential on the wire ─────────────────────────────────
+
+    /// Public registries are the default, and an anonymous query is what works
+    /// there. Sending an empty `X-Registry-Auth` would turn a lookup that
+    /// succeeds into an authenticated one that is rejected, so the header has
+    /// to be absent rather than blank.
+    #[test]
+    fn no_credential_means_no_header_at_all() {
+        let mut f = Fake::new("HTTP/1.1 200 OK\r\n\r\n{}");
+        exchange(&mut f, "/distribution/alpine:3.19/json", None).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&f.written).contains("X-Registry-Auth"),
+            "an anonymous request must carry no credential header: {}",
+            String::from_utf8_lossy(&f.written)
+        );
+    }
+
+    #[test]
+    fn a_credential_is_sent_as_one_header_line() {
+        let mut f = Fake::new("HTTP/1.1 200 OK\r\n\r\n{}");
+        exchange(
+            &mut f,
+            "/distribution/r.example.com/app:v1/json",
+            Some("dG9rZW4="),
+        )
+        .unwrap();
+        let written = String::from_utf8_lossy(&f.written).to_string();
+        assert!(
+            written.contains("\r\nX-Registry-Auth: dG9rZW4=\r\n"),
+            "the credential must be its own header line: {written}"
+        );
+        // Still a well-formed request after the insertion — the header goes
+        // between the fixed ones and `Connection: close`, not into the request
+        // line and not after the terminator.
+        assert!(written.starts_with("GET /distribution/r.example.com/app:v1/json HTTP/1.1\r\n"));
+        assert!(written.ends_with("Connection: close\r\n\r\n"));
+    }
+
+    /// base64url output cannot contain a control character, so this asserts the
+    /// invariant rather than a credential — and it is the check that keeps a
+    /// future change to the encoder from turning a password into a header
+    /// injection against the daemon or the socket proxy in front of it.
+    #[test]
+    fn a_credential_with_a_control_character_is_refused_before_it_is_sent() {
+        let endpoint = Endpoint {
+            kind: EndpointKind::Tcp("127.0.0.1:1".to_string()),
+            timeout: Duration::from_millis(50),
+        };
+        let e = get(&endpoint, "/distribution/x/json", Some("abc\r\nX-Evil: 1")).unwrap_err();
+        assert!(e.contains("control character"), "{e}");
+        // The refusal must not quote what it refused.
+        assert!(
+            !e.contains("X-Evil"),
+            "the error must not echo the value: {e}"
+        );
     }
 
     /// Strict on purpose. A container list truncated mid-chunk and parsed as a
@@ -759,7 +871,7 @@ mod tests {
         ] {
             let mut f = Fake::new(broken);
             assert!(
-                exchange(&mut f, "/x").is_err(),
+                exchange(&mut f, "/x", None).is_err(),
                 "should not have decoded: {broken:?}"
             );
         }
@@ -768,13 +880,13 @@ mod tests {
     #[test]
     fn an_empty_chunked_body_decodes_to_nothing() {
         let mut f = Fake::new("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n");
-        assert!(exchange(&mut f, "/x").unwrap().body.is_empty());
+        assert!(exchange(&mut f, "/x", None).unwrap().body.is_empty());
     }
 
     #[test]
     fn a_response_with_no_header_terminator_is_rejected() {
         let mut f = Fake::new("not an http response");
-        assert!(exchange(&mut f, "/x").is_err());
+        assert!(exchange(&mut f, "/x", None).is_err());
     }
 
     #[test]
