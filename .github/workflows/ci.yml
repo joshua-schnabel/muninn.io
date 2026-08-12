@@ -512,11 +512,29 @@ jobs:
           cache-from: type=gha,scope=${{ env.PLATFORM_PAIR }}
           cache-to: type=gha,mode=max,scope=${{ env.PLATFORM_PAIR }}
 
+      # The whole pipeline rests on one sentence — the bytes scanned, tested and
+      # published are the bytes built — and until the 2026-08-12 audit (M-03)
+      # nothing in this repository could tell whether it was true. The tarball
+      # travelled between five jobs through an artefact store, and no checksum
+      # was recorded on the way out or compared on the way in.
+      #
+      # It is recorded here, in the job that produced the bytes, and verified in
+      # `push`, the last job that can still stop them. That converts a documented
+      # guarantee into a checked one, which is the whole difference between this
+      # pipeline's central claim and an assumption about GitHub's storage.
+      - name: Record the tarball's checksum
+        run: |
+          cd "${RUNNER_TEMP}"
+          sha256sum image.tar > image.tar.sha256
+          cat image.tar.sha256
+
       - name: Upload image tarball
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-${{ env.PLATFORM_PAIR }}
-          path: ${{ runner.temp }}/image.tar
+          path: |
+            ${{ runner.temp }}/image.tar
+            ${{ runner.temp }}/image.tar.sha256
           if-no-files-found: error
           retention-days: 1
 
@@ -552,6 +570,13 @@ jobs:
         with:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
+
+      # M-03: the bytes this job judges must be the bytes `build` produced.
+      # Every consumer checks, not only `push` — "scanned, tested and published
+      # are identical" is four claims, and one verification at the end would
+      # leave three of them still assumed.
+      - name: Verify the tarball is the one that was built
+        run: cd "${RUNNER_TEMP}" && sha256sum -c image.tar.sha256
 
       - name: Trivy - full scan (SARIF)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -646,6 +671,13 @@ jobs:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
 
+      # M-03: the bytes this job judges must be the bytes `build` produced.
+      # Every consumer checks, not only `push` — "scanned, tested and published
+      # are identical" is four claims, and one verification at the end would
+      # leave three of them still assumed.
+      - name: Verify the tarball is the one that was built
+        run: cd "${RUNNER_TEMP}" && sha256sum -c image.tar.sha256
+
       - name: Load image
         run: docker load -i "${{ runner.temp }}/image.tar" && docker tag muninn:ci muninn:dev
 
@@ -703,6 +735,13 @@ jobs:
         with:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
+
+      # M-03: the bytes this job judges must be the bytes `build` produced.
+      # Every consumer checks, not only `push` — "scanned, tested and published
+      # are identical" is four claims, and one verification at the end would
+      # leave three of them still assumed.
+      - name: Verify the tarball is the one that was built
+        run: cd "${RUNNER_TEMP}" && sha256sum -c image.tar.sha256
 
       - name: Load image
         run: docker load -i "${{ runner.temp }}/image.tar" && docker tag muninn:ci muninn:dev
@@ -859,6 +898,20 @@ jobs:
         with:
           name: image-${{ env.PLATFORM_PAIR }}
           path: ${{ runner.temp }}
+
+      # The other half of M-03. This is the last point at which the bytes can be
+      # stopped, so it is where the claim is checked: the tarball about to be
+      # pushed must be the one `build` produced. A mismatch is a hard failure —
+      # there is no benign explanation for it, and "publish anyway and mention
+      # it" would defeat the check.
+      - name: Verify the tarball is the one that was built and scanned
+        run: |
+          cd "${RUNNER_TEMP}"
+          if [ ! -s image.tar.sha256 ]; then
+            echo "::error::no checksum accompanied the image artefact — build did not record one"
+            exit 1
+          fi
+          sha256sum -c image.tar.sha256
 
       - name: Install skopeo
         run: sudo apt-get update && sudo apt-get install -y skopeo
@@ -1130,10 +1183,16 @@ jobs:
       #
       # Through git's `extraheader` rather than a token in the remote URL: a URL
       # is argv, and argv is readable by anything else on the machine and lands
-      # in `git remote -v` for whatever runs next. The header is written into
-      # the local config, used, and removed on the way out — including when the
-      # push fails, which is the case where a leftover credential would
-      # otherwise sit in a workspace nobody looks at again.
+      # in `git remote -v` for whatever runs next.
+      #
+      # The header reaches git through `GIT_CONFIG_COUNT`, not through
+      # `git config --local`, and that is M-06 of the 2026-08-12 audit. Writing
+      # it with `git config` handed the credential to an external binary as an
+      # argument — the exact exposure the paragraph above rejects, in the step
+      # that rejects it — and left it in `.git/config` until a trap removed it.
+      # Environment is not argv: `/proc/<pid>/environ` is readable by the owning
+      # user, `/proc/<pid>/cmdline` by everyone. It also needs no cleanup, since
+      # nothing is written down; the trap and the `--unset-all` are gone with it.
       - name: Create git tag
         if: github.ref == 'refs/heads/main' && steps.tag_check.outputs.exists == 'false'
         env:
@@ -1151,12 +1210,11 @@ jobs:
           # cannot identify.
           git tag "$TAG" -m "Release $TAG" -m "muninn-manifest-digest: $DIGEST"
 
-          header='http.https://github.com/.extraheader'
-          trap 'git config --local --unset-all "$header" 2>/dev/null || true' EXIT
-
-          # Base64 on stdin, not as an argument, for the same reason the Docker
-          # Hub steps above pass their credentials through a config file.
+          # `printf` is a bash builtin, so the token never becomes a separate
+          # process's argv here; `base64` reads it on stdin for the same reason.
           basic="$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
-          git config --local "$header" "AUTHORIZATION: basic ${basic}"
 
-          git push "https://github.com/${GITHUB_REPOSITORY}" "refs/tags/${TAG}"
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${basic}" \
+            git push "https://github.com/${GITHUB_REPOSITORY}" "refs/tags/${TAG}"
