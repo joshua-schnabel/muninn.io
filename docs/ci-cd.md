@@ -21,18 +21,26 @@ scanned what it published.
 ```
 release-dispatch.yml (optional entry point) → release PR into main
                                       ▼
+── Source ─────────────────────────────────────────────────────────────────
 check ─┬ test (stable + beta canary) ─┐
+       ├ msrv ────────────────────────┤
        ├ supply-chain ────────────────┤
-       ├ coverage (needs test) ───────┤
+       ├ coverage ────────────────────┤
        ├ reference ───────────────────┤
        └ version-gate ────────────────┤
+                                      ▼
+                                 SOURCE GATE
+── Image ─────────────────────────────┼────────────────────────────────────
                                       ▼
             build (per arch, native) → image.tar artefact
                ├ scan        (Trivy on the artefact)
                ├ integration (compose stack + hardened image)
                └ updates     (the module against real host trees)
                                       ▼
-            push (per arch, push events only) → digest artefact
+                                  IMAGE GATE
+── Release (push events only) ────────┼────────────────────────────────────
+                                      ▼
+            push (per arch) → digest artefact
                                       ▼
             publish → multi-arch manifest, ghcr mirror, tag
                                       ▼
@@ -40,8 +48,29 @@ check ─┬ test (stable + beta canary) ─┐
                           (needs RELEASE_PAT on the tag push, or it never starts)
 ```
 
-`publish` needs `scan`, `integration` **and** `updates`, so nothing unscanned or
-untested can ship.
+**The gates are the stage boundaries**, not a verdict standing beside them:
+`build` depends on `source-gate` and `push` on `image-gate`, so each stage's
+membership is written down exactly once, in that gate's `needs`. `build` used to
+re-list the source jobs, which made the gate's list a second copy of the same
+set — and that copy had already drifted: `msrv` was in neither, so a job that
+ran on every pull request for a whole release gated nothing at all.
+
+`push` reaches a registry only behind `image-gate`, which covers `scan`,
+`integration` **and** `updates`, so nothing unscanned or untested can ship.
+
+**`coverage` hangs off `check`, not off `test`**, so it runs alongside the two
+toolchain legs. `cargo llvm-cov --workspace` runs the whole suite itself,
+instrumented, so waiting for `test` bought no extra confidence — only the
+duration of a full workspace suite on the critical path, part of it spent
+waiting on the beta leg, which `continue-on-error` forbids from blocking
+anything. The cost is a coverage run that is also spent on a red push; both jobs
+are still in `source-gate`, so neither stops blocking.
+
+Job display names carry a `Source ·` / `Image ·` / `Release ·` / `Security ·`
+prefix. GitHub has no stages of its own — the run graph is drawn from `needs`
+alone — so the prefixes are what makes the job list group by stage, and each
+gate writes its members and their results to the run summary. The three **gate**
+names deliberately carry no prefix; see "Repository settings" below.
 
 ## Jobs
 
@@ -57,11 +86,13 @@ untested can ship.
 | `scan` | Trivy on the artefact | **fixable** CRITICAL/HIGH |
 | `integration` | Load the image; `integration-test.sh` then `container-test.sh` | any assertion |
 | `updates` | Load the image; `updates-test.sh` against real Debian and Ubuntu trees, then `image-updates-test.sh` against the runner's own daemon | any assertion |
+| `source-gate` / `image-gate` | Nothing. They read `toJSON(needs)` and fail if any member is not `success` | any member of their stage |
 | `push` / `publish` | Push by digest, assemble the manifest, mirror to ghcr, create the tag | — |
 
-`version-gate` **always runs** and decides internally whether to enforce. A
-skipped job in `needs:` skips its dependents, so it must not be conditional at
-the job level — it is a deliberate no-op pass on non-release events.
+`version-gate` **always runs** and decides internally whether to enforce. It
+must not be conditional at the job level: `source-gate` counts anything that is
+not `success` as a failure, so a *skipped* `version-gate` would fail the gate
+and take `build` with it. It is a deliberate no-op pass on non-release events.
 
 `test` and `coverage` fetch Telegraf with `scripts/fetch-telegraf.sh` and set
 `MUNINN_TELEGRAF_BIN`. Without it the tests that need a real Telegraf skip
@@ -264,37 +295,70 @@ checklist.
 **Branch protection** on `main` and `dev`:
 
 - require a pull request before merging;
-- require these status checks — the names are the jobs' display names, and this
-  is the set actually configured today:
-  - `Format & Lint`
-  - `Tests (stable)` — **not** `Tests (beta)`, a non-blocking canary
-  - `MSRV (rust-version in Cargo.toml)` — **added by the 1.0 review; needs to be
-    added to the required set by hand**, like every entry here
-  - `Supply-Chain Security`
-  - `Code Coverage (≥ 80%)`
-  - `Semgrep SAST`
-  - `Trivy scan linux/amd64` · `Trivy scan linux/arm64`
-  - `Integration test linux/amd64` · `Integration test linux/arm64`
+- require exactly **three** status checks, each a fan-in job that runs no build
+  and no test of its own:
+  - `Source gate` — `check`, `test`, `msrv`, `supply-chain`, `coverage`,
+    `reference`, `version-gate`
+  - `Image gate` — `build`, `scan`, `integration`, `updates`
+  - `Security gate` — `shellcheck`, `actionlint`, `semgrep`
 - require branches to be up to date before merging;
 - disallow force pushes and deletion.
 
-**The image jobs are required, deliberately.** It costs: they depend on `build`,
-so a documentation-only PR waits for two container builds, and an advisory
+**Why three names instead of eleven.** A check that is not in the required set
+is an *indicator*: it runs, it goes visibly red, and it stops nobody. Keeping
+that set in step with `ci.yml` by hand is the failure this replaces, and it had
+already happened here — `MSRV` ran on every pull request for a whole release
+without blocking one, and so did `Version gate`, `Telegraf reference & docs` and
+both `Updates module` legs. `Version gate` mattered most: the one-click release
+opens an **auto-merging** PR, and auto-merge waits only for required checks, so
+the check written to fail a bad release version was being bypassed by the very
+path it exists for.
+
+Each gate derives its verdict from its own `needs` — the same list the pipeline
+must maintain anyway to order itself. A job added to `needs` is covered the
+moment it is added, rather than the moment somebody remembers to edit a
+repository setting that is invisible from the code.
+
+Four consequences worth knowing before anyone changes this:
+
+- **The three gate names are a fixed surface.** `build` and `push` now depend on
+  their gate, and the ruleset names it, so the string appears in two places that
+  cannot see each other. Rename a required check and it never reports again —
+  and a check that never reports blocks every pull request indefinitely. This is
+  why the gates alone carry no `Source ·` / `Image ·` / `Security ·` prefix.
+- **`if: always()` on each gate is load-bearing.** Without it, a gate whose
+  dependency failed is *skipped* rather than failed — and a skipped required
+  check counts as satisfied. The gate would be green by absence in exactly the
+  case it exists for. It is also what makes the gate safe to depend on: a job
+  that can never be skipped always resolves to a real verdict, so `build` and
+  `push` are skipped precisely when their stage did not pass.
+- **`Tests (beta)` still does not block.** Its leg carries `continue-on-error`,
+  so it reports `success` to `needs` even when it fails. It stays a canary.
+- **`push` and `publish` are deliberately in no gate.** Both are `push`-only, so
+  on a pull request they report `skipped`, and the gates treat anything that is
+  not `success` as a failure.
+
+> **Changing the ruleset is a manual step, and its order matters.** The gate
+> jobs must exist and have reported once before they are made required — a
+> required check that never reports blocks every pull request indefinitely. The
+> old names must come out in the same edit, because the pull request that
+> renames them is itself blocked by them.
+
+**The image jobs are required, deliberately.** `Image gate` waits on `build`, so
+a documentation-only PR waits for two container builds, and an advisory
 published that morning against something in the image blocks a branch that never
 touched the image — that happened on 2026-08-06. The decision is that this is
 the right way round: a finding that blocks is a finding someone looks at, and
 the alternative lets a fixable CRITICAL reach `dev` and be caught one step
 later, at `publish`.
 
-Two jobs are **not** required and it is worth knowing which:
-
-- `Version gate` is required only transitively — `build` lists it in `needs`, so
-  an invalid release version fails `build`, and the required image checks then
-  never report. The effect is the same; the mechanism is worth understanding
-  before anyone "simplifies" it.
-- `ShellCheck` and `Actionlint` live in `security.yml` and gate nothing. They
-  run on every push and PR and go red visibly, but a PR can merge past them.
-  Adding them is a one-line ruleset change and probably worth doing.
+**Everything else that runs, blocks.** That is new: `ShellCheck` and
+`Actionlint` used to run on every push and PR and go visibly red while a PR
+merged straight past them, and they now block through `Security gate`.
+`Version gate` blocks through `Source gate` rather than by being listed in
+`build`'s `needs` — that transitive route is gone on purpose, because `build`
+names only the gate now, so there is one list of the source stage instead of two
+that can drift.
 
 **Enable "Allow auto-merge"** (Settings → General → Pull Requests). Both
 `dependabot-auto-merge.yml` and the release housekeeping PR queue their merges
