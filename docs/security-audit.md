@@ -34,7 +34,7 @@ are exercised by the run that carries them.
 
 | | |
 |---|---|
-| **Reviewed** | all six workflows in `.github/workflows/` — trigger surface, `permissions` scope, which step can reach which secret, expression handling, action pinning, artefact flow, the auto-merge path; and on the code side `registry_auth` end to end, redactor coverage, and the credential-handling claims the workflows make about themselves |
+| **Reviewed** | all six workflows in `.github/workflows/` — **and not `.github/dependabot.yml`, which was the gap that produced M-04**; — trigger surface, `permissions` scope, which step can reach which secret, expression handling, action pinning, artefact flow, the auto-merge path; and on the code side `registry_auth` end to end, redactor coverage, and the credential-handling claims the workflows make about themselves |
 | **Not reviewed** | Telegraf, the base image's packages, the six suppressed Trivy findings (all tracked in [`hardening.md`](hardening.md) with expiries), the renderer and the health listener — unchanged since the last pass and re-checked only where 1.0 touched them |
 | **Measured** | M-02 by a test that fails against the previous code; M-03 by the checksum it introduces; `auto-pr.yml`'s handling of a hostile branch name by pushing one; the rest reasoned from source |
 | **Not measured** | a real fork pull request attempting to read a secret. That needs a second account, and the finding below is reasoned from configuration and from GitHub's own rule rather than demonstrated. Stated here rather than left to be assumed |
@@ -46,14 +46,22 @@ are exercised by the run that carries them.
 |---|---|---|---|---|
 | [M-02](#m-02--a-registry-password-was-outside-the-redactor) | Low | `muninn-core`, `muninn` | Registry passwords never reached the redactor, and the test written to prevent exactly that could not see them | **Fixed** here |
 | [M-03](#m-03--nothing-checked-that-the-published-bytes-were-the-built-bytes) | Low | `ci.yml` | The pipeline's central claim — scanned, tested and published are the same bytes — rested on the artefact store, with no checksum recorded or compared | **Fixed** here |
-| [M-04](#m-04--a-minor-dependency-bump-reaches-a-published-image-unreviewed) | Medium | `dependabot-auto-merge.yml` | Minor bumps merge unattended into a branch that publishes an image | **Open — your decision.** It is a policy, not a defect |
+| [M-04](#m-04--a-transitive-version-can-be-younger-than-the-cooldown-that-gated-its-parent) | Low | `dependabot.yml` | A transitive crate can be younger than the cooldown that gated the direct one | **Open**, and narrower than published — the finding as first written was wrong, see it |
 | [M-05](#m-05--write-permissions-were-granted-to-a-whole-workflow) | Low | `dependabot-auto-merge.yml` | `contents: write` and `pull-requests: write` at workflow scope, inherited by any job added later | **Fixed** here |
 | [M-06](#m-06--the-push-credential-passed-through-an-external-processs-argv) | Low | `ci.yml` | The tag-push credential was handed to `git config` as an argument, in the step whose own comment rejects argv | **Fixed** here |
 
-Five findings, four of them low and three of those closed by a few lines each.
-That is not a claim that the pipeline is secure — it is what a first review of a
-surface nobody had reviewed produced, and the section on what held is again the
-more useful half.
+Five findings, all low once M-04 was corrected, and four of them closed by a few
+lines each. That is not a claim that the pipeline is secure — it is what a first
+review of a surface nobody had reviewed produced, and the section on what held is
+again the more useful half.
+
+**One of the five was published wrong**, and that is the most useful thing in
+this pass. M-04 asserted an exposure that a control already closed, because the
+review read the six workflow files and not `.github/dependabot.yml`, where the
+control lives. The corrected finding is narrower and the original text is kept
+under it. This is the same lesson the 2026-08-08 pass recorded about itself, in
+the other direction: "we looked and it holds" can be shown wrong later, and so
+can "we looked and it does not".
 
 **One candidate was withdrawn.** Scoping suspected the GPG passphrase file was
 written at the default umask and would land `0644`. It is not: `release.yml`
@@ -133,7 +141,42 @@ four consumers. Not only in `push`: "scanned, tested and published are
 identical" is several claims, and checking once at the end would leave the rest
 still assumed.
 
-#### M-04 — a minor dependency bump reaches a published image unreviewed
+#### M-04 — a transitive version can be younger than the cooldown that gated its parent
+
+**Severity:** Low · **Status:** Open — narrow, and named rather than closed
+
+**This finding was published wrong, and the original text is kept below.** It
+claimed that a version published an hour ago could reach `dev` and therefore the
+`:dev` image unattended. It cannot. `.github/dependabot.yml` carries a
+`cooldown: default-days: 3` on all three ecosystems, so Dependabot does not
+*propose* a release for three days — and that is a stronger control than
+anything this pass could have recommended, because a pull request that is never
+opened is also a dependency CI never compiles. The reviewer read the six
+workflows and not the Dependabot configuration, which is where the control
+lives; [`ci-cd.md`](ci-cd.md) states it in plain text, one sentence away from
+pages that were open at the time.
+
+**What survives, and it is much smaller.** The cooldown gates the dependency
+Dependabot proposes, and this repository deliberately keeps Dependabot's scope
+at direct dependencies. A direct crate three days old can still resolve a
+**transitive** version published an hour ago, and nothing looks at that: not the
+cooldown, which never considered it, and not CI, whose instruments all search
+for something already known. Measured on the merged #62 — Dependabot named
+`clap`, and `Cargo.lock` also gained `clap_builder`.
+
+**And a cooldown is not a review.** `dependabot.yml` says so itself: an attacker
+who waits it out is unaffected. That is accepted, and it is accepted knowingly,
+which is the difference this finding is now recording.
+
+**Left open rather than closed**, deliberately. A merge-time check over every new
+`Cargo.lock` entry was written and discarded: it duplicated the native cooldown
+for the overwhelming majority of cases, could not protect the runner the way the
+native one does, and cost a scheduled sweep, a label and a wider token scope for
+a residual this narrow. Naming the gap is worth more here than a second
+mechanism that has to be kept in step with the first.
+
+<details>
+<summary>What this finding said when it was published, 2026-08-12</summary>
 
 **Severity:** Medium · **Status:** Open — a policy decision, deliberately left
 
@@ -168,6 +211,8 @@ want to spend.** Three options, in the order I would consider them:
    told that CI green covers this.
 
 Doing nothing silently is the one outcome this finding exists to prevent.
+
+</details>
 
 #### M-05 — write permissions were granted to a whole workflow
 
@@ -301,8 +346,10 @@ Decisions and known limits, not oversights.
 
 ### Recommendations
 
-1. **Decide M-04.** It is the only finding here with a real blast radius, and the
-   only one that is yours rather than the code's.
+1. **Read the configuration, not only the workflows, next time.** M-04 was
+   published claiming an exposure that `.github/dependabot.yml` had closed years
+   earlier. A pipeline's controls are not all in `.github/workflows/`, and a
+   review that treats a directory as the boundary will keep finding this.
 2. **Measure the fork case**, if a second account is ever convenient. Everything
    else in this pass is either measured or reasoned from code that cannot move
    without CI noticing; that one rests on GitHub's behaviour.
