@@ -20,7 +20,7 @@
 # cannot change the image without a visible diff. Dependabot's `docker`
 # ecosystem updates the pair together (see .github/dependabot.yml), so this
 # costs no manual upkeep — the same weekly PR as before, with the digest in it.
-FROM debian:13-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS telegraf
+FROM debian:13-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a AS telegraf
 
 ARG TELEGRAF_VERSION=1.39.2
 ARG TELEGRAF_SHA256_AMD64=3ecf733bec389b8a0e1072f134ce379d79efe0d3caf984c164bd4cfc515a86d6
@@ -52,7 +52,7 @@ RUN set -eux; \
 # Pinned to the MSRV in Cargo.toml. CI runs floating stable, so a dependency
 # that raises the MSRV leaves CI green while *this* fails — which is the point:
 # the image is the real gate.
-FROM rust:1.97-slim@sha256:3b2879047d42784ca9403ad20c51ed3df361a50f1df96f5777d39b4e33aa65cd AS builder
+FROM rust:1.97-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
 
 WORKDIR /build
 
@@ -93,7 +93,7 @@ RUN set -eux; \
 # docs/adr/0009-updates-module-approach.md for the reasoning.
 #
 # Which makes the hardening below load-bearing rather than decoration.
-FROM debian:13-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+FROM debian:13-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
 # ca-certificates only: Telegraf needs a trust store to reach InfluxDB over
 # HTTPS, and without it every write fails with a certificate error that looks
