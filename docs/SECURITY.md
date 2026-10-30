@@ -78,13 +78,20 @@ just as the Rust is. What is deliberate there:
   `if: github.event_name == 'push'`, so a PR build — including one from a fork —
   never has the DockerHub token in its environment.
 
-One accepted trade, stated plainly: **Dependabot patch and minor bumps
-auto-merge into `dev`** once the full pipeline is green
+One accepted trade, stated plainly: **Dependabot patch and minor bumps of crates
+and base images auto-merge into `dev`** once the full pipeline is green
 (`.github/workflows/dependabot-auto-merge.yml`). A compromised upstream release
 that passes every gate would land without a human reading it. It is bounded by a
 three-day cooldown before Dependabot opens the PR, by `cargo deny`'s advisory
 gate, and by the fact that `dev` is not `main` — but it is a real trade and it
 is a deliberate one. Major bumps always wait for a human.
+
+**GitHub Actions bumps are outside that trade** and always wait for a human,
+whatever their semver step. The difference is where the code runs: a crate or a
+base image is built and tested in jobs that hold no credential, while an action
+executes inside `push` and `publish`, which hold `DOCKERHUB_TOKEN` and, on
+`main`, `RELEASE_PAT`. Pinning by SHA does not help here, because a malicious
+*new* release comes with a SHA Dependabot proposes itself.
 
 ## Out of scope
 

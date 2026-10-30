@@ -12,7 +12,7 @@ The pipeline's rationale and the repository settings it needs are
 | `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr, create the release tag |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
-| `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
+| `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor crate and image bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
 | `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
 
@@ -217,6 +217,14 @@ output was always empty and the step always skipped.
 
 - **Patch and minor** get `gh pr merge --auto --squash`; the merge completes once
   the required checks are green.
+- **GitHub Actions bumps are never queued**, whatever their semver step. An
+  action is code that runs *inside* the jobs holding credentials — `push` and
+  `publish` run with `DOCKERHUB_TOKEN`, and with `RELEASE_PAT` on `main` — while
+  a crate or a base image only ever runs in jobs holding none. SHA pinning is no
+  help against a malicious **new** release, since Dependabot proposes that SHA
+  itself, and `cooldown` only buys time. Recognised by the branch name,
+  `dependabot/github_actions/…`. #36 was merged here by `github-actions`,
+  unread.
 - **Major** bumps are left for review. Because Dependabot groups per ecosystem, a
   group containing a major waits as a whole — you review exactly when a breaking
   bump is present.
