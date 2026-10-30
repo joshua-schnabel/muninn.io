@@ -14,7 +14,7 @@ The pipeline's rationale and the repository settings it needs are
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
-| `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
+| `release-dispatch.yml` | manual on `main`, owner-only | One-click release: pick patch/minor/major |
 
 Dependency updates are configured in `.github/dependabot.yml` — one grouped PR
 per ecosystem (cargo, github-actions, docker), all targeting `dev`. That is
@@ -278,7 +278,13 @@ via `workflow_dispatch` with an existing tag.
 ## `release-dispatch.yml` — one-click release, owner-only
 
 **Runs on** manual `workflow_dispatch` with a `bump` input
-(`patch`/`minor`/`major`).
+(`patch`/`minor`/`major`), started **on `main`**.
+
+The branch the dispatch is started on decides nothing about what is released —
+the job checks `dev` out itself — but it decides whether the job may read its
+credentials: `environment: release` admits `main` and `v*.*.*` tags only. Start
+it on `dev` and it fails at the first step needing the signing key, reporting an
+empty secret rather than a wrong branch.
 
 - The first step asserts `github.actor == github.repository_owner`; anyone else
   gets a hard error.
