@@ -388,19 +388,74 @@ hand. The setting is off by default on new repositories.
 
 **Repository variables**
 
-| Name | Value | Needed for |
-|---|---|---|
-| `DOCKERHUB_USERNAME` | the Docker Hub account owning `<user>/muninn` | `push`, `publish`, the ghcr mirror |
+| Name | Scope | Value | Needed for |
+|---|---|---|---|
+| `DOCKERHUB_USERNAME` | repository | the Docker Hub account owning `<user>/muninn` | `push`, `publish`, the ghcr mirror |
+| `MAINTENANCE_APP_CLIENT_ID` | `maintenance` | the lockfile-maintenance app's client ID | `lockfile-maintenance.yml` |
+
+A username is not a credential, so `DOCKERHUB_USERNAME` stays a repository
+variable. The app's client ID sits in its environment beside the key it goes
+with.
 
 **Secrets**
 
-| Name | Needed for | Consequence if absent |
-|---|---|---|
-| `DOCKERHUB_TOKEN` | pushing the image | `push` fails with a message naming it; nothing is published |
-| `RELEASE_PAT` | the release tag push, the release-dispatch PR, and the post-release housekeeping PR | **`release.yml` never runs** — the tag is pushed by `GITHUB_TOKEN`, which starts no workflow, so there is no GitHub Release, SBOM or test report until you [drive it by hand](#driving-releaseyml-by-hand). The two PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+| Name | Environment | Needed for | Consequence if absent |
+|---|---|---|---|
+| `DOCKERHUB_TOKEN` | `registry` **and** `release` | pushing the image | `push` fails with a message naming it; nothing is published |
+| `RELEASE_PAT` | `release` | the release tag push, the release-dispatch PR, and the post-release housekeeping PR | **`release.yml` never runs** — the tag is pushed by `GITHUB_TOKEN`, which starts no workflow, so there is no GitHub Release, SBOM or test report until you [drive it by hand](#driving-releaseyml-by-hand). The two PRs are still opened, but CI does not trigger on them and auto-merge hangs |
+| `GPG_PRIVATE_KEY` | `release` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
+| `GPG_PASSPHRASE` | `release` | only if the signing key has one | gpg cannot use the key |
+| `MAINTENANCE_APP_PRIVATE_KEY` | `maintenance` | the app token `lockfile-maintenance.yml` opens its PR with | that workflow fails at the token step; nothing else is affected |
 
-| `GPG_PRIVATE_KEY` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
-| `GPG_PASSPHRASE` | only if the signing key has one | gpg cannot use the key |
+### Where the secrets live
+
+**A repository secret is readable by a run from any branch** — with that
+branch's copy of the workflow file. Push access to a branch is therefore
+enough to print one, and `fix/x` is a branch like any other. Environments are
+the lever that changes: a secret stored in an environment is handed only to a
+job that names it, and only when the run's ref is one the environment allows.
+
+| Environment | Holds | Allowed refs | Jobs |
+|---|---|---|---|
+| `registry` | `DOCKERHUB_TOKEN` | branches `dev`, `main` | `ci.yml` `push`; `publish` on `dev` |
+| `release` | `DOCKERHUB_TOKEN`, `RELEASE_PAT`, `GPG_PRIVATE_KEY`, `GPG_PASSPHRASE` | branch `main` **and** tag `v*.*.*` | `publish` on `main`; `release.yml` `prepare-dev`; `release-dispatch.yml` |
+| `maintenance` | `MAINTENANCE_APP_PRIVATE_KEY` (+ the variable `MAINTENANCE_APP_CLIENT_ID`) | branch `main` | `lockfile-maintenance.yml` |
+
+`publish` picks its environment from the ref:
+
+```yaml
+environment: ${{ github.ref == 'refs/heads/main' && 'release' || 'registry' }}
+```
+
+That is what keeps `RELEASE_PAT` — a credential that can write to a protected
+branch — out of every run on `dev`, where the same job only publishes the
+pre-release image. `DOCKERHUB_TOKEN` is therefore stored **twice**, once in each
+environment, deliberately: duplicating a registry token is cheaper than handing
+a branch-writing token to every `dev` push.
+
+**The tag rule must be of type _Tag_**, not Branch. A branch rule spelled
+`v*.*.*` does not match `refs/tags/v…`, and `release.yml` runs from a tag.
+
+**One gap stays open, and is documented rather than closed.** A tag push runs
+`release.yml` from the tagged commit, so whoever may push a `v*` tag reaches the
+`release` environment with a workflow file of their choosing. Tags are created
+by `publish` after every gate has passed; the protection against this is the
+ruleset's restriction on who may push tags, not anything in these files. The
+same is true of `main`.
+
+**Order matters when you set this up.** Create the environments and set the
+secrets inside them *first*, then delete the repository-level copies. Deleting
+them first leaves the runs on `dev` and `main` without credentials — and
+`RELEASE_PAT` fails **silently**, because `ci.yml` falls back to
+`secrets.RELEASE_PAT || secrets.GITHUB_TOKEN` and a tag pushed by
+`GITHUB_TOKEN` starts no workflow: no GitHub Release, no SBOM, no test report,
+and nothing failing anywhere. `gh secret list --env release` to check.
+
+**The first release after this change has to be made by hand.** A dispatch
+started on `main` runs `main`'s copy of the workflow file, which does not yet
+name an environment — so with the repository secrets already gone, the signing
+key would be empty. The manual path is in
+[`releasing.md`](releasing.md#manual-release-dev--main).
 
 **The signing key.** Generate one **for CI**, not a copy of a personal key: if it
 leaks, revoking a dedicated key costs nothing, and a personal one costs

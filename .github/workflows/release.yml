@@ -435,6 +435,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve, github-release]
     timeout-minutes: 10
+    # RELEASE_PAT and the signing key live in the `release` environment, which
+    # only `main` and `v*.*.*` tags may use. This job runs from a tag, which is
+    # what the tag rule in that environment is for. See "Where the secrets live"
+    # in docs/ci-cd.md.
+    environment: release
     permissions:
       contents: write
       pull-requests: write

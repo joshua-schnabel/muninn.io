@@ -271,6 +271,13 @@ explicitly and flagged in the PR.
   [ADR-0010](docs/adr/0010-docker-socket.md)
 - **Container:** non-root, read-only root filesystem, `no-new-privileges`, all
   capabilities dropped, tmpfs at `/run/muninn`. Never `--privileged`.
+- **Secrets live in ref-bound environments, not at repository level.** A
+  repository secret is readable by a run from *any* branch, with that branch's
+  workflow file, so push access alone is enough to print one. `registry` is
+  limited to `dev`/`main`, `release` to `main` and `v*.*.*` tags, `maintenance`
+  to `main`; `publish` picks between the first two by ref, which is what keeps
+  `RELEASE_PAT` out of every `dev` run. The table is in
+  [`docs/ci-cd.md`](docs/ci-cd.md#where-the-secrets-live).
 - **Supply chain:** Telegraf pinned by checksum
   ([ADR-0011](docs/adr/0011-telegraf-pinning.md)), `Cargo.lock` committed,
   cargo-deny gating advisories and licences, OpenSSL banned outright.
