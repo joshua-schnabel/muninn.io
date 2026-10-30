@@ -445,11 +445,14 @@ registry; `scan` needs `security-events: write` for SARIF upload.
 images, weekly, one grouped PR per ecosystem. Actions are pinned by commit SHA,
 and Dependabot updates the SHA while keeping the version comment.
 
-`dependabot-auto-merge.yml` queues patch and minor bumps for auto-merge once the
-required checks pass. A major stays open for review — a green suite does not
-prove a major has no breaking runtime behaviour the tests miss. A 3-day cooldown
-applies to version updates and not to security updates, so a CVE fix is never
-delayed by it.
+`dependabot-auto-merge.yml` queues patch and minor crate and base-image bumps
+for auto-merge once the required checks pass. A major stays open for review — a
+green suite does not prove a major has no breaking runtime behaviour the tests
+miss. **A GitHub Actions bump is never queued**, whatever its semver step: an
+action runs inside the jobs that hold `DOCKERHUB_TOKEN` and, on `main`,
+`RELEASE_PAT`, and SHA pinning does not help against a malicious new release
+whose SHA Dependabot proposes itself. A 3-day cooldown applies to version
+updates and not to security updates, so a CVE fix is never delayed by it.
 
 **Telegraf is not covered.** Dependabot does not track `dl.influxdata.com` URLs,
 so bumping it is a manual change to a version string and two checksums in the

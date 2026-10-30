@@ -4,13 +4,18 @@ name: Dependabot
 # the second depends on what the first did, so separate workflows would race.
 #
 #   1. retarget  — move a security update off `main` and onto `dev`
-#   2. auto-merge — queue patch/minor bumps once the required checks are green
+#   2. auto-merge — queue patch/minor crate and image bumps once the required
+#                   checks are green
 #
 # Auto-merge only ever touches patch/minor — and the grouped patch/minor PR.
 # Major bumps stay open for review: CI green does not prove a major has no
 # breaking runtime behaviour the tests miss. What "green" means here is unusually
 # strong: the full pipeline builds the image, scans it, runs the stack against a
 # real database and exercises the updates module against real host trees.
+#
+# It never touches a GitHub Actions bump, whatever its semver step, because an
+# action runs inside the jobs that hold the registry and release credentials.
+# The reasoning is at the step.
 #
 # Requires the repo setting "Allow auto-merge" (Settings → General → Pull
 # Requests). `--auto` only *queues* the merge; GitHub still waits for every
@@ -55,20 +60,32 @@ jobs:
       # because a revert of a dependency bump looks like any other diff.
       # huginn.io#51 was exactly that.
       #
-      # `ghsa-id` is populated only for security updates, which is what
-      # distinguishes them here. The `base.ref` check makes this a no-op once a
-      # PR has already been moved, so the recreate below cannot loop.
+      # Recognised by its **base branch** alone. Every ecosystem in
+      # dependabot.yml sets `target-branch: dev`, so a Dependabot PR against
+      # `main` is a security update by construction — there is no other way for
+      # one to get there.
+      #
+      # This step used to key off `steps.meta.outputs.ghsa-id`, and it could
+      # never have fired. fetch-metadata populates `ghsa-id` only with
+      # `alert-lookup: true` *and* a token that may read Dependabot alerts,
+      # which `GITHUB_TOKEN` may not; this workflow has neither, so the output
+      # was always empty and the condition always false. Observed on
+      # huginn.io#111, where a hickory-resolver security update sat on `main`
+      # for weeks with the run logging an empty `outputs.ghsa-id`. Here it had
+      # no chance to show itself: no security update has arrived since the step
+      # was added in #34, so the only thing it ever did was skip.
+      #
+      # The base branch needs no lookup and no credential, and the same check
+      # makes this a no-op once a PR has been moved, so the recreate below
+      # cannot loop.
       - name: Move a security update onto dev
         id: retarget
-        if: >-
-          steps.meta.outputs.ghsa-id != '' &&
-          github.event.pull_request.base.ref == 'main'
+        if: github.event.pull_request.base.ref == 'main'
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GHSA: ${{ steps.meta.outputs.ghsa-id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::notice::${GHSA} opened against main; retargeting to dev"
+          echo "::notice::security update opened against main; retargeting to dev"
           gh pr edit "$PR_URL" --base dev
 
           # Retargeting alone is not enough, and this is the part to understand
@@ -105,9 +122,26 @@ jobs:
       # ── 2. Auto-merge, once the PR is on the right branch ─────────────────
       # `base.ref == 'dev'` is what keeps a just-retargeted PR out: at this
       # point the event payload still says `main`.
-      - name: Enable auto-merge (patch/minor only)
+      #
+      # GitHub Actions updates are never auto-merged. An action is code that
+      # runs inside the jobs holding credentials — `push` and `publish` run with
+      # DOCKERHUB_TOKEN, and with RELEASE_PAT on `main` — while a crate or a
+      # base image only ever runs in jobs holding none. SHA pinning does not
+      # help against a malicious *new* release, because Dependabot proposes its
+      # SHA itself, and `cooldown` only buys time. Auto-merged, such a release
+      # would reach `dev` with nobody having read it and run with the registry
+      # token on the next push. What that code then does is not hypothetical:
+      # in March 2025 a compromised tj-actions/changed-files printed the secrets
+      # of every job that ran it into the log. #36 was merged here by
+      # github-actions, unread.
+      #
+      # Recognised by the branch, `dependabot/github_actions/…`: that is the
+      # spelling Dependabot uses, and it does not depend on how fetch-metadata
+      # spells the ecosystem.
+      - name: Enable auto-merge (patch/minor, not GitHub Actions)
         if: >-
           github.event.pull_request.base.ref == 'dev' &&
+          !startsWith(github.event.pull_request.head.ref, 'dependabot/github_actions/') &&
           (steps.meta.outputs.update-type == 'version-update:semver-patch' ||
            steps.meta.outputs.update-type == 'version-update:semver-minor')
         run: gh pr merge --auto --squash "$PR_URL"
