@@ -402,6 +402,28 @@ hand. The setting is off by default on new repositories.
 | `GPG_PRIVATE_KEY` | signing the commits `release.yml` and `release-dispatch.yml` create | those jobs fail with a message naming the secret. Without it the commits are unsigned, and both branch rulesets carry `required_signatures` — the pull request opens, every check goes green, and the merge button stays blocked with nothing failing |
 | `GPG_PASSPHRASE` | only if the signing key has one | gpg cannot use the key |
 
+**The lockfile-maintenance app.** `lockfile-maintenance.yml` opens its pull
+request with a **GitHub App** token rather than `GITHUB_TOKEN`, because an event
+created with `GITHUB_TOKEN` starts no workflow run — the pull request would open
+and its required checks would never run. Set up once:
+
+1. Create a GitHub App on your account. No webhook. Repository permissions:
+   **Contents: read & write** and **Pull requests: read & write**, nothing else.
+2. Generate a private key and install the app on `muninn.io` only.
+3. Create the environment `maintenance`, limited to the branch `main` — a
+   scheduled run always comes from the default branch, so nothing else needs
+   it.
+4. In that environment: the secret `MAINTENANCE_APP_PRIVATE_KEY` (the whole
+   `.pem`, `BEGIN`/`END` lines included) and the **variable**
+   `MAINTENANCE_APP_CLIENT_ID`.
+
+Until all four exist the workflow fails at the token step, and nothing else
+breaks. `gh secret list --env maintenance` and `gh variable list --env
+maintenance` confirm it.
+
+The app's token is minted *after* `cargo update`, so no crate's code runs in the
+job while a credential exists, and it lives for an hour.
+
 **The signing key.** Generate one **for CI**, not a copy of a personal key: if it
 leaks, revoking a dedicated key costs nothing, and a personal one costs
 everything it ever signed. No passphrase is the normal choice — the private key
@@ -455,6 +477,16 @@ delayed by it.
 so bumping it is a manual change to a version string and two checksums in the
 Dockerfile, plus the same version in `ci.yml` — deliberately visible in a diff
 rather than automatic, and the `reference` job fails if the two disagree.
+
+**Dependabot's cargo scope is direct dependencies only**, and its security
+updates come from the GitHub Advisory Database, which does not carry every
+RustSec advisory. A transitive crate with no security update to carry it
+therefore goes unpatched — `RUSTSEC-2024-0449` names `unsafe-libyaml`, which
+arrives through `serde_yaml_ng` and which Dependabot neither proposes nor can
+propose. `lockfile-maintenance.yml` closes that gap: a weekly `cargo update`
+against `dev`, opened as one pull request that runs the full pipeline and waits
+for a human. Not auto-merged, because `cargo update` has no cooldown and no gate
+recognises a malicious crate that compiles.
 
 Two other things it does not update, both deliberate: `container:` references,
 so the pinned Semgrep image needs a manual bump (acceptable — the rules are
