@@ -378,13 +378,25 @@ method *not* enabled — which is why `main` does not share `dev`'s history for
 those two releases. With merge commits disabled the release PR is still opened,
 but auto-merge warns and you merge it by hand.
 
-**Enable "Allow GitHub Actions to create and approve pull requests"** (Settings
-→ Actions → General → Workflow permissions). Without it the API refuses with
-*"GitHub Actions is not permitted to create or approve pull requests"*, and two
-things stop working: `auto-pr.yml` cannot open its draft PR, and the
-post-release housekeeping PR cannot be opened. Both now warn instead of failing
-— the branch is pushed either way, so nothing is lost and you open the PR by
-hand. The setting is off by default on new repositories.
+**Leave "Allow GitHub Actions to create and approve pull requests" off**
+(Settings → Actions → General → Workflow permissions). It is off by default on
+new repositories, and it stays off: a workflow that may open a pull request may
+also *approve* one, the day a ruleset asks for a review.
+
+Nothing needs it. `auto-pr.yml` only deletes mis-named branches now — it opened
+a draft pull request until that setting's absence made the attempt pointless
+twice over, because a pull request authored by `github-actions` parks its checks
+on `action_required` and waits for a human click before CI starts at all. Pull
+requests are opened by whoever pushed the branch:
+
+```bash
+gh pr create --base dev --fill
+```
+
+The post-release housekeeping pull request is opened with `RELEASE_PAT`, a user
+token, so the setting does not reach it either. In the `GITHUB_TOKEN` fallback it
+would — but that fallback already means `release.yml` never ran, which is the
+larger problem and is covered in the secrets table.
 
 **Repository variables**
 

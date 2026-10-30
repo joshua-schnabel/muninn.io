@@ -240,8 +240,12 @@ response, and a hand-written fake agrees with whoever wrote it. Only
 ## 8. Git & PR workflow
 
 - Branch off `dev` with a valid prefix: `feature/` · `fix/` · `chore/` · `docs/`
-  · `test/`. Pushing such a branch makes `auto-pr.yml` open a draft PR into
-  `dev`; a branch that does not match the prefix is **auto-deleted**.
+  · `test/`. A branch that does not match the prefix is **auto-deleted** by
+  `auto-pr.yml`.
+- **Open the pull request yourself** — `gh pr create --base dev --fill`. No
+  workflow opens one: one that may open a pull request may also approve one, and
+  a pull request authored by `github-actions` parks its checks on
+  `action_required` until somebody clicks.
 - Flow: `feature/* → dev` (squash) → `main` (merge commit). No direct pushes
   (§3).
 - **Conventional Commits:** `feat · fix · chore · docs · test · refactor · perf ·

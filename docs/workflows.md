@@ -11,7 +11,7 @@ The pipeline's rationale and the repository settings it needs are
 |---|---|---|
 | `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr, create the release tag |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
-| `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
+| `auto-pr.yml` | push to any non-protected branch | Delete mis-named branches. Nothing else |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
 | `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
@@ -158,26 +158,42 @@ feature branches before a PR exists.
 - Trivy is **not** here. It lives in `ci.yml`'s `scan` job so it scans the exact
   image that ships.
 
-## `auto-pr.yml` — draft PR opener and branch janitor
+## `auto-pr.yml` — the branch janitor
 
-**Runs on** a push to any branch except `main`, `dev`, `dependabot/**` and
-`release/**`.
+**Runs on** a push to any branch except `main`, `dev`, `dependabot/**`,
+`release/**` and `maintenance/**`.
 
-- A branch matching `feature|fix|chore|docs|test/…` gets a **draft PR into
-  `dev`**, if one does not already exist.
-- A branch that does not match is **deleted**. The local branch is untouched, so
-  nothing is lost — but the push is undone.
+A branch that does not match `feature|fix|chore|docs|test/…` is **deleted**.
+That is the whole workflow. The local branch is untouched, so nothing is lost —
+but the push is undone.
 
-Dependabot's branches and `release.yml`'s `release/*` housekeeping branch are
-ignored, or the naming rule would delete them on sight.
+The four ignored prefixes belong to something that manages its own branches:
+Dependabot, `release.yml`'s `release/*` housekeeping branch, and
+`lockfile-maintenance.yml`'s `maintenance/lockfile`. Without the exclusion the
+naming rule would delete them on sight — and it would reach the last one, which
+is written with an app token, where `GITHUB_TOKEN` would not have started this
+workflow at all.
+
+**It no longer opens pull requests.** It used to open a draft one into `dev`,
+and that failed twice over. It needed "Allow GitHub Actions to create and
+approve pull requests", which is off and stays off, because a workflow that may
+open a pull request may also approve one the day a ruleset asks for a review.
+And a pull request authored by `github-actions` parks its checks on
+`action_required`, so every correctly named branch needed a human click before
+CI would start — #76 sat waiting for one. Open yours with
+`gh pr create --base dev --fill`.
 
 **Gotchas**
 
-- It uses the built-in `GITHUB_TOKEN`, so the PRs it opens **do not trigger
-  `ci.yml`**. Close and reopen as yourself, or push a further commit.
-- Opening a PR needs "Allow GitHub Actions to create and approve pull requests".
-  Without it the step warns rather than failing — the branch is pushed either
-  way.
+- The deletion is immediate and needs no confirmation. Check the prefix before
+  pushing a branch you care about having on the remote.
+- `contents: write` is all it holds, and it takes no checkout: the only call is
+  `gh api` against an explicit path.
+- The branch name arrives through `env:`, never inline `${{ }}`. A ref name is
+  attacker-chosen input, and `${{ }}` inside a `run:` block is substituted
+  before the shell sees it. Measured on 2026-08-12 with a branch named
+  ``wip/a$(id)b`id`c``: nothing executed, the name appeared literally in every
+  log line, and the branch was deleted as designed.
 
 ## `dependabot-auto-merge.yml` — Dependabot policy
 
