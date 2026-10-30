@@ -513,6 +513,22 @@ jobs:
           git config user.signingkey "$KEYID"
           git config commit.gpgsign true
 
+          # A test signature, now, with exactly the program git will use — the
+          # wrapper above when there is a passphrase, plain gpg otherwise. A key
+          # that cannot sign unattended otherwise fails much later, inside the
+          # merge, as "gpg: signing failed: Inappropriate ioctl for device",
+          # which names neither the key nor the missing secret and sends the
+          # reader looking at the merge instead. A passphrase-protected key with
+          # no GPG_PASSPHRASE is the case this catches, and a *wrong* passphrase
+          # behaves identically. One signature, spent before anything is
+          # committed.
+          signer="$(git config --get gpg.program || echo gpg)"
+          if ! echo "muninn signing self-test" | "$signer" --batch --clearsign -u "$KEYID" >/dev/null; then
+            echo "::error::the signing key cannot sign unattended. If it has a passphrase, GPG_PASSPHRASE must be set in the release environment; if it is set, it is wrong. Every commit this job makes would be unsigned, and both rulesets require signatures."
+            exit 1
+          fi
+          echo "signing self-test passed"
+
       - name: Open housekeeping PR into dev
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}

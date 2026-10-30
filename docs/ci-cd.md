@@ -408,6 +408,14 @@ everything it ever signed. No passphrase is the normal choice — the private ke
 is already a secret, and a passphrase beside it in the same secret store adds no
 layer.
 
+Both release workflows **sign a test string straight after importing the key**,
+with the same program git will use — the passphrase wrapper where there is one,
+plain `gpg` otherwise. A key that cannot sign unattended otherwise fails much
+later, inside the merge, as `gpg: signing failed: Inappropriate ioctl for
+device`, which names neither the key nor the missing secret. A
+passphrase-protected key with no `GPG_PASSPHRASE`, or a wrong one, is caught
+before anything is committed.
+
 ```bash
 gpg --batch --quick-generate-key "<name> <email>" ed25519 sign never
 gpg --armor --export-secret-keys <email>   # -> the GPG_PRIVATE_KEY secret
