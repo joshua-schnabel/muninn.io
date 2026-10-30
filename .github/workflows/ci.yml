@@ -879,6 +879,11 @@ jobs:
     needs: [image-gate]
     if: github.event_name == 'push'
     timeout-minutes: 15
+    # DOCKERHUB_TOKEN lives in the `registry` environment, which only `dev` and
+    # `main` may use. A repository secret is readable by a run from *any*
+    # branch, with that branch's workflow file — so push access alone would be
+    # enough to print it. See "Where the secrets live" in docs/ci-cd.md.
+    environment: registry
     strategy:
       fail-fast: false
       matrix:
@@ -967,6 +972,13 @@ jobs:
     needs: [push]
     if: github.event_name == 'push'
     timeout-minutes: 15
+    # Two environments, one job. On `main` this job also pushes the release tag
+    # with RELEASE_PAT, which lives in `release`; on `dev` it only publishes the
+    # pre-release image and needs no more than `registry`. Choosing per ref is
+    # what keeps RELEASE_PAT — a credential that can write to a protected
+    # branch — out of every `dev` run. DOCKERHUB_TOKEN is therefore stored in
+    # both environments on purpose.
+    environment: ${{ github.ref == 'refs/heads/main' && 'release' || 'registry' }}
     permissions:
       # contents: write — the "Create git tag" step. Inheriting `contents: read`
       #   made `git push origin vX.Y.Z` 403.

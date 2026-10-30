@@ -38,6 +38,11 @@ jobs:
     name: Prepare and merge release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # RELEASE_PAT and the signing key live in the `release` environment, which
+    # only `main` and `v*.*.*` tags may use. **Start this dispatch on `main`**,
+    # not on `dev`: the job checks `dev` out itself, and the environment would
+    # refuse a run from any other ref. See docs/releasing.md.
+    environment: release
     # Least privilege per job, as everywhere else here — declared on the job
     # rather than the workflow so adding a second job cannot inherit write.
     permissions:
