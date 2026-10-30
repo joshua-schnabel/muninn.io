@@ -1,0 +1,75 @@
+name: Advisories
+
+# A daily `cargo deny check advisories` against `dev` and `main`, whether or not
+# anything was pushed.
+#
+# `ci.yml`'s `Source · Supply-Chain Security` job runs on a push or a pull
+# request. An advisory is the one verdict that changes about a tree nobody
+# touched: it is published against a lockfile that has not moved, and from that
+# morning on it is simply true. Nothing in this repository was watching for
+# that. muninn's own record, measured from the run history: `dev` last built on
+# 2026-08-12; the gate was still green on a Dependabot pull request on
+# 2026-09-28; by the next one, on 2026-10-19, it failed on `RUSTSEC-2024-0449`,
+# and on 2026-10-26 on `RUSTSEC-2026-0386` as well. Nothing reported either one
+# until a dependency bump happened to run the gate — and by then every open pull
+# request was red on a lockfile none of them had caused.
+#
+# Both branches, because they answer different questions. `main` is what the
+# published image was built from; `dev` is what the next release will ship. An
+# advisory against `main` alone is a reason to release, one against `dev` is a
+# reason to fix before releasing, and one against both is the state this repo
+# was actually in.
+#
+# Advisories only, not the full `cargo deny check`. Licences, bans and sources
+# change only when the lockfile does, and `ci.yml` checks those exactly then.
+#
+# It reports and blocks nothing. The branch rulesets do not and must not name
+# it: a check that can turn red without a commit would otherwise block every
+# pull request on a verdict about somebody else's crate.
+#
+# Three platform behaviours, each of which looks like a bug when met cold:
+#   - `schedule` runs the workflow file from the DEFAULT branch, `main`. A
+#     change to this file takes effect once it has been released, and the `ref:`
+#     in the matrix is the only reason the job looks at `dev` at all.
+#   - In a public repository GitHub disables scheduled workflows after 60 days
+#     without repository activity — the very kind of quiet spell this exists
+#     for. If it stops running, re-enable it on the Actions tab.
+#   - A failed scheduled run notifies whoever last changed the `cron` line, not
+#     whoever is watching the repository.
+on:
+  schedule:
+    - cron: "47 5 * * *"   # daily, off the hour so it does not queue behind everyone else's
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Advisories · ${{ matrix.ref }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # One branch's result says nothing about the other's.
+      fail-fast: false
+      matrix:
+        ref: [dev, main]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      # Pinned to the same version `ci.yml` installs, and for the same reason:
+      # the freshness that matters comes from the advisory database cargo-deny
+      # fetches at run time, not from the tool binary, so pinning costs nothing
+      # in coverage and removes an unpinned `cargo install` that compiles and
+      # runs a third party's build scripts. Bump it in both places together —
+      # Dependabot sees neither, because cargo-deny is not a dependency.
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: cargo deny check advisories
+        run: cargo deny check advisories

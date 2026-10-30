@@ -11,6 +11,7 @@ The pipeline's rationale and the repository settings it needs are
 |---|---|---|
 | `ci.yml` | every PR · push to `dev`/`main` | Quality gates, build-once image, publish to Docker Hub + ghcr, create the release tag |
 | `security.yml` | every PR · every push | ShellCheck, actionlint, Semgrep SAST |
+| `advisories.yml` | daily · manual | `cargo deny check advisories` against `dev` and `main`, reports only |
 | `auto-pr.yml` | push to any non-protected branch | Open a draft PR into `dev`; delete mis-named branches |
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
@@ -157,6 +158,47 @@ feature branches before a PR exists.
   (dependabot-core#5819) — they need a manual bump.
 - Trivy is **not** here. It lives in `ci.yml`'s `scan` job so it scans the exact
   image that ships.
+
+## `advisories.yml` — the daily advisory scan
+
+**Runs on** a daily schedule and `workflow_dispatch`. Nothing else triggers it.
+
+`cargo deny check advisories` against **both** `dev` and `main`, as a matrix
+over `ref:`. It reports and blocks nothing.
+
+**Why it exists.** `ci.yml`'s supply-chain job runs on a push or a pull request,
+and an advisory is the one verdict that changes about a tree nobody touched —
+published against a lockfile that has not moved, and true from that morning on.
+muninn's own run history: `dev` last built on 2026-08-12, the gate was still
+green on a Dependabot pull request on 2026-09-28, and by the next one on
+2026-10-19 it failed on `RUSTSEC-2024-0449`, joined on 2026-10-26 by
+`RUSTSEC-2026-0386`. Nothing reported either until a dependency bump happened to
+run the gate, and by then every open pull request was red on a lockfile none of
+them had caused.
+
+**Both branches, because they answer different questions.** `main` is what the
+published image was built from; `dev` is what the next release will ship. An
+advisory against `main` alone is a reason to release; one against `dev` is a
+reason to fix before releasing.
+
+**Advisories only.** Licences, bans and sources change only when the lockfile
+does, and `ci.yml` checks those exactly then.
+
+**Gotchas**
+
+- A scheduled workflow runs **the file from the default branch**, `main`. A
+  change here takes effect once it has been released; the `ref:` matrix is the
+  only reason the job looks at `dev` at all.
+- GitHub **disables scheduled workflows after 60 days** without repository
+  activity in a public repo — precisely the quiet spell this exists for. If it
+  stops running, re-enable it on the Actions tab.
+- A failed scheduled run notifies whoever last changed the `cron` line, not
+  whoever watches the repository.
+- The rulesets must **not** name it as a required check. It can turn red with no
+  commit behind it, which would block every pull request on a verdict about
+  somebody else's crate.
+- `cargo-deny` is pinned, here and in `ci.yml`, and Dependabot sees neither
+  line. Bump both together.
 
 ## `auto-pr.yml` — draft PR opener and branch janitor
 

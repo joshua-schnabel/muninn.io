@@ -451,6 +451,16 @@ prove a major has no breaking runtime behaviour the tests miss. A 3-day cooldown
 applies to version updates and not to security updates, so a CVE fix is never
 delayed by it.
 
+**An advisory does not need a commit to become true**, so one gate is not enough
+on its own. `cargo deny check` runs in `ci.yml` on a push or a pull request —
+which answers the question for a tree somebody is changing. `advisories.yml`
+answers it for a tree nobody is: a daily `cargo deny check advisories` against
+`dev` **and** `main`, reporting only. It is deliberately not a required check,
+because a check that can turn red with no commit behind it would block every
+pull request on a verdict about somebody else's crate. See
+[`workflows.md`](workflows.md) for the three scheduling behaviours that look like
+bugs and are not.
+
 **Telegraf is not covered.** Dependabot does not track `dl.influxdata.com` URLs,
 so bumping it is a manual change to a version string and two checksums in the
 Dockerfile, plus the same version in `ci.yml` — deliberately visible in a diff

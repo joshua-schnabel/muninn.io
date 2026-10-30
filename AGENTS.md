@@ -273,7 +273,10 @@ explicitly and flagged in the PR.
   capabilities dropped, tmpfs at `/run/muninn`. Never `--privileged`.
 - **Supply chain:** Telegraf pinned by checksum
   ([ADR-0011](docs/adr/0011-telegraf-pinning.md)), `Cargo.lock` committed,
-  cargo-deny gating advisories and licences, OpenSSL banned outright.
+  cargo-deny gating advisories and licences, OpenSSL banned outright. An
+  advisory needs no commit to become true, so `advisories.yml` re-checks `dev`
+  and `main` daily and reports — the gate alone only ever sees a tree somebody
+  is changing.
 - **A failed check never reports a healthy value.** This is the project's
   sharpest rule: `0 updates` when the check failed is worse than no metric at
   all, because an alert rule cannot tell them apart afterwards.
