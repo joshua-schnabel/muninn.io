@@ -16,8 +16,17 @@ the housekeeping PR arrived red the first time it ran.
 
 ## One-click release (recommended)
 
-Actions → **Release (dispatch)** → *Run workflow* → pick `patch`, `minor` or
-`major`.
+Actions → **Release (dispatch)** → *Run workflow* → **branch `main`** → pick
+`patch`, `minor` or `major`.
+
+**Start it on `main`, not on `dev`.** The *Run workflow* dropdown offers a
+branch, and the obvious choice is wrong: the job checks `dev` out itself, so the
+ref it was started on decides nothing about what is released — but it decides
+whether the job may read its credentials at all. The `release` environment
+admits `main` and `v*.*.*` tags only, so a dispatch started on `dev` fails at
+the first step that needs the signing key, with an error about an empty secret
+rather than about the branch. [`ci-cd.md`](ci-cd.md) has the table of which
+environment holds what.
 
 It computes the next version from the higher of the last `v*` tag and the topmost
 released changelog version, stamps `## [Unreleased]` as `## [X.Y.Z] - <today>`,
