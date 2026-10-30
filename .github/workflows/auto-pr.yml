@@ -9,9 +9,11 @@ name: Auto PR
 # ones AGENTS.md §8 names, and the rule exists so the branch protection and the
 # release flow have one shape of branch to reason about.
 #
-# Dependabot manages its own branches and PRs, and release.yml manages its own
-# release/* housekeeping branch + PR — both are ignored here, otherwise the
-# naming rule below would delete them on sight.
+# Dependabot manages its own branches and PRs, release.yml manages its own
+# release/* housekeeping branch + PR, and lockfile-maintenance.yml manages
+# `maintenance/lockfile` — all three are ignored here, otherwise the naming rule
+# below would delete them on sight. The last one matters because it is written
+# with an app token, which, unlike GITHUB_TOKEN, does start this workflow.
 on:
   push:
     branches-ignore:
@@ -19,6 +21,7 @@ on:
       - "dev"
       - "dependabot/**"
       - "release/**"
+      - "maintenance/**"
 
 permissions:
   contents: write

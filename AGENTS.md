@@ -229,7 +229,9 @@ response, and a hand-written fake agrees with whoever wrote it. Only
   hold a dependency back rather than require a newer compiler — which is how a
   project silently stays on the release before a CVE fix. If the floor starts
   constraining resolution, **raise the floor**, do not accept the old crate.
-  The Docker build is the real MSRV gate.
+  `lockfile-maintenance.yml` surfaces exactly that: whatever Cargo declined to
+  move appears in its weekly pull request, with `requires Rust` naming the ones
+  this rule is about. The Docker build is the real MSRV gate.
 - **Testing:** unit tests inline in `#[cfg(test)]`; cross-crate and whole-binary
   behaviour in `muninn/tests/`. **Don't sleep — poll.** Tests touching the
   environment must be serialised. ≥80 % workspace line coverage.

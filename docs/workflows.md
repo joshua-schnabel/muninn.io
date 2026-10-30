@@ -15,6 +15,7 @@ The pipeline's rationale and the repository settings it needs are
 | `dependabot-auto-merge.yml` | Dependabot PRs | Retarget security updates onto `dev`; auto-merge patch and minor bumps |
 | `release.yml` | `v*.*.*` tag push · manual | GitHub Release, SBOM, test report, housekeeping PR |
 | `release-dispatch.yml` | manual, owner-only | One-click release: pick patch/minor/major |
+| `lockfile-maintenance.yml` | Mondays · manual | `cargo update` against `dev`, as one PR a human merges |
 
 Dependency updates are configured in `.github/dependabot.yml` — one grouped PR
 per ecosystem (cargo, github-actions, docker), all targeting `dev`. That is
@@ -294,6 +295,60 @@ via `workflow_dispatch` with an existing tag.
 
 It is an entry point, not a second release path: it produces the same PR the
 manual flow does, and every gate still runs on it.
+
+## `lockfile-maintenance.yml` — the weekly `cargo update`
+
+**Runs on** a Monday schedule and `workflow_dispatch`. One job, in the
+`maintenance` environment.
+
+`cargo update` against `dev`, committed to `maintenance/lockfile` and opened as
+one pull request into `dev` that runs the full pipeline like any other.
+
+**Why it exists.** Dependabot's cargo scope is direct dependencies only, by
+decision, and its security updates come from the GitHub Advisory Database, which
+does not carry every RustSec advisory. A transitive crate with no security
+update to carry it therefore goes unpatched — `RUSTSEC-2024-0449` names
+`unsafe-libyaml`, which arrives through `serde_yaml_ng` and which Dependabot
+neither proposes nor can propose. A full `cargo update` reaches every crate in
+the graph, and Cargo resolves that graph itself rather than editing the lockfile
+crate by crate.
+
+**The MSRV floor.** The workspace is resolver 3, so Cargo already prefers the
+newest release of each crate that still builds on `rust-version`. `AGENTS.md` §7
+treats that as a hazard, not a convenience: holding a crate back is how a
+project silently stays on the release before a CVE fix. So the job runs
+`cargo update --verbose`, and whatever Cargo declined to move
+(`Unchanged <crate> (available: …)`) goes into the pull request body under its
+own heading — where `requires Rust` appears, the answer is to raise the floor.
+
+**The token.** A GitHub App, not `GITHUB_TOKEN`: events created with
+`GITHUB_TOKEN` start no workflow run, so the pull request would never run its
+required checks. The app token lives an hour, carries `contents` and
+`pull-requests` write on this repository only, and is minted *after*
+`cargo update`, so no crate's code runs in the job while it exists.
+
+**The commit is made through the Git database API**, not `git push`, because
+GitHub signs a commit an app creates that way and both rulesets require
+signatures. The job checks `verification.verified` and fails loudly if GitHub
+did not sign — an unsigned commit would open a pull request whose checks all
+pass and whose merge button stays blocked, with nothing failing anywhere.
+
+**Gotchas**
+
+- **Not auto-merged, deliberately.** `cargo update` has no cooldown, so a
+  freshly published release reaches the pull request the same week, and no gate
+  recognises a malicious crate that compiles and passes its tests. One click a
+  week.
+- It needs the `maintenance` environment and the app credentials
+  ([`ci-cd.md`](ci-cd.md)). Until those exist the job fails at the token step.
+- Like every scheduled workflow it runs **the file from the default branch**, so
+  it does nothing until it has been released. `workflow_dispatch` is there to
+  run it by hand.
+- `maintenance/**` is in `auto-pr.yml`'s `branches-ignore`. Without that, the
+  branch would be deleted as mis-named the moment it is pushed — and it *would*
+  be, because an app token starts workflows where `GITHUB_TOKEN` does not.
+- The branch is rebuilt from current `dev` every week and **force-updated**, so
+  do not commit onto it.
 
 ## Related
 

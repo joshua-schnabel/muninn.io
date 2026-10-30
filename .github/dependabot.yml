@@ -77,6 +77,14 @@ updates:
     # `cargo test --locked` refuses, because the updater bumps a transitive
     # crate without updating the derive macro that pins it exactly. Security
     # updates reach transitive crates regardless of this setting.
+    #
+    # What that leaves uncovered is a transitive crate with no security update
+    # to carry it: an advisory that is not in the GitHub Advisory Database, or
+    # one with no fixed version at all. RUSTSEC-2024-0449 is both — it names
+    # `unsafe-libyaml`, which arrives through `serde_yaml_ng` and which
+    # Dependabot never proposes. `lockfile-maintenance.yml` covers that gap
+    # with a weekly `cargo update`, which reaches every crate in the graph and
+    # lets Cargo resolve it rather than editing the lockfile crate by crate.
     groups:
       cargo:
         patterns: ["*"]
